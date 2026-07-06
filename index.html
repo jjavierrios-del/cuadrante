@@ -209,12 +209,14 @@ let SYNC = {owner:"", repo:"", branch:"main", token:"", auto:false};
 try{ const _sy = localStorage.getItem(KEY_SYNC); if(_sy) SYNC = Object.assign(SYNC, JSON.parse(_sy)); }catch(e){}
 function saveSync(){ try{ localStorage.setItem(KEY_SYNC, JSON.stringify(SYNC)); }catch(e){} }
 
-let pubT = null;
+let pubT = null, pubBusy = false, pubAgain = false;
 function b64utf8(str){ return btoa(unescape(encodeURIComponent(str))); }
 async function ghPublish(manual){
   if(MODE!=="editor") return;
   if(!SYNC.owner || !SYNC.repo || !SYNC.token){ if(manual) setSave("⚠ Configura GitHub en Ajustes"); return; }
   if(!manual && !state.physicians.length) return; // no publicar un cuadrante vacío por accidente
+  if(pubBusy){ pubAgain = true; return; }        // nunca dos publicaciones a la vez
+  pubBusy = true;
   setSave("Publicando…");
   const api = "https://api.github.com/repos/"+SYNC.owner+"/"+SYNC.repo+"/contents/data.json";
   const headers = {"Authorization":"Bearer "+SYNC.token, "Accept":"application/vnd.github+json", "X-GitHub-Api-Version":"2022-11-28"};
@@ -223,7 +225,8 @@ async function ghPublish(manual){
   const branch = SYNC.branch || "main";
   async function getSha(){
     try{
-      const r = await fetch(api+"?ref="+encodeURIComponent(branch), {headers});
+      // cache:no-store + parámetro único: evita que el navegador devuelva un sha viejo (causa del error 409)
+      const r = await fetch(api+"?ref="+encodeURIComponent(branch)+"&_="+Date.now(), {headers:headers, cache:"no-store"});
       if(r.ok){ const j = await r.json(); return j.sha || null; }
     }catch(e){}
     return null;
@@ -234,15 +237,29 @@ async function ghPublish(manual){
     return fetch(api, {method:"PUT", headers:headers, body:JSON.stringify(payload)});
   }
   try{
-    let sha = await getSha();
-    let r = await put(sha);
-    if(r.status===409 || r.status===422){ sha = await getSha(); r = await put(sha); }
-    if(r.ok){
-      PUBLISHED_AT = body.publishedAt;
-      setSave("✓ Publicado "+new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}));
-    }else if(r.status===401 || r.status===403){ setSave("⚠ Token sin permiso (revisa Ajustes)"); }
-    else{ setSave("⚠ Error al publicar ("+r.status+")"); }
+    let ok = false, status = 0;
+    for(let i=0; i<3 && !ok; i++){
+      const sha = await getSha();
+      const r = await put(sha);
+      status = r.status;
+      if(r.ok){
+        ok = true;
+        PUBLISHED_AT = body.publishedAt;
+        setSave("✓ Publicado "+new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}));
+      }else if(r.status===409 || r.status===422){
+        await new Promise(res=>setTimeout(res, 800)); // pequeño respiro y reintento con sha fresco
+      }else break;
+    }
+    if(!ok){
+      if(status===401 || status===403) setSave("⚠ Token sin permiso (revisa Ajustes)");
+      else if(status===404) setSave("⚠ Repositorio o rama no encontrados");
+      else setSave("⚠ Error al publicar ("+status+")");
+    }
   }catch(e){ setSave("⚠ Sin conexión para publicar"); }
+  finally{
+    pubBusy = false;
+    if(pubAgain){ pubAgain = false; schedulePublish(); }
+  }
 }
 function schedulePublish(){
   if(!SYNC.auto || MODE!=="editor") return;
