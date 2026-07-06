@@ -201,6 +201,7 @@ const DEFAULT_SETTINGS = ()=>({autoLibranza:true, urgRequired:true, minMorning:7
 const KEY = "cuadrante-gestor-html-v1";
 let MODE = "editor";          // "editor" | "viewer"
 let PUBLISHED_AT = null;      // fecha de publicación de data.json
+let NEWER = false;            // hay publicación más nueva que la copia local de este dispositivo
 
 // Sincronización automática con GitHub (config local: NUNCA viaja en data.json ni en copias)
 const KEY_SYNC = "cuadrante-sync-v1";
@@ -273,6 +274,7 @@ function loadState(){
 let saveT=null;
 function save(){
   if(MODE==="viewer"){ setSave("Solo consulta"); return; }
+  state.updatedAt = new Date().toISOString();
   setSave("Guardando…");
   clearTimeout(saveT);
   saveT = setTimeout(()=>{
@@ -459,6 +461,12 @@ function viewCuadrante(){
       '<span class="muted" style="font-size:13px">Solo consulta'+(PUBLISHED_AT?(' · publicado '+new Date(PUBLISHED_AT).toLocaleDateString('es-ES')):'')+'</span>'+
       '<span class="row" style="gap:6px"><button class="btn primary" data-action="req-open">Solicitar cambio</button>'+
       '<button class="btn" data-action="viewer-refresh">Actualizar</button></span></div>';
+  }
+  if(MODE==="editor" && NEWER){
+    html += '<div class="card" style="padding:8px 12px;margin-bottom:10px;background:#fffbeb;border-color:#fcd34d;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">'+
+      '<span style="font-size:13px;color:#92400e">Hay una versión publicada más reciente que la copia de este dispositivo.</span>'+
+      '<span class="row" style="gap:6px"><button class="btn primary" data-action="pull-published">Cargar la publicada</button>'+
+      '<button class="btn" data-action="dismiss-newer">Seguir con la local</button></span></div>';
   }
   html += '<div class="row between controls" style="margin-bottom:10px">'+
     '<div class="row" style="background:#fff;border:1px solid var(--slate-200);border-radius:8px;padding:2px 4px;gap:2px">'+
@@ -681,8 +689,13 @@ function viewAjustes(){
     '<label class="row" style="margin-top:8px;font-size:14px;cursor:pointer"><input type="checkbox" id="sy-auto" '+(SYNC.auto?'checked':'')+' style="accent-color:var(--teal-700)"> Publicar automáticamente al guardar</label>'+
     '<div class="row" style="margin-top:10px">'+
       '<button class="btn primary" data-action="sync-save">Guardar conexión y publicar ahora</button>'+
+      '<button class="btn" data-action="pull-published">Cargar versión publicada</button>'+
       '<button class="btn" data-action="publish-json">Descargar data.json (manual)</button>'+
     '</div>'+
+    '<div class="row" style="margin-top:8px">'+
+      '<button class="btn" data-action="go-viewer">Este dispositivo: pasar a solo consulta</button>'+
+    '</div>'+
+    '<p class="muted" style="font-size:12px;margin-top:6px">«Cargar versión publicada» trae al dispositivo los últimos datos publicados (útil si editas desde varios aparatos). «Pasar a solo consulta» borra la copia local de edición y deja el dispositivo como el de un compañero.</p>'+
     '<p class="muted" style="font-size:12px;margin-top:8px">El token se crea en GitHub → Settings → Developer settings → Fine-grained tokens, con acceso SOLO a ese repositorio y permiso «Contents: Read and write». Pasos detallados en el LEEME.</p></div>';
 
   html += '<div class="card"><h2>Copia de seguridad</h2>'+
@@ -1078,6 +1091,32 @@ document.addEventListener("click", e=>{
       }
       break;
     }
+    case "pull-published":
+      (async()=>{
+        try{
+          const r = await fetch("data.json",{cache:"no-store"});
+          if(r.ok){
+            applyPublished(await r.json());
+            NEWER = false;
+            state.updatedAt = PUBLISHED_AT || new Date().toISOString();
+            try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){}
+            setSave("✓ Versión publicada cargada");
+            render();
+          } else setSave("⚠ No se encontró data.json publicado");
+        }catch(e){ setSave("⚠ Sin conexión"); }
+      })();
+      break;
+    case "dismiss-newer": NEWER=false; render(); break;
+    case "go-viewer":
+      if(window.confirm("Este dispositivo pasará a SOLO CONSULTA y se borrará su copia local de edición (lo publicado no se toca). ¿Continuar?")){
+        try{ localStorage.removeItem(KEY); }catch(e){}
+        MODE="viewer"; NEWER=false;
+        (async()=>{
+          try{ const r=await fetch("data.json",{cache:"no-store"}); if(r.ok) applyPublished(await r.json()); }catch(e){}
+          render(); setSave("Solo consulta");
+        })();
+      }
+      break;
     case "review-open": ui.reviewModal = {}; renderModal(); break;
     case "review-back": ui.reviewModal = {}; renderModal(); break;
     case "review-parse": {
@@ -1243,6 +1282,9 @@ async function boot(){
     if(r.ok) published = await r.json();
   }catch(e){ /* sin publicación o sin conexión */ }
   if(published && !hasLocal){ MODE="viewer"; applyPublished(published); }
+  else if(published && hasLocal && published.publishedAt && (!state.updatedAt || published.publishedAt > state.updatedAt)){
+    NEWER = true; PUBLISHED_AT = published.publishedAt;
+  }
   setSave(MODE==="viewer" ? "Solo consulta" : "✓ Guardado");
   render();
 }
