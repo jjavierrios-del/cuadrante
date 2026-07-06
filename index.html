@@ -29,7 +29,7 @@
   .brand{color:#5eead4; font-size:11px; text-transform:uppercase; letter-spacing:.15em; font-weight:600}
   h1{font-size:20px; margin-top:2px}
   .savebar{font-size:12px; color:#99f6e4; float:right; margin-top:4px}
-  nav{display:flex; gap:4px; margin-top:12px}
+  nav{display:flex; gap:4px; margin-top:12px; flex-wrap:wrap}
   nav button{padding:8px 12px; border-radius:8px; font-size:14px; font-weight:500; color:var(--teal-100)}
   nav button:hover{background:rgba(17,94,89,.6)}
   nav button.active{background:var(--teal-800); color:#fff}
@@ -385,6 +385,8 @@ function applyCode(pid, dateKey, code){
 
 // ------------------ Solicitudes de cambio ------------------
 const KEY_REQNAME = "cuadrante-reqname-v1";
+const KEY_REQLOG = "cuadrante-reqlog-v1";
+const KEY_APPLIEDLOG = "cuadrante-appliedlog-v1";
 function cellToText(a){
   if(!a || (!a.m && !a.t && !a.f)) return "— (vacío)";
   if(a.f) return byCode[a.f] ? byCode[a.f].code : (ABSENCES[a.f] ? ABSENCES[a.f].label : a.f);
@@ -400,7 +402,8 @@ function buildRequestText(){
   const p = state.physicians.find(x=>x.id===rq.pid);
   const cur = state.assignments[(rq.pid||"")+"|"+rq.date];
   const to = draftToCell(ui.reqDraft||{});
-  const note = (document.getElementById("rq-note")||{value:""}).value.trim();
+  const noteEl = document.getElementById("rq-note");
+  const note = (noteEl ? noteEl.value : (ui.reqNote||"")).trim();
   const name = (document.getElementById("rq-name")||{value:""}).value.trim();
   const payload = {v:1, by:name, pid:rq.pid, phys:p?p.name:"", date:rq.date,
                    from:cur||{}, to:(Object.keys(to).length?to:{clear:true}), note:note};
@@ -448,11 +451,96 @@ function render(){
   if(ui.tab==="cuadrante") main.innerHTML = viewCuadrante();
   else if(ui.tab==="equipo") main.innerHTML = viewEquipo();
   else if(ui.tab==="stats") main.innerHTML = viewStats();
+  else if(ui.tab==="solicitudes") main.innerHTML = viewSolicitudes();
   else main.innerHTML = viewAjustes();
   renderModal();
 }
+function solicitudFormHTML(){
+  const rq = ui.reqModal;
+  const phys = state.physicians;
+  const p = phys.find(x=>x.id===rq.pid) || phys[0] || null;
+  if(p && rq.pid!==p.id) rq.pid = p.id;
+  const cur = p ? state.assignments[p.id+"|"+rq.date] : null;
+  const d = ui.reqDraft || (ui.reqDraft={m:"",t:"",f:""});
+  let name = ui.reqName;
+  if(name===undefined){ try{ name = localStorage.getItem(KEY_REQNAME)||""; }catch(e){ name=""; } ui.reqName=name; }
+  const selOpts = (list, val)=>'<option value="">—</option>'+list.map(c=>'<option value="'+c.code+'"'+(val===c.code?" selected":"")+'>'+c.code+'</option>').join("");
+  const fOpts = '<option value="">— (mañana/tarde abajo)</option>'+
+    ['URG','URGF'].map(c=>'<option value="'+c+'"'+(d.f===c?" selected":"")+'>'+c+'</option>').join("")+
+    Object.entries(ABSENCES).map(([c,x])=>'<option value="'+c+'"'+(d.f===c?" selected":"")+'>'+x.label+'</option>').join("");
+  const hasContact = !!(state.settings.reqEmail||state.settings.reqPhone);
+  return '<div class="row" style="margin-top:10px">'+
+      '<select data-field="rq-phys" style="flex:1;padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
+        phys.map(x=>'<option value="'+x.id+'"'+(p&&p.id===x.id?" selected":"")+'>'+esc(x.name)+'</option>').join("")+'</select>'+
+      '<input type="date" value="'+rq.date+'" data-field="rq-date" style="padding:7px">'+
+    '</div>'+
+    '<p class="muted" style="margin-top:8px;font-size:13px">Asignación actual: <b>'+cellToText(cur)+'</b></p>'+
+    '<p class="tiny" style="margin-top:10px">Propuesta · Día completo</p>'+
+    '<select data-field="rq-f" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+fOpts+'</select>'+
+    '<div class="row" style="margin-top:8px">'+
+      '<span style="flex:1"><span class="tiny">Mañana</span><select data-field="rq-m" '+(d.f?"disabled":"")+' style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+selOpts(MORNING,d.m)+'</select></span>'+
+      '<span style="flex:1"><span class="tiny">Tarde</span><select data-field="rq-t" '+(d.f?"disabled":"")+' style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+selOpts(AFTERNOON,d.t)+'</select></span>'+
+    '</div>'+
+    '<p class="muted" style="font-size:12px;margin-top:4px">Propuesto: <b>'+cellToText(draftToCell(d))+'</b> (todo vacío = solicitar liberar el día)</p>'+
+    '<input type="text" id="rq-name" placeholder="Tu nombre" value="'+esc(name)+'" data-field="rq-name" style="width:100%;padding:8px;margin-top:10px;border:1px solid var(--slate-300);border-radius:8px">'+
+    '<textarea id="rq-note" placeholder="Motivo (opcional)" style="width:100%;height:64px;padding:8px;margin-top:8px;border:1px solid var(--slate-300);border-radius:8px;font-family:inherit;font-size:14px">'+esc(ui.reqNote||"")+'</textarea>'+
+    '<div class="row" style="margin-top:12px">'+
+      (state.settings.reqEmail?'<button class="btn primary" style="flex:1" data-action="req-send-mail">Enviar por correo</button>':'')+
+      (state.settings.reqPhone?'<button class="btn primary" style="flex:1" data-action="req-send-wa">WhatsApp</button>':'')+
+      '<button class="btn" data-action="req-copy">Copiar texto</button>'+
+    '</div>'+
+    (hasContact?'':'<p class="muted" style="font-size:12px;margin-top:8px">El administrador no ha configurado correo/WhatsApp: copia el texto y envíaselo por el canal habitual.</p>');
+}
+
+function viewSolicitudes(){
+  if(MODE==="viewer"){
+    if(!ui.reqModal || !ui.reqModal.tab){
+      const n = new Date();
+      ui.reqModal = {tab:true, pid:(state.physicians[0]||{}).id, date: keyOf(n.getFullYear(), n.getMonth(), n.getDate())};
+      ui.reqDraft = ui.reqDraft || {m:"",t:"",f:""};
+    }
+    let log=[]; try{ log = JSON.parse(localStorage.getItem(KEY_REQLOG)||"[]"); }catch(e){}
+    let h = '<div class="card"><h2>Solicitar un cambio</h2>'+
+      '<p class="muted" style="margin-top:2px">Elige facultativo, fecha y tu propuesta; la solicitud le llegará al jefe de servicio para su autorización.</p>'+
+      solicitudFormHTML()+'</div>';
+    if(log.length){
+      h += '<div class="card"><div class="row between"><h2>Mis solicitudes enviadas</h2><button class="btn" data-action="reqlog-clear">Vaciar</button></div><div style="margin-top:8px">'+
+        log.map(x=>'<div style="padding:6px 0;border-bottom:1px solid var(--slate-100);font-size:13px"><b>'+esc(x.phys||"")+'</b> · '+fmtDate(x.date)+' → '+esc(x.prop||"")+'<span class="muted"> · enviada '+new Date(x.at).toLocaleDateString("es-ES")+'</span></div>').join("")+
+        '</div><p class="muted" style="font-size:12px;margin-top:6px">Registro local de este dispositivo. Sabrás que está autorizada cuando veas el cambio aplicado en el cuadrante.</p></div>';
+    }
+    return h;
+  }
+  const rv = ui.reviewTab || (ui.reviewTab={});
+  let h = '<div class="card"><h2>Revisar solicitudes</h2>'+
+    '<p class="muted" style="margin-top:2px">Pega el mensaje recibido (correo o WhatsApp), analízalo y autoriza el cambio con un clic. Con la publicación automática activada, el equipo lo verá al momento.</p>';
+  if(rv.req){
+    const r = rv.req;
+    h += '<div class="card" style="margin-top:10px;background:var(--slate-50)">'+
+      '<p style="font-size:14px"><b>Solicitante:</b> '+esc(r.by||"(sin nombre)")+'</p>'+
+      '<p style="font-size:14px;margin-top:4px"><b>Facultativo:</b> '+esc(r.phys||"")+' · <b>Fecha:</b> '+fmtDate(r.date)+'</p>'+
+      '<p style="font-size:14px;margin-top:4px"><b>Actual:</b> '+cellToText(r.from)+' → <b>Propuesto:</b> '+cellToText(r.to&&r.to.clear?null:r.to)+'</p>'+
+      (r.note?'<p style="font-size:14px;margin-top:4px"><b>Motivo:</b> '+esc(r.note)+'</p>':'')+'</div>'+
+      (rv.err?'<p style="color:var(--rose-700);font-size:13px;margin-top:8px">'+esc(rv.err)+'</p>':'')+
+      '<div class="row" style="margin-top:10px">'+
+      '<button class="btn primary" data-action="reviewt-apply">Autorizar y aplicar</button>'+
+      '<button class="btn" data-action="reviewt-back">Otra solicitud</button></div>';
+  }else{
+    h += '<textarea id="rvt-in" style="width:100%;height:120px;padding:8px;margin-top:8px;border:1px solid var(--slate-300);border-radius:8px;font-family:monospace;font-size:11px" placeholder="Pega aquí el mensaje completo…"></textarea>'+
+      (rv.err?'<p style="color:var(--rose-700);font-size:13px;margin-top:6px">'+esc(rv.err)+'</p>':'')+
+      '<button class="btn primary" style="margin-top:10px" data-action="reviewt-parse">Analizar solicitud</button>';
+  }
+  h += '</div>';
+  let alog=[]; try{ alog = JSON.parse(localStorage.getItem(KEY_APPLIEDLOG)||"[]"); }catch(e){}
+  if(alog.length){
+    h += '<div class="card"><div class="row between"><h2>Autorizadas</h2><button class="btn" data-action="applog-clear">Vaciar</button></div><div style="margin-top:8px">'+
+      alog.map(x=>'<div style="padding:6px 0;border-bottom:1px solid var(--slate-100);font-size:13px"><b>'+esc(x.phys||"")+'</b> · '+fmtDate(x.date)+' → '+esc(x.prop||"")+(x.by?(' <span class="muted">(pedido por '+esc(x.by)+')</span>'):'')+'<span class="muted"> · '+new Date(x.at).toLocaleDateString("es-ES")+'</span></div>').join("")+
+      '</div></div>';
+  }
+  return h;
+}
+
 function renderNav(){
-  const tabs = [["cuadrante","Cuadrante"],["equipo","Equipo"],["stats","Estadísticas"],["ajustes","Ajustes"]];
+  const tabs = [["cuadrante","Cuadrante"],["solicitudes","Solicitudes"],["equipo","Equipo"],["stats","Estadísticas"],["ajustes","Ajustes"]];
   document.getElementById("nav").innerHTML = tabs.map(([id,l])=>
     '<button data-action="tab" data-tab="'+id+'" class="'+(ui.tab===id?"active":"")+'">'+l+'</button>').join("");
 }
@@ -793,7 +881,7 @@ function renderModal(){
         else right = '<span class="muted" style="opacity:.5">No requerida</span>';
         return '<div class="cov"><span class="chip '+c.cls+'">'+c.code+'</span><span style="text-align:right;flex:1">'+right+'</span></div>';
       }).join("")+'</div></div></div>';
-  }else if(ui.reqModal){
+  }else if(ui.reqModal && !ui.reqModal.tab){
     const rq = ui.reqModal;
     const phys = state.physicians;
     const p = phys.find(x=>x.id===rq.pid) || phys[0] || null;
@@ -1058,9 +1146,9 @@ document.addEventListener("click", e=>{
   const act = el.dataset.action;
   if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-required","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
-      ui.reqModal = {pid: el.dataset.pid, date: el.dataset.date};
-      ui.reqDraft = {m:"", t:"", f:""};
-      renderModal();
+      ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
+      ui.reqDraft = {m:"", t:"", f:""}; ui.reqNote = "";
+      ui.tab = "solicitudes"; render();
     }
     return;
   }
@@ -1089,9 +1177,9 @@ document.addEventListener("click", e=>{
       MODE="editor"; save(); render(); break;
     case "req-open": {
       const n = new Date();
-      ui.reqModal = {pid:(state.physicians[0]||{}).id, date: keyOf(n.getFullYear(), n.getMonth(), n.getDate())};
-      ui.reqDraft = {m:"", t:"", f:""};
-      renderModal(); break;
+      ui.reqModal = {tab:true, pid:(state.physicians[0]||{}).id, date: keyOf(n.getFullYear(), n.getMonth(), n.getDate())};
+      ui.reqDraft = {m:"", t:"", f:""}; ui.reqNote = "";
+      ui.tab = "solicitudes"; render(); break;
     }
     case "req-copy": case "req-send-mail": case "req-send-wa": {
       const txt = buildRequestText();
@@ -1106,6 +1194,13 @@ document.addEventListener("click", e=>{
       }else{
         window.open("https://wa.me/"+String(state.settings.reqPhone).replace(/[^0-9]/g,"")+"?text="+encodeURIComponent(txt), "_blank");
       }
+      try{
+        const pp = state.physicians.find(x=>x.id===(ui.reqModal||{}).pid);
+        const lg = JSON.parse(localStorage.getItem(KEY_REQLOG)||"[]");
+        lg.unshift({at:new Date().toISOString(), phys:pp?pp.name:"", date:(ui.reqModal||{}).date, prop:cellToText(draftToCell(ui.reqDraft||{}))});
+        localStorage.setItem(KEY_REQLOG, JSON.stringify(lg.slice(0,30)));
+      }catch(e){}
+      if(ui.reqModal && ui.reqModal.tab) render();
       break;
     }
     case "pull-published":
@@ -1134,8 +1229,33 @@ document.addEventListener("click", e=>{
         })();
       }
       break;
-    case "review-open": ui.reviewModal = {}; renderModal(); break;
+    case "review-open": ui.tab = "solicitudes"; render(); break;
     case "review-back": ui.reviewModal = {}; renderModal(); break;
+    case "reviewt-parse": {
+      const txt = (document.getElementById("rvt-in")||{value:""}).value;
+      const r = parseRequest(txt);
+      ui.reviewTab = r ? {req:r} : {err:"No se ha podido leer la solicitud. Pega el mensaje completo, incluida la línea [SOLICITUD]{…}."};
+      render(); break;
+    }
+    case "reviewt-back": ui.reviewTab = {}; render(); break;
+    case "reviewt-apply": {
+      if(ui.reviewTab && ui.reviewTab.req){
+        const rq0 = ui.reviewTab.req;
+        const err = applyRequest(rq0);
+        if(err){ ui.reviewTab.err = err; render(); }
+        else{
+          try{
+            const lg = JSON.parse(localStorage.getItem(KEY_APPLIEDLOG)||"[]");
+            lg.unshift({at:new Date().toISOString(), by:rq0.by||"", phys:rq0.phys||"", date:rq0.date, prop:cellToText(rq0.to&&rq0.to.clear?null:rq0.to)});
+            localStorage.setItem(KEY_APPLIEDLOG, JSON.stringify(lg.slice(0,50)));
+          }catch(e){}
+          ui.reviewTab = {}; setSave("✓ Solicitud aplicada"); render();
+        }
+      }
+      break;
+    }
+    case "reqlog-clear": try{ localStorage.removeItem(KEY_REQLOG); }catch(e){} render(); break;
+    case "applog-clear": try{ localStorage.removeItem(KEY_APPLIEDLOG); }catch(e){} render(); break;
     case "review-parse": {
       const txt = (document.getElementById("rv-in")||{value:""}).value;
       const r = parseRequest(txt);
@@ -1254,11 +1374,13 @@ document.addEventListener("change", e=>{
   const el = e.target;
   const fld = el.dataset ? (el.dataset.field||"") : "";
   if(fld.indexOf("rq-")===0){
-    if(fld==="rq-phys"){ if(ui.reqModal){ ui.reqModal.pid = el.value; renderModal(); } }
-    else if(fld==="rq-date"){ if(ui.reqModal && el.value){ ui.reqModal.date = el.value; renderModal(); } }
-    else if(fld==="rq-f"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.f = el.value; if(el.value){ ui.reqDraft.m=""; ui.reqDraft.t=""; } renderModal(); }
-    else if(fld==="rq-m"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.m = el.value; ui.reqDraft.f=""; renderModal(); }
-    else if(fld==="rq-t"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.t = el.value; ui.reqDraft.f=""; renderModal(); }
+    const nt = document.getElementById("rq-note"); if(nt) ui.reqNote = nt.value;
+    const rqRefresh = ()=>{ (ui.reqModal && ui.reqModal.tab) ? render() : renderModal(); };
+    if(fld==="rq-phys"){ if(ui.reqModal){ ui.reqModal.pid = el.value; rqRefresh(); } }
+    else if(fld==="rq-date"){ if(ui.reqModal && el.value){ ui.reqModal.date = el.value; rqRefresh(); } }
+    else if(fld==="rq-f"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.f = el.value; if(el.value){ ui.reqDraft.m=""; ui.reqDraft.t=""; } rqRefresh(); }
+    else if(fld==="rq-m"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.m = el.value; ui.reqDraft.f=""; rqRefresh(); }
+    else if(fld==="rq-t"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.t = el.value; ui.reqDraft.f=""; rqRefresh(); }
     else if(fld==="rq-name"){ ui.reqName = el.value; try{ localStorage.setItem(KEY_REQNAME, el.value.trim()); }catch(e2){} }
     return;
   }
