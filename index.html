@@ -1,0 +1,1255 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gestor de cuadrante · Rehabilitación y Aparato Locomotor</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#134e4a">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Cuadrante">
+<style>
+  :root{
+    --teal-900:#134e4a; --teal-800:#115e59; --teal-700:#0f766e; --teal-100:#ccfbf1; --teal-50:#f0fdfa;
+    --slate-50:#f8fafc; --slate-100:#f1f5f9; --slate-200:#e2e8f0; --slate-300:#cbd5e1; --slate-400:#94a3b8;
+    --slate-500:#64748b; --slate-600:#475569; --slate-800:#1e293b;
+    --rose-100:#ffe4e6; --rose-600:#e11d48; --rose-700:#be123c;
+    --emerald-50:#ecfdf5; --emerald-700:#047857;
+  }
+  *{box-sizing:border-box; margin:0; padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:var(--slate-100); color:var(--slate-800); font-size:15px}
+  button{font-family:inherit; cursor:pointer; border:none; background:none}
+  input,select{font-family:inherit; font-size:14px}
+
+  header{background:var(--teal-900); color:#fff; padding:16px 16px 10px; box-shadow:0 2px 6px rgba(0,0,0,.15)}
+  .wrap{max-width:1100px; margin:0 auto}
+  .brand{color:#5eead4; font-size:11px; text-transform:uppercase; letter-spacing:.15em; font-weight:600}
+  h1{font-size:20px; margin-top:2px}
+  .savebar{font-size:12px; color:#99f6e4; float:right; margin-top:4px}
+  nav{display:flex; gap:4px; margin-top:12px}
+  nav button{padding:8px 12px; border-radius:8px; font-size:14px; font-weight:500; color:var(--teal-100)}
+  nav button:hover{background:rgba(17,94,89,.6)}
+  nav button.active{background:var(--teal-800); color:#fff}
+
+  main{max-width:1750px; margin:0 auto; padding:14px}
+  .card{background:#fff; border:1px solid var(--slate-200); border-radius:12px; padding:16px; margin-bottom:14px}
+  .muted{color:var(--slate-500); font-size:13px}
+  .tiny{font-size:11px; color:var(--slate-400); text-transform:uppercase; font-weight:600; letter-spacing:.04em}
+  h2{font-size:17px}
+
+  .row{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+  .between{justify-content:space-between}
+  .btn{padding:8px 12px; border-radius:8px; font-size:14px; border:1px solid var(--slate-200); background:#fff}
+  .btn:hover{background:var(--slate-50)}
+  .btn.primary{background:var(--teal-700); color:#fff; border-color:var(--teal-700); font-weight:500}
+  .btn.primary:hover{background:var(--teal-800)}
+  .btn.danger{border-color:#fda4af; color:var(--rose-700)}
+  .btn.danger:hover{background:#fff1f2}
+  input[type=text],input[type=number],input[type=date]{padding:8px 10px; border:1px solid var(--slate-300); border-radius:8px}
+  input:focus{outline:2px solid var(--teal-700); outline-offset:1px}
+
+  /* Paleta */
+  .palette{background:#fff; border:1px solid var(--slate-200); border-radius:12px; padding:10px; margin-bottom:12px}
+  .palette .row{margin-bottom:6px}
+  .chip{padding:4px 8px; border-radius:6px; font-size:12px; font-weight:500; opacity:.92; border:1px solid transparent}
+  .chip.on{outline:2px solid var(--teal-800); opacity:1}
+  .chip.plain{background:#fff; border-color:var(--slate-200)}
+  .lbl{width:58px; display:inline-block}
+
+  /* Colores de consultas */
+  .k-al{background:#bae6fd; color:#0c4a6e}
+  .k-int{background:#99f6e4; color:#134e4a}
+  .k-rhb{background:#d9f99d; color:#365314}
+  .k-alt{background:#a5b4fc; color:#1e1b4b}
+  .k-urg{background:#fbbf24; color:#451a03; font-weight:600}
+  .k-urgf{background:#fb923c; color:#431407; font-weight:600}
+  .k-alru{background:#c4b5fd; color:#2e1065}
+  .k-ort{background:#67e8f9; color:#155e75}
+  .k-L{background:#fed7aa; color:#7c2d12}
+  .k-V{background:#6ee7b7; color:#064e3b}
+  .k-B{background:#fda4af; color:#881337}
+  .k-P{background:#f0abfc; color:#701a75}
+
+  /* Rejilla */
+  .gridbox{overflow:hidden; background:#fff; border:1px solid var(--slate-200); border-radius:12px}
+  table{border-collapse:collapse; font-size:12px; font-variant-numeric:tabular-nums; width:100%; table-layout:fixed}
+  th,td{border-bottom:1px solid var(--slate-100)}
+  th{border-bottom:1px solid var(--slate-200)}
+  .namecol{background:#fff; text-align:left; padding:6px 6px; border-right:1px solid var(--slate-200); width:120px; max-width:120px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .dayhead{text-align:center; padding:3px 0; font-weight:400; color:var(--slate-600); cursor:pointer; font-size:11px; overflow:hidden}
+  .dayhead:hover{background:var(--teal-50)}
+  .dayhead b{display:block}
+  .dayhead small{font-size:10px}
+  .wknd{background:var(--slate-100); color:var(--slate-400)}
+  .fest{background:var(--teal-100); color:var(--teal-900)}
+  .cell{width:100%; height:36px; display:flex; flex-direction:column; overflow:hidden; padding:0; font-size:10px}
+  @media(max-width:900px){
+    .namecol{width:74px; max-width:74px; font-size:10px; padding:4px 3px}
+    .cell{height:30px} .cell .half{font-size:7px} .cell .full{font-size:8px}
+    .dayhead b{font-size:9px} .dayhead small{font-size:7px}
+  }
+  .cell:hover{filter:brightness(.96)}
+  .cell .half{height:50%; width:100%; display:flex; align-items:center; justify-content:center; font-size:9px; line-height:1}
+  .cell .half+.half{border-top:1px solid rgba(255,255,255,.6)}
+  .cell .full{margin:auto; width:100%; height:100%; display:flex; align-items:center; justify-content:center}
+  .base-lab{background:#fff} .base-wknd{background:var(--slate-50)} .base-fest{background:var(--teal-50)}
+  .blockcell{background:var(--slate-200); color:var(--slate-400)}
+  td.conflict{outline:2px solid var(--rose-600); outline-offset:-2px}
+  .sumrow td{height:30px; text-align:center; background:var(--slate-50); color:var(--slate-500); cursor:pointer}
+  .sumrow .bad{background:var(--rose-100); color:var(--rose-700); font-weight:700}
+  .sumrow .ok{background:var(--emerald-50); color:var(--emerald-700)}
+  .sumrow .namecol{background:var(--slate-50); font-weight:600; color:var(--slate-600); cursor:default}
+
+  /* Equipo */
+  .phys{padding:10px 0; border-bottom:1px solid var(--slate-100)}
+  .phys input[type=text]{border-color:transparent; flex:1; min-width:140px}
+  .phys input[type=text]:hover{border-color:var(--slate-200)}
+  .pctin{width:64px; text-align:center}
+  .dowbtn{width:28px; height:28px; border-radius:6px; font-size:12px; font-weight:600; border:1px solid var(--slate-200); background:#fff; color:var(--slate-500)}
+  .dowbtn.on{background:var(--slate-600); border-color:var(--slate-600); color:#fff}
+  .icon{color:var(--slate-400); padding:4px 6px; font-size:14px}
+  .icon:hover{color:var(--rose-600)}
+  .updown{display:flex; flex-direction:column; line-height:.8}
+  .updown button{color:var(--slate-400); font-size:11px}
+  .updown button:hover{color:var(--slate-800)}
+
+  /* Estadísticas */
+  .stats th{text-align:center; font-size:11px; color:var(--slate-500); padding:6px}
+  .stats th:first-child{text-align:left}
+  .stats td{padding:8px 6px; text-align:center; white-space:nowrap}
+  .stats td:first-child{text-align:left}
+  .bar{height:12px; border-radius:4px; background:var(--teal-700); display:inline-block; vertical-align:middle}
+  .seg{display:flex; border:1px solid var(--slate-200); border-radius:8px; overflow:hidden}
+  .seg button{padding:6px 12px; font-size:13px; background:#fff}
+  .seg button.on{background:var(--teal-700); color:#fff}
+  .dev-bad{color:var(--rose-600); font-weight:600}
+
+  /* Modal */
+  .overlay{position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:50; display:flex; align-items:flex-end; justify-content:center; padding:12px}
+  @media(min-width:640px){.overlay{align-items:center}}
+  .modal{background:#fff; border-radius:12px; width:100%; max-width:440px; max-height:85vh; overflow-y:auto; padding:16px}
+  .optgrid{display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin:6px 0 4px}
+  .optgrid .chip{text-align:center; padding:7px 4px}
+  .cov{display:flex; justify-content:space-between; align-items:center; gap:8px; padding:7px 0; border-bottom:1px solid var(--slate-100); font-size:14px}
+  .warnbox{background:var(--slate-100); color:var(--slate-600); border-radius:8px; padding:8px 10px; font-size:12px; margin-top:8px}
+
+  .req .chip{opacity:.45; background:#fff; border-color:var(--slate-200); color:var(--slate-400)}
+  .req .chip.on{opacity:1; outline:none}
+  footer{text-align:center; color:var(--slate-400); font-size:12px; padding:10px 0 24px}
+
+  @media print{
+    header nav,.palette,.controls,footer,.savebar{display:none!important}
+    body{background:#fff}
+    .gridbox{border:none}
+    main{max-width:none; padding:0}
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <span class="savebar" id="savebar"></span>
+    <div class="brand">Servicio de Rehabilitación y Aparato Locomotor</div>
+    <h1>Gestor de cuadrante</h1>
+    <nav id="nav"></nav>
+  </div>
+</header>
+<main id="main"></main>
+<div id="modal-root"></div>
+<footer>Los datos se guardan automáticamente en este navegador. Haz copias de seguridad desde Ajustes.</footer>
+<input type="file" id="import-file" accept=".json" style="display:none">
+
+<script>
+"use strict";
+// ------------------ Catálogo ------------------
+const CONSULTAS = [
+  {code:"AL1",short:"AL1",group:"M",cls:"k-al"},{code:"AL2",short:"AL2",group:"M",cls:"k-al"},
+  {code:"AL3",short:"AL3",group:"M",cls:"k-al"},{code:"AL4",short:"AL4",group:"M",cls:"k-al"},
+  {code:"AL5",short:"AL5",group:"M",cls:"k-al"},{code:"AL6",short:"AL6",group:"M",cls:"k-al"},
+  {code:"AL7",short:"AL7",group:"M",cls:"k-al"},
+  {code:"ALINTER",short:"INT",group:"M",cls:"k-int"},
+  {code:"RHB1",short:"RH1",group:"M",cls:"k-rhb"},{code:"RHB2",short:"RH2",group:"M",cls:"k-rhb"},
+  {code:"ALRU",short:"ALRU",group:"M",cls:"k-alru"},
+  {code:"ORT",short:"ORT",group:"M",cls:"k-ort"},
+  {code:"ALT1",short:"AT1",group:"T",cls:"k-alt"},{code:"ALT2",short:"AT2",group:"T",cls:"k-alt"},
+  {code:"ALT3",short:"AT3",group:"T",cls:"k-alt"},
+  {code:"URG",short:"URG",group:"F",cls:"k-urg"},
+  {code:"URGF",short:"URGF",group:"F",cls:"k-urgf"},
+];
+const ABSENCES = {L:{label:"Libranza",cls:"k-L"},V:{label:"Vacaciones",cls:"k-V"},B:{label:"Baja / IT",cls:"k-B"},P:{label:"Permiso",cls:"k-P"}};
+const byCode = Object.fromEntries(CONSULTAS.map(c=>[c.code,c]));
+const MORNING = CONSULTAS.filter(c=>c.group==="M");
+const AFTERNOON = CONSULTAS.filter(c=>c.group==="T");
+const WD = ["D","L","M","X","J","V","S"];
+const MONTHS = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+const DEFAULT_HOLIDAYS = [
+  {date:"2026-01-01",name:"Año Nuevo"},{date:"2026-01-06",name:"Epifanía del Señor"},
+  {date:"2026-02-28",name:"Día de Andalucía"},{date:"2026-04-02",name:"Jueves Santo"},
+  {date:"2026-04-03",name:"Viernes Santo"},{date:"2026-05-01",name:"Fiesta del Trabajo"},
+  {date:"2026-08-15",name:"Asunción de la Virgen"},{date:"2026-10-12",name:"Fiesta Nacional"},
+  {date:"2026-11-02",name:"Todos los Santos (traslado)"},{date:"2026-12-07",name:"Día de la Constitución (traslado)"},
+  {date:"2026-12-08",name:"Inmaculada Concepción"},{date:"2026-12-25",name:"Natividad del Señor"},
+];
+const POOL_DEFAULT = {AL1:1,AL2:1,AL3:1,AL4:1,AL5:1,AL6:1,RHB1:1,RHB2:1};
+const DEFAULT_REQUIRED = Object.fromEntries(CONSULTAS.map(c=>[c.code, !!POOL_DEFAULT[c.code]]));
+const DEFAULT_SETTINGS = ()=>({autoLibranza:true, urgRequired:true, minMorning:7, v:2, reqEmail:"", reqPhone:"", required:Object.assign({},DEFAULT_REQUIRED)});
+
+// ------------------ Estado ------------------
+const KEY = "cuadrante-gestor-html-v1";
+let MODE = "editor";          // "editor" | "viewer"
+let PUBLISHED_AT = null;      // fecha de publicación de data.json
+
+// Sincronización automática con GitHub (config local: NUNCA viaja en data.json ni en copias)
+const KEY_SYNC = "cuadrante-sync-v1";
+let SYNC = {owner:"", repo:"", branch:"main", token:"", auto:false};
+try{ const _sy = localStorage.getItem(KEY_SYNC); if(_sy) SYNC = Object.assign(SYNC, JSON.parse(_sy)); }catch(e){}
+function saveSync(){ try{ localStorage.setItem(KEY_SYNC, JSON.stringify(SYNC)); }catch(e){} }
+
+let pubT = null;
+function b64utf8(str){ return btoa(unescape(encodeURIComponent(str))); }
+async function ghPublish(manual){
+  if(MODE!=="editor") return;
+  if(!SYNC.owner || !SYNC.repo || !SYNC.token){ if(manual) setSave("⚠ Configura GitHub en Ajustes"); return; }
+  if(!manual && !state.physicians.length) return; // no publicar un cuadrante vacío por accidente
+  setSave("Publicando…");
+  const api = "https://api.github.com/repos/"+SYNC.owner+"/"+SYNC.repo+"/contents/data.json";
+  const headers = {"Authorization":"Bearer "+SYNC.token, "Accept":"application/vnd.github+json", "X-GitHub-Api-Version":"2022-11-28"};
+  const body = JSON.parse(JSON.stringify(state)); body.publishedAt = new Date().toISOString();
+  const content = b64utf8(JSON.stringify(body));
+  const branch = SYNC.branch || "main";
+  async function getSha(){
+    try{
+      const r = await fetch(api+"?ref="+encodeURIComponent(branch), {headers});
+      if(r.ok){ const j = await r.json(); return j.sha || null; }
+    }catch(e){}
+    return null;
+  }
+  async function put(sha){
+    const payload = {message:"Actualización del cuadrante", content:content, branch:branch};
+    if(sha) payload.sha = sha;
+    return fetch(api, {method:"PUT", headers:headers, body:JSON.stringify(payload)});
+  }
+  try{
+    let sha = await getSha();
+    let r = await put(sha);
+    if(r.status===409 || r.status===422){ sha = await getSha(); r = await put(sha); }
+    if(r.ok){
+      PUBLISHED_AT = body.publishedAt;
+      setSave("✓ Publicado "+new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}));
+    }else if(r.status===401 || r.status===403){ setSave("⚠ Token sin permiso (revisa Ajustes)"); }
+    else{ setSave("⚠ Error al publicar ("+r.status+")"); }
+  }catch(e){ setSave("⚠ Sin conexión para publicar"); }
+}
+function schedulePublish(){
+  if(!SYNC.auto || MODE!=="editor") return;
+  clearTimeout(pubT);
+  pubT = setTimeout(()=>ghPublish(false), 2500);
+}
+let state = {
+  physicians: [], assignments: {}, holidays: DEFAULT_HOLIDAYS.slice(),
+  settings: DEFAULT_SETTINGS(),
+  year: 2026,
+};
+let ui = {tab:"cuadrante", month:0, brush:null, scope:"year", editCell:null, dayDetail:null, confirmReset:false};
+
+function loadState(){
+  try{
+    const raw = localStorage.getItem(KEY);
+    if(raw){
+      const d = JSON.parse(raw);
+      state.physicians = (d.physicians||[]).map(p=>Object.assign({blocked:[]},p));
+      state.assignments = d.assignments||{};
+      state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
+      state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
+      if(!d.settings || !d.settings.v){ state.settings.required = Object.assign({}, DEFAULT_REQUIRED); state.settings.v = 2; }
+      else{ state.settings.required = Object.assign({}, DEFAULT_REQUIRED, d.settings.required||{}); }
+      state.year = d.year||2026;
+    }
+  }catch(e){ setSave("⚠ Sin guardado en esta vista"); }
+}
+let saveT=null;
+function save(){
+  if(MODE==="viewer"){ setSave("Solo consulta"); return; }
+  setSave("Guardando…");
+  clearTimeout(saveT);
+  saveT = setTimeout(()=>{
+    try{ localStorage.setItem(KEY, JSON.stringify(state)); setSave("✓ Guardado"); schedulePublish(); }
+    catch(e){ setSave("⚠ No se pudo guardar"); }
+  },300);
+}
+function setSave(t){ document.getElementById("savebar").textContent = t; }
+
+// ------------------ Utilidades ------------------
+const pad = n=>String(n).padStart(2,"0");
+const keyOf = (y,m,d)=>y+"-"+pad(m+1)+"-"+pad(d);
+const uid = ()=>Math.random().toString(36).slice(2,9);
+const esc = s=>String(s==null?"":s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const isEmptyA = a=>!a||(!a.m&&!a.t&&!a.f);
+const turnosOf = a=>!a?0:(a.f==="URG"?2:(a.f?0:((a.m?1:0)+(a.t?1:0))));
+const fmtDate = k=>k.split("-").reverse().join("/");
+function holidayMap(){ const m={}; state.holidays.forEach(h=>m[h.date]=h.name); return m; }
+function nextWorkingDay(dateKey, hset, blocked){
+  const [y,m,d] = dateKey.split("-").map(Number);
+  const dt = new Date(y,m-1,d);
+  for(let i=0;i<21;i++){
+    dt.setDate(dt.getDate()+1);
+    const k = keyOf(dt.getFullYear(),dt.getMonth(),dt.getDate());
+    const dow = dt.getDay();
+    if(dow!==0&&dow!==6&&!hset.has(k)&&!(blocked||[]).includes(dow)) return k;
+  }
+  return null;
+}
+function monthDays(){
+  const hmap = holidayMap();
+  const n = new Date(state.year, ui.month+1, 0).getDate();
+  const out=[];
+  for(let i=1;i<=n;i++){
+    const dt = new Date(state.year, ui.month, i);
+    const key = keyOf(state.year, ui.month, i);
+    out.push({n:i, key, dow:dt.getDay(), holiday:hmap[key]||null});
+  }
+  return out;
+}
+function codeMapFor(days){
+  const physById = Object.fromEntries(state.physicians.map(p=>[p.id,p]));
+  const map={}; days.forEach(d=>map[d.key]={});
+  Object.entries(state.assignments).forEach(([k,a])=>{
+    const i = k.indexOf("|"); const pid=k.slice(0,i), date=k.slice(i+1);
+    if(!map[date]) return;
+    const p = physById[pid]; if(!p) return;
+    [a.m, a.t, (a.f==="URG"||a.f==="URGF")?a.f:null].forEach(c=>{
+      if(!c) return;
+      (map[date][c]=map[date][c]||[]).push(p.name);
+    });
+  });
+  return map;
+}
+function poolCodes(){ return MORNING.filter(c=>state.settings.required[c.code]).map(c=>c.code); }
+function reqAfternoon(){ return AFTERNOON.filter(c=>state.settings.required[c.code]).map(c=>c.code); }
+
+// ------------------ Mutaciones ------------------
+function applyCode(pid, dateKey, code){
+  if(code==="URG"){
+    const pr = dateKey.split("-").map(Number);
+    const dw = new Date(pr[0],pr[1]-1,pr[2]).getDay();
+    if(dw===0||dw===6||holidayMap()[dateKey]) code="URGF";
+  }
+  const k = pid+"|"+dateKey;
+  const a = Object.assign({}, state.assignments[k]||{});
+  const wasUrg = a.f==="URG";
+  let next;
+  if(code==="CLEAR") next={};
+  else if(code==="CLEAR_M") next=Object.assign({},a,{m:null});
+  else if(code==="CLEAR_T") next=Object.assign({},a,{t:null});
+  else if(ABSENCES[code]) next = a.f===code?{}:{f:code};
+  else{
+    const def = byCode[code]; if(!def) return;
+    if(def.group==="F") next = a.f===code?{}:{f:code};
+    else if(def.group==="M") next = {f:null, t:a.f?null:a.t, m:a.m===code?null:code};
+    else next = {f:null, m:a.f?null:a.m, t:a.t===code?null:code};
+  }
+  if(isEmptyA(next)) delete state.assignments[k]; else state.assignments[k]=next;
+  if(next.f==="URG" && state.settings.autoLibranza && !wasUrg){
+    const p = state.physicians.find(x=>x.id===pid);
+    const hset = new Set(state.holidays.map(h=>h.date));
+    const nwd = nextWorkingDay(dateKey, hset, p?p.blocked:[]);
+    if(nwd){
+      const lk = pid+"|"+nwd;
+      if(isEmptyA(state.assignments[lk])) state.assignments[lk]={f:"L",auto:true};
+    }
+  }
+  save();
+}
+
+// ------------------ Solicitudes de cambio ------------------
+const KEY_REQNAME = "cuadrante-reqname-v1";
+function cellToText(a){
+  if(!a || (!a.m && !a.t && !a.f)) return "— (vacío)";
+  if(a.f) return byCode[a.f] ? byCode[a.f].code : (ABSENCES[a.f] ? ABSENCES[a.f].label : a.f);
+  return [a.m, a.t ? a.t : null].filter(Boolean).join(" + ") || "—";
+}
+function draftToCell(d){
+  if(d.f) return {f:d.f};
+  const out = {m:d.m||null, t:d.t||null, f:null};
+  return (!out.m && !out.t) ? {} : out;
+}
+function buildRequestText(){
+  const rq = ui.reqModal; if(!rq) return "";
+  const p = state.physicians.find(x=>x.id===rq.pid);
+  const cur = state.assignments[(rq.pid||"")+"|"+rq.date];
+  const to = draftToCell(ui.reqDraft||{});
+  const note = (document.getElementById("rq-note")||{value:""}).value.trim();
+  const name = (document.getElementById("rq-name")||{value:""}).value.trim();
+  const payload = {v:1, by:name, pid:rq.pid, phys:p?p.name:"", date:rq.date,
+                   from:cur||{}, to:(Object.keys(to).length?to:{clear:true}), note:note};
+  return "Solicitud de cambio de cuadrante\n"+
+    "Solicitante: "+(name||"(sin nombre)")+"\n"+
+    "Facultativo: "+(p?p.name:"")+"\n"+
+    "Fecha: "+fmtDate(rq.date)+"\n"+
+    "Actual: "+cellToText(cur)+"\n"+
+    "Propuesto: "+cellToText(draftToCell(ui.reqDraft||{}))+"\n"+
+    (note?("Motivo: "+note+"\n"):"")+
+    "\n[SOLICITUD]"+JSON.stringify(payload);
+}
+function parseRequest(txt){
+  const i = txt.indexOf("[SOLICITUD]");
+  let raw = i>=0 ? txt.slice(i+11) : txt;
+  const a = raw.indexOf("{"), b = raw.lastIndexOf("}");
+  if(a<0 || b<0) return null;
+  try{
+    const r = JSON.parse(raw.slice(a, b+1));
+    if(!r || !r.date || (!r.pid && !r.phys)) return null;
+    return r;
+  }catch(e){ return null; }
+}
+function applyRequest(r){
+  let p = state.physicians.find(x=>x.id===r.pid);
+  if(!p) p = state.physicians.find(x=>x.name===r.phys);
+  if(!p) return "No se encuentra al facultativo «"+(r.phys||"")+"» en el equipo.";
+  let to = r.to||{};
+  if(to.f==="URG"){
+    const pr = r.date.split("-").map(Number);
+    const dw = new Date(pr[0],pr[1]-1,pr[2]).getDay();
+    if(dw===0||dw===6||holidayMap()[r.date]) to = {f:"URGF"};
+  }
+  const k = p.id+"|"+r.date;
+  if(to.clear || (!to.m && !to.t && !to.f)) delete state.assignments[k];
+  else state.assignments[k] = {m:to.m||null, t:to.t||null, f:to.f||null};
+  save();
+  return null;
+}
+
+// ------------------ Render ------------------
+function render(){
+  renderNav();
+  const main = document.getElementById("main");
+  if(ui.tab==="cuadrante") main.innerHTML = viewCuadrante();
+  else if(ui.tab==="equipo") main.innerHTML = viewEquipo();
+  else if(ui.tab==="stats") main.innerHTML = viewStats();
+  else main.innerHTML = viewAjustes();
+  renderModal();
+}
+function renderNav(){
+  const tabs = [["cuadrante","Cuadrante"],["equipo","Equipo"],["stats","Estadísticas"],["ajustes","Ajustes"]];
+  document.getElementById("nav").innerHTML = tabs.map(([id,l])=>
+    '<button data-action="tab" data-tab="'+id+'" class="'+(ui.tab===id?"active":"")+'">'+l+'</button>').join("");
+}
+
+function viewCuadrante(){
+  if(!state.physicians.length){
+    return '<div class="card" style="text-align:center;padding:36px">'+
+      '<h2>Aún no hay facultativos</h2>'+
+      '<p class="muted" style="margin-top:6px">Añade tu equipo para empezar a rellenar el cuadrante.</p>'+
+      '<button class="btn primary" data-action="tab" data-tab="equipo" style="margin-top:14px">Ir a Equipo</button></div>';
+  }
+  const days = monthDays();
+  const cmap = codeMapFor(days);
+  const pool = poolCodes();
+  const reqT = reqAfternoon();
+  const minM = Math.min(state.settings.minMorning||7, pool.length);
+  const urgReq = state.settings.urgRequired!==false;
+
+  const chip = (code, txt, cls)=>'<button class="chip '+cls+(ui.brush===code?" on":"")+'" data-action="brush" data-code="'+code+'">'+txt+'</button>';
+  let html = '';
+  if(MODE==="viewer"){
+    html += '<div class="card" style="padding:8px 12px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:8px">'+
+      '<span class="muted" style="font-size:13px">Solo consulta'+(PUBLISHED_AT?(' · publicado '+new Date(PUBLISHED_AT).toLocaleDateString('es-ES')):'')+'</span>'+
+      '<span class="row" style="gap:6px"><button class="btn primary" data-action="req-open">Solicitar cambio</button>'+
+      '<button class="btn" data-action="viewer-refresh">Actualizar</button></span></div>';
+  }
+  html += '<div class="row between controls" style="margin-bottom:10px">'+
+    '<div class="row" style="background:#fff;border:1px solid var(--slate-200);border-radius:8px;padding:2px 4px;gap:2px">'+
+      '<button class="btn" style="border:none;padding:6px 8px" data-action="prev-month">‹</button>'+
+      '<b style="width:130px;text-align:center;font-size:14px">'+MONTHS[ui.month]+' '+state.year+'</b>'+
+      '<button class="btn" style="border:none;padding:6px 8px" data-action="next-month">›</button></div>'+
+    '<div class="row">'+(MODE==="viewer"?'':'<button class="btn primary" data-action="gen-open">Generar mes</button>'+
+    '<button class="btn danger" data-action="month-reset">Resetear mes</button>'+
+    '<button class="btn" data-action="review-open">Revisar solicitud</button>')+
+    '<button class="btn" data-action="print">Imprimir</button>'+
+    '<button class="btn" data-action="export-csv">Exportar '+state.year+' (CSV)</button></div></div>';
+
+  if(MODE!=="viewer") html += '<div class="palette"><div class="row"><span class="tiny lbl">Mañana</span>'+
+    MORNING.map(c=>chip(c.code,c.short,c.cls)).join("")+'</div>'+
+    '<div class="row"><span class="tiny lbl">Tarde</span>'+AFTERNOON.map(c=>chip(c.code,c.short,c.cls)).join("")+
+    '<span class="tiny" style="margin-left:8px">Día</span>'+chip("URG","URG","k-urg")+chip("URGF","URGF","k-urgf")+'</div>'+
+    '<div class="row"><span class="tiny lbl">Ausenc.</span>'+
+    Object.entries(ABSENCES).map(([c,s])=>chip(c,c+" "+s.label,s.cls)).join("")+
+    '<button class="chip plain'+(ui.brush==="ERASE"?" on":"")+'" data-action="brush" data-code="ERASE">⌫ Borrar</button></div>'+
+    '<div class="muted" style="font-size:11px;padding-top:2px">'+
+    (ui.brush?"Toca celdas para aplicar (los días bloqueados se omiten).":"Selecciona una consulta y pinta, o toca una celda para elegir mañana + tarde.")+'</div></div>';
+
+  html += '<div class="gridbox"><table><thead><tr><th class="namecol">Facultativo</th>';
+  days.forEach(d=>{
+    const cls = d.holiday?"fest":(d.dow===0||d.dow===6?"wknd":"");
+    html += '<th class="dayhead '+cls+'" data-action="day" data-date="'+d.key+'" title="'+esc(d.holiday||"Ver cobertura")+'"><b>'+d.n+'</b><small>'+WD[d.dow]+'</small></th>';
+  });
+  html += '</tr></thead><tbody>';
+
+  state.physicians.forEach(p=>{
+    html += '<tr><td class="namecol"><b>'+esc(p.name)+'</b>'+(p.pct<100?' <span class="muted">('+p.pct+'%)</span>':'')+'</td>';
+    days.forEach(d=>{
+      const a = state.assignments[p.id+"|"+d.key];
+      const blocked = (p.blocked||[]).includes(d.dow);
+      const base = d.holiday?"base-fest":(d.dow===0||d.dow===6?"base-wknd":"base-lab");
+      const conflict = a && [a.m,a.t,(a.f==="URG"||a.f==="URGF")?a.f:null].some(c=>c&&(cmap[d.key][c]||[]).length>1);
+      let inner;
+      if(!a){
+        inner = blocked?'<span class="full blockcell">×</span>':'<span class="full '+base+'"></span>';
+      }else if(a.f){
+        const cls = a.f==="URG"?"k-urg":(a.f==="URGF"?"k-urgf":ABSENCES[a.f].cls);
+        inner = '<span class="full '+cls+'">'+a.f+'</span>';
+      }else{
+        const half = (c)=>c?('<span class="half '+byCode[c].cls+'">'+byCode[c].short+'</span>')
+                          :('<span class="half '+(blocked?"blockcell":base)+'"></span>');
+        inner = half(a.m)+half(a.t);
+      }
+      html += '<td class="'+(conflict?"conflict":"")+'"><button class="cell" data-action="cell" data-pid="'+p.id+'" data-date="'+d.key+'" data-blocked="'+(blocked?1:0)+'">'+inner+'</button></td>';
+    });
+    html += '</tr>';
+  });
+
+  html += '<tr class="sumrow"><td class="namecol">Faltan</td>';
+  days.forEach(d=>{
+    const lab = d.dow!==0&&d.dow!==6&&!d.holiday;
+    let show="·", cls="";
+    if(lab){
+      let miss=0;
+      const covered = pool.filter(c=>(cmap[d.key][c]||[]).length).length;
+      miss += Math.max(0, minM-covered);
+      if(urgReq && !(cmap[d.key]["URG"]||[]).length && !(cmap[d.key]["URGF"]||[]).length) miss++;
+      miss += reqT.filter(c=>!(cmap[d.key][c]||[]).length).length;
+      cls = miss?"bad":"ok"; show = miss||"✓";
+    }else if(urgReq){
+      const cov = (cmap[d.key]["URGF"]||[]).length || (cmap[d.key]["URG"]||[]).length;
+      cls = cov?"ok":"bad"; show = cov?"✓":"1";
+    }
+    html += '<td class="'+cls+'" data-action="day" data-date="'+d.key+'">'+show+'</td>';
+  });
+  html += '</tr></tbody></table></div>';
+  html += '<p class="muted" style="margin-top:8px;font-size:12px">Cada celda: mitad superior = mañana, mitad inferior = tarde. URG (laborable) computa 2 turnos y genera libranza; URGF (sábado, domingo o festivo) se retribuye como extra, no genera libranza y se contabiliza aparte. La fila «Faltan» exige el mínimo de mañanas del pool y urgencias todos los días. Toca el número de día para ver la cobertura.</p>';
+  return html;
+}
+
+function viewEquipo(){
+  if(MODE==="viewer"){
+    let h='<div class="card"><h2>Equipo médico</h2><p class="muted" style="margin-top:2px">Modo consulta.</p><div style="margin-top:8px">';
+    state.physicians.forEach(p=>{
+      h+='<div style="padding:6px 0;border-bottom:1px solid var(--slate-100);font-size:14px"><b>'+esc(p.name)+'</b><span class="muted"> · '+p.pct+'%'+
+        (p.noUrg?' · sin URG':'')+
+        (((p.blocked||[]).length)?' · no trabaja: '+(p.blocked||[]).map(d=>WD[d]).join(" "):'')+
+        (p.pref?' · habitual: '+p.pref:'')+'</span></div>';
+    });
+    return h+'</div></div>';
+  }
+  let html = '<div class="card"><h2>Equipo médico</h2>'+
+    '<p class="muted" style="margin-top:2px">Nombre, % de contrato, días bloqueados (reducciones de jornada), si hace urgencias y consulta habitual. El generador excluye de URG/URGF a quien tenga «Urgencias: No» y prioriza la consulta habitual de cada uno.</p>'+
+    '<div class="row" style="margin-top:14px">'+
+    '<input type="text" id="new-name" placeholder="Nombre del facultativo" style="flex:1;min-width:160px">'+
+    '<input type="number" id="new-pct" value="100" min="10" max="100" step="5" class="pctin">'+
+    '<button class="btn primary" data-action="add-phys">+ Añadir</button></div>';
+  if(!state.physicians.length){
+    html += '<button class="btn" style="margin-top:10px;border:none;color:var(--teal-700);text-decoration:underline" data-action="seed-phys">Crear 11 plantillas para renombrar después</button>';
+  }
+  html += '<div style="margin-top:10px">';
+  state.physicians.forEach((p,i)=>{
+    html += '<div class="phys"><div class="row">'+
+      '<span class="updown"><button data-action="move-phys" data-pid="'+p.id+'" data-dir="-1">▲</button>'+
+      '<button data-action="move-phys" data-pid="'+p.id+'" data-dir="1">▼</button></span>'+
+      '<input type="text" value="'+esc(p.name)+'" data-field="phys-name" data-pid="'+p.id+'">'+
+      '<input type="number" value="'+p.pct+'" min="10" max="100" step="5" class="pctin" data-field="phys-pct" data-pid="'+p.id+'"><span class="muted">%</span>'+
+      '<button class="icon" data-action="del-phys" data-pid="'+p.id+'" title="Eliminar">🗑</button></div>'+
+      '<div class="row" style="margin-top:6px;margin-left:26px"><span class="tiny" style="margin-right:4px">No trabaja:</span>'+
+      [1,2,3,4,5].map(dow=>'<button class="dowbtn'+((p.blocked||[]).includes(dow)?" on":"")+'" data-action="toggle-block" data-pid="'+p.id+'" data-dow="'+dow+'">'+WD[dow]+'</button>').join("")+
+      '<span class="tiny" style="margin-left:10px;margin-right:2px">Urgencias:</span>'+
+      '<button class="dowbtn'+(p.noUrg?"":" on")+'" style="width:auto;padding:0 8px'+(p.noUrg?"":";background:var(--teal-700);border-color:var(--teal-700)")+'" data-action="toggle-urg" data-pid="'+p.id+'">'+(p.noUrg?"No":"Sí")+'</button>'+
+      '<span class="tiny" style="margin-left:10px;margin-right:2px">Habitual:</span>'+
+      '<select data-field="phys-pref" data-pid="'+p.id+'" style="padding:4px 6px;border:1px solid var(--slate-300);border-radius:6px;font-size:12px;background:#fff">'+
+      '<option value="">— Ninguna</option>'+
+      CONSULTAS.map(c=>'<option value="'+c.code+'"'+(p.pref===c.code?" selected":"")+'>'+c.code+'</option>').join("")+
+      '</select>'+
+      '</div></div>';
+  });
+  html += '</div></div>';
+  return html;
+}
+
+function viewStats(){
+  const res = state.physicians.map(p=>({p,turnos:0,URG:0,URGF:0,AL:0,ALT:0,INT:0,RHB:0,ORT:0,aus:0}));
+  const byId = Object.fromEntries(res.map(r=>[r.p.id,r]));
+  Object.entries(state.assignments).forEach(([k,a])=>{
+    const i=k.indexOf("|"); const pid=k.slice(0,i), date=k.slice(i+1);
+    const r = byId[pid]; if(!r) return;
+    const [y,m] = date.split("-").map(Number);
+    if(y!==state.year) return;
+    if(ui.scope==="month" && m-1!==ui.month) return;
+    r.turnos += turnosOf(a);
+    if(a.f==="URG") r.URG++;
+    else if(a.f==="URGF") r.URGF++;
+    else if(a.f&&ABSENCES[a.f]) r.aus++;
+    [a.m,a.t].forEach(c=>{
+      if(!c) return;
+      if(c==="ORT") r.ORT++;
+      else if(c.indexOf("ALT")===0) r.ALT++;
+      else if(c==="ALINTER") r.INT++;
+      else if(c.indexOf("RHB")===0) r.RHB++;
+      else if(c.indexOf("AL")===0) r.AL++;
+    });
+  });
+  const maxT = Math.max(1, ...res.map(c=>c.turnos));
+  const totalT = res.reduce((a,c)=>a+c.turnos,0);
+  const totalPct = state.physicians.reduce((a,p)=>a+(p.pct||100),0);
+
+  let html = '<div class="card"><div class="row between"><h2>Reparto y equidad</h2>'+
+    '<div class="seg"><button class="'+(ui.scope==="month"?"on":"")+'" data-action="scope-month">'+MONTHS[ui.month]+'</button>'+
+    '<button class="'+(ui.scope==="year"?"on":"")+'" data-action="scope-year">Año '+state.year+'</button></div></div>';
+  if(!state.physicians.length){ return html+'<p class="muted" style="margin-top:12px">Añade facultativos en la pestaña Equipo.</p></div>'; }
+  html += '<p class="muted" style="margin-top:6px">Turnos totales: <b>'+totalT+'</b> (URG computa 2; URGF se retribuye como extra, se cuenta aparte y no suma turnos). «Esperado» reparte proporcionalmente al % de contrato.</p>';
+  html += '<div style="overflow-x:auto;margin-top:10px"><table class="stats" style="width:100%">'+
+    '<thead><tr><th>Facultativo</th><th>Turnos</th><th>Esperado</th><th>URG</th><th>URGF</th><th>AL</th><th>ALT</th><th>INT</th><th>RHB</th><th>ORT</th><th>Aus.</th></tr></thead><tbody>';
+  res.forEach(({p,turnos,URG,URGF,AL,ALT,INT,RHB,ORT,aus})=>{
+    const expected = totalPct?(totalT*(p.pct||100))/totalPct:0;
+    const dev = turnos-expected;
+    html += '<tr style="border-bottom:1px solid var(--slate-100)"><td>'+esc(p.name)+(p.pct<100?' <span class="muted">('+p.pct+'%)</span>':'')+(p.noUrg?' <span class="muted" style="font-size:11px">[sin URG]</span>':'')+'</td>'+
+      '<td style="min-width:150px;text-align:left"><span class="bar" style="width:'+Math.round((turnos/maxT)*110)+'px;min-width:'+(turnos?6:0)+'px"></span> <b style="font-size:12px">'+turnos+'</b></td>'+
+      '<td class="'+(Math.abs(dev)>=3?"dev-bad":"muted")+'" style="font-size:12px">'+expected.toFixed(1)+' ('+(dev>=0?"+":"")+dev.toFixed(1)+')</td>'+
+      '<td style="color:#b45309;font-weight:600">'+(URG||"–")+'</td><td style="color:#c2410c;font-weight:600">'+(URGF||"–")+'</td><td>'+(AL||"–")+'</td><td>'+(ALT||"–")+'</td><td>'+(INT||"–")+'</td><td>'+(RHB||"–")+'</td><td>'+(ORT||"–")+'</td><td>'+(aus||"–")+'</td></tr>';
+  });
+  html += '</tbody></table></div></div>';
+  return html;
+}
+
+function viewAjustes(){
+  if(MODE==="viewer"){
+    return '<div class="card"><h2>Datos publicados</h2>'+
+      '<p class="muted" style="margin-top:2px">Estás viendo la versión publicada por el servicio'+(PUBLISHED_AT?(' el '+new Date(PUBLISHED_AT).toLocaleString('es-ES')):'')+'.</p>'+
+      '<div class="row" style="margin-top:10px"><button class="btn primary" data-action="viewer-refresh">Actualizar datos</button>'+
+      '<button class="btn" data-action="viewer-edit">Pasar a modo edición (copia local)</button></div>'+
+      '<p class="muted" style="font-size:12px;margin-top:8px">El modo edición crea una copia en este dispositivo; los cambios no se publican al resto del equipo.</p></div>';
+  }
+  let html = '<div class="card"><h2>Reglas</h2>'+
+    '<label class="row" style="margin-top:10px;font-size:14px;cursor:pointer">'+
+    '<input type="checkbox" data-field="autolib" '+(state.settings.autoLibranza?"checked":"")+' style="width:16px;height:16px;accent-color:var(--teal-700)"> '+
+    'Libranza automática el siguiente día laborable tras asignar URGENCIAS</label></div>';
+
+  html += '<div class="card"><h2>Cobertura diaria</h2>'+
+    '<label class="row" style="margin-top:10px;font-size:14px;cursor:pointer">'+
+    '<input type="checkbox" data-field="urgreq" '+(state.settings.urgRequired!==false?"checked":"")+' style="width:16px;height:16px;accent-color:var(--teal-700)"> '+
+    'Urgencias todos los días (URG en laborables · URGF en sábados, domingos y festivos)</label>'+
+    '<label class="row" style="margin-top:10px;font-size:14px">Mínimo de consultas de mañana a cubrir:'+
+    '<input type="number" min="0" max="10" value="'+(state.settings.minMorning||7)+'" data-field="minmorning" style="width:64px;text-align:center"></label>'+
+    '<p class="muted" style="margin-top:12px">Consultas de mañana que cuentan para el mínimo (pool):</p>'+
+    '<div class="optgrid req" style="grid-template-columns:repeat(auto-fill,minmax(84px,1fr));margin-top:8px">'+
+    MORNING.map(c=>'<button class="chip '+(state.settings.required[c.code]?c.cls+" on":"")+'" data-action="toggle-required" data-code="'+c.code+'">'+c.code+'</button>').join("")+
+    '</div>'+
+    '<p class="muted" style="margin-top:12px">Consultas de tarde con cobertura obligatoria:</p>'+
+    '<div class="optgrid req" style="grid-template-columns:repeat(auto-fill,minmax(84px,1fr));margin-top:8px">'+
+    AFTERNOON.map(c=>'<button class="chip '+(state.settings.required[c.code]?c.cls+" on":"")+'" data-action="toggle-required" data-code="'+c.code+'">'+c.code+'</button>').join("")+
+    '</div></div>';
+
+  html += '<div class="card"><h2>Festivos</h2>'+
+    '<p class="muted" style="margin-top:2px">Precargados nacionales y de Andalucía 2026. Verifica frente al calendario laboral oficial y añade los locales.</p>'+
+    '<div class="row" style="margin-top:10px"><input type="date" id="hol-date">'+
+    '<input type="text" id="hol-name" placeholder="Nombre del festivo" style="flex:1;min-width:150px">'+
+    '<button class="btn primary" data-action="add-holiday">+ Añadir</button></div><div style="margin-top:8px">';
+  state.holidays.slice().sort((a,b)=>a.date.localeCompare(b.date)).forEach(h=>{
+    html += '<div class="row between" style="padding:5px 0;border-bottom:1px solid var(--slate-100);font-size:14px">'+
+      '<span><span class="muted" style="font-family:monospace;font-size:12px;margin-right:8px">'+fmtDate(h.date)+'</span>'+esc(h.name)+'</span>'+
+      '<button class="icon" data-action="del-holiday" data-date="'+h.date+'">🗑</button></div>';
+  });
+  html += '</div></div>';
+
+  html += '<div class="card"><h2>Solicitudes de cambio</h2>'+
+    '<p class="muted" style="margin-top:2px">Los compañeros pueden proponer cambios desde la app (tocando una celda o con el botón «Solicitar cambio»). La solicitud te llega por el canal que configures aquí, y tú la autorizas pegándola en «Revisar solicitud». Estos datos de contacto se publican en data.json.</p>'+
+    '<div class="row" style="margin-top:10px">'+
+      '<input type="email" placeholder="Correo para solicitudes" value="'+esc(state.settings.reqEmail||"")+'" data-field="req-email" style="flex:1;min-width:200px">'+
+      '<input type="tel" placeholder="WhatsApp (+34…)" value="'+esc(state.settings.reqPhone||"")+'" data-field="req-phone" style="width:160px">'+
+    '</div></div>';
+
+  html += '<div class="card"><h2>Publicación para el equipo</h2>'+
+    '<p class="muted" style="margin-top:2px"><b>Automática (recomendada):</b> conecta tu repositorio de GitHub y cada cambio que hagas se publicará solo, sin subir archivos a mano. El token se guarda únicamente en este dispositivo y nunca se incluye en el archivo publicado ni en las copias de seguridad.</p>'+
+    '<div class="row" style="margin-top:10px">'+
+      '<input type="text" id="sy-owner" placeholder="Usuario de GitHub" value="'+esc(SYNC.owner)+'" style="width:160px">'+
+      '<input type="text" id="sy-repo" placeholder="Repositorio" value="'+esc(SYNC.repo)+'" style="width:140px">'+
+      '<input type="text" id="sy-branch" placeholder="Rama (main)" value="'+esc(SYNC.branch)+'" style="width:110px">'+
+    '</div>'+
+    '<div class="row" style="margin-top:8px">'+
+      '<input type="password" id="sy-token" placeholder="Token fine-grained (Contents: read/write)" value="'+esc(SYNC.token)+'" style="flex:1;min-width:220px">'+
+    '</div>'+
+    '<label class="row" style="margin-top:8px;font-size:14px;cursor:pointer"><input type="checkbox" id="sy-auto" '+(SYNC.auto?'checked':'')+' style="accent-color:var(--teal-700)"> Publicar automáticamente al guardar</label>'+
+    '<div class="row" style="margin-top:10px">'+
+      '<button class="btn primary" data-action="sync-save">Guardar conexión y publicar ahora</button>'+
+      '<button class="btn" data-action="publish-json">Descargar data.json (manual)</button>'+
+    '</div>'+
+    '<p class="muted" style="font-size:12px;margin-top:8px">El token se crea en GitHub → Settings → Developer settings → Fine-grained tokens, con acceso SOLO a ese repositorio y permiso «Contents: Read and write». Pasos detallados en el LEEME.</p></div>';
+
+  html += '<div class="card"><h2>Copia de seguridad</h2>'+
+    '<p class="muted" style="margin-top:2px">Descarga un archivo con todos los datos, o restaura una copia anterior (también sirve para pasar los datos a otro ordenador).</p>'+
+    '<div class="row" style="margin-top:10px"><button class="btn" data-action="export-backup">Descargar copia (.json)</button>'+
+    '<button class="btn" data-action="import-backup">Restaurar copia…</button></div></div>';
+
+  html += '<div class="card" style="border-color:#fecdd3"><h2 style="color:var(--rose-700)">Zona de riesgo</h2>';
+  if(!ui.confirmReset){
+    html += '<button class="btn danger" style="margin-top:8px" data-action="reset-ask">Borrar todos los datos</button>';
+  }else{
+    html += '<div class="row" style="margin-top:8px"><span style="color:var(--rose-700);font-size:14px">Se eliminarán equipo, asignaciones y ajustes. ¿Confirmas?</span>'+
+      '<button class="btn" style="background:var(--rose-600);color:#fff;border-color:var(--rose-600)" data-action="reset-yes">Sí, borrar</button>'+
+      '<button class="btn" data-action="reset-no">Cancelar</button></div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+// ------------------ Modales ------------------
+function renderModal(){
+  const root = document.getElementById("modal-root");
+  if(ui.editCell){
+    const {pid,date} = ui.editCell;
+    const p = state.physicians.find(x=>x.id===pid)||{name:"",blocked:[]};
+    const a = state.assignments[pid+"|"+date]||{};
+    const dow = new Date(date).getDay();
+    const blocked = (p.blocked||[]).includes(dow);
+    const opt = (code,txt,cls,active)=>'<button class="chip '+cls+(active?" on":"")+'" data-action="pick" data-code="'+code+'">'+txt+'</button>';
+    root.innerHTML = '<div class="overlay" data-action="close-modal"><div class="modal" data-stop="1">'+
+      '<div class="row between"><div><b>'+esc(p.name)+'</b><div class="muted" style="font-size:12px">'+fmtDate(date)+'</div></div>'+
+      '<button class="icon" data-action="close-modal" style="font-size:16px">✕</button></div>'+
+      (blocked?'<div class="warnbox">⚠ Día bloqueado en su patrón semanal. Puedes asignar igualmente si es una excepción.</div>':"")+
+      '<div class="tiny" style="margin-top:12px">Mañana</div><div class="optgrid">'+
+      MORNING.map(c=>opt(c.code,c.short,c.cls,a.m===c.code)).join("")+opt("CLEAR_M","Quitar","plain",false)+'</div>'+
+      '<div class="tiny" style="margin-top:10px">Tarde</div><div class="optgrid">'+
+      AFTERNOON.map(c=>opt(c.code,c.short,c.cls,a.t===c.code)).join("")+opt("CLEAR_T","Quitar","plain",false)+'</div>'+
+      '<div class="tiny" style="margin-top:10px">Día completo</div><div class="optgrid" style="grid-template-columns:repeat(3,1fr)">'+
+      opt("URG","URG laborable","k-urg",a.f==="URG")+
+      opt("URGF","URG festivo","k-urgf",a.f==="URGF")+
+      Object.entries(ABSENCES).map(([c,s])=>opt(c,s.label,s.cls,a.f===c)).join("")+'</div>'+
+      '<button class="btn" style="width:100%;margin-top:14px" data-action="pick-clear">Vaciar celda</button>'+
+      '</div></div>';
+  }else if(ui.dayDetail){
+    const date = ui.dayDetail;
+    const days = monthDays();
+    const cmap = codeMapFor(days);
+    const dm = cmap[date]||{};
+    const pool = poolCodes();
+    const reqT = reqAfternoon();
+    const minM = Math.min(state.settings.minMorning||7, pool.length);
+    const urgReq = state.settings.urgRequired!==false;
+    const hmap = holidayMap();
+    const dd = new Date(date);
+    const lab = dd.getDay()!==0&&dd.getDay()!==6&&!hmap[date];
+    const covered = pool.filter(c=>(dm[c]||[]).length).length;
+    const urgCov = (dm["URG"]||[]).length||(dm["URGF"]||[]).length;
+    let head = "";
+    if(lab){
+      head += '<p style="margin-top:8px;font-size:13px">Mañanas del pool cubiertas: <b style="color:'+(covered>=minM?"var(--emerald-700)":"var(--rose-700)")+'">'+covered+' / mín. '+minM+'</b></p>';
+    }
+    if(urgReq){
+      head += '<p style="margin-top:4px;font-size:13px">Urgencias'+(lab?"":" (festivo/fin de semana → URGF)")+': '+(urgCov?'<b style="color:var(--emerald-700)">✓ Cubiertas</b>':'<b style="color:var(--rose-700)">Sin cubrir</b>')+'</p>';
+    }
+    root.innerHTML = '<div class="overlay" data-action="close-modal"><div class="modal" data-stop="1">'+
+      '<div class="row between"><b>Cobertura · '+fmtDate(date)+(hmap[date]?' · '+esc(hmap[date]):'')+'</b><button class="icon" data-action="close-modal" style="font-size:16px">✕</button></div>'+
+      head+'<div style="margin-top:8px">'+
+      CONSULTAS.map(c=>{
+        const who = dm[c.code]||[];
+        const isPool = pool.indexOf(c.code)>=0;
+        const isReqT = reqT.indexOf(c.code)>=0;
+        let right;
+        if(who.length) right = esc(who.join(", "))+(who.length>1?" ⚠":"");
+        else if(c.code==="URG") right = (urgReq&&lab)?'<span style="color:var(--rose-600);font-weight:600">Sin cubrir</span>':'<span class="muted" style="opacity:.5">—</span>';
+        else if(c.code==="URGF") right = (urgReq&&!lab)?'<span style="color:var(--rose-600);font-weight:600">Sin cubrir</span>':'<span class="muted" style="opacity:.5">—</span>';
+        else if(lab&&isReqT) right = '<span style="color:var(--rose-600);font-weight:600">Sin cubrir</span>';
+        else if(lab&&isPool) right = '<span class="muted" style="opacity:.6">Pool de mañana</span>';
+        else right = '<span class="muted" style="opacity:.5">No requerida</span>';
+        return '<div class="cov"><span class="chip '+c.cls+'">'+c.code+'</span><span style="text-align:right;flex:1">'+right+'</span></div>';
+      }).join("")+'</div></div></div>';
+  }else if(ui.reqModal){
+    const rq = ui.reqModal;
+    const phys = state.physicians;
+    const p = phys.find(x=>x.id===rq.pid) || phys[0] || null;
+    if(p && rq.pid!==p.id) rq.pid = p.id;
+    const cur = p ? state.assignments[p.id+"|"+rq.date] : null;
+    const d = ui.reqDraft || (ui.reqDraft={m:"",t:"",f:""});
+    let name = ui.reqName;
+    if(name===undefined){ try{ name = localStorage.getItem(KEY_REQNAME)||""; }catch(e){ name=""; } ui.reqName=name; }
+    const selOpts = (list, val)=>'<option value="">—</option>'+list.map(c=>'<option value="'+c.code+'"'+(val===c.code?" selected":"")+'>'+c.code+'</option>').join("");
+    const fOpts = '<option value="">— (mañana/tarde abajo)</option>'+
+      ['URG','URGF'].map(c=>'<option value="'+c+'"'+(d.f===c?" selected":"")+'>'+c+'</option>').join("")+
+      Object.entries(ABSENCES).map(([c,x])=>'<option value="'+c+'"'+(d.f===c?" selected":"")+'>'+x.label+'</option>').join("");
+    const hasContact = !!(state.settings.reqEmail||state.settings.reqPhone);
+    root.innerHTML = '<div class="overlay" data-action="close-modal"><div class="modal" data-stop="1">'+
+      '<div class="row between"><b>Solicitar cambio</b><button class="icon" data-action="close-modal" style="font-size:16px">✕</button></div>'+
+      '<div class="row" style="margin-top:10px">'+
+        '<select data-field="rq-phys" style="flex:1;padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
+          phys.map(x=>'<option value="'+x.id+'"'+(p&&p.id===x.id?" selected":"")+'>'+esc(x.name)+'</option>').join("")+'</select>'+
+        '<input type="date" value="'+rq.date+'" data-field="rq-date" style="padding:7px">'+
+      '</div>'+
+      '<p class="muted" style="margin-top:8px;font-size:13px">Asignación actual: <b>'+cellToText(cur)+'</b></p>'+
+      '<p class="tiny" style="margin-top:10px">Propuesta · Día completo</p>'+
+      '<select data-field="rq-f" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+fOpts+'</select>'+
+      '<div class="row" style="margin-top:8px">'+
+        '<span style="flex:1"><span class="tiny">Mañana</span><select data-field="rq-m" '+(d.f?"disabled":"")+' style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+selOpts(MORNING,d.m)+'</select></span>'+
+        '<span style="flex:1"><span class="tiny">Tarde</span><select data-field="rq-t" '+(d.f?"disabled":"")+' style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+selOpts(AFTERNOON,d.t)+'</select></span>'+
+      '</div>'+
+      '<p class="muted" style="font-size:12px;margin-top:4px">Propuesto: <b>'+cellToText(draftToCell(d))+'</b> (todo vacío = solicitar que se libere el día)</p>'+
+      '<input type="text" id="rq-name" placeholder="Tu nombre" value="'+esc(name)+'" data-field="rq-name" style="width:100%;padding:8px;margin-top:10px;border:1px solid var(--slate-300);border-radius:8px">'+
+      '<textarea id="rq-note" placeholder="Motivo (opcional)" style="width:100%;height:64px;padding:8px;margin-top:8px;border:1px solid var(--slate-300);border-radius:8px;font-family:inherit;font-size:14px"></textarea>'+
+      '<div class="row" style="margin-top:12px">'+
+        (state.settings.reqEmail?'<button class="btn primary" style="flex:1" data-action="req-send-mail">Enviar por correo</button>':'')+
+        (state.settings.reqPhone?'<button class="btn primary" style="flex:1" data-action="req-send-wa">WhatsApp</button>':'')+
+        '<button class="btn" data-action="req-copy">Copiar texto</button>'+
+      '</div>'+
+      (hasContact?'':'<p class="muted" style="font-size:12px;margin-top:8px">El administrador no ha configurado correo/WhatsApp: copia el texto y envíaselo por el canal habitual.</p>')+
+      '</div></div>';
+  }else if(ui.reviewModal){
+    const rv = ui.reviewModal;
+    let body;
+    if(rv.req){
+      const r = rv.req;
+      body = '<div style="margin-top:10px;font-size:14px" class="card">'+
+        '<p><b>Solicitante:</b> '+esc(r.by||"(sin nombre)")+'</p>'+
+        '<p style="margin-top:4px"><b>Facultativo:</b> '+esc(r.phys||"")+'</p>'+
+        '<p style="margin-top:4px"><b>Fecha:</b> '+fmtDate(r.date)+'</p>'+
+        '<p style="margin-top:4px"><b>Actual:</b> '+cellToText(r.from)+' → <b>Propuesto:</b> '+cellToText(r.to&&r.to.clear?null:r.to)+'</p>'+
+        (r.note?'<p style="margin-top:4px"><b>Motivo:</b> '+esc(r.note)+'</p>':'')+
+        '</div>'+
+        (rv.err?'<p style="color:var(--rose-700);font-size:13px;margin-top:8px">'+esc(rv.err)+'</p>':'')+
+        '<div class="row" style="margin-top:12px">'+
+        '<button class="btn primary" style="flex:1" data-action="review-apply">Autorizar y aplicar</button>'+
+        '<button class="btn" data-action="review-back">Otra solicitud</button></div>';
+    }else{
+      body = '<p class="muted" style="margin-top:8px;font-size:13px">Pega aquí el mensaje recibido (correo o WhatsApp) con la solicitud:</p>'+
+        '<textarea id="rv-in" style="width:100%;height:130px;padding:8px;margin-top:8px;border:1px solid var(--slate-300);border-radius:8px;font-family:monospace;font-size:11px"></textarea>'+
+        (rv.err?'<p style="color:var(--rose-700);font-size:13px;margin-top:6px">'+esc(rv.err)+'</p>':'')+
+        '<button class="btn primary" style="width:100%;margin-top:10px" data-action="review-parse">Analizar solicitud</button>';
+    }
+    root.innerHTML = '<div class="overlay" data-action="close-modal"><div class="modal" data-stop="1">'+
+      '<div class="row between"><b>Revisar solicitud</b><button class="icon" data-action="close-modal" style="font-size:16px">✕</button></div>'+
+      body+'</div></div>';
+  }else if(ui.resetMonthModal){
+    root.innerHTML = '<div class="overlay" data-action="close-modal"><div class="modal" data-stop="1">'+
+      '<div class="row between"><b>Resetear · '+MONTHS[ui.month]+' '+state.year+'</b><button class="icon" data-action="close-modal" style="font-size:16px">✕</button></div>'+
+      '<p class="muted" style="margin-top:8px;font-size:13px">Elige qué quieres borrar de este mes. Esta acción no se puede deshacer (recuerda que puedes descargar una copia de seguridad en Ajustes).</p>'+
+      '<button class="btn" style="width:100%;margin-top:12px" data-action="month-reset-soft">Borrar consultas y urgencias (conserva vacaciones, bajas, permisos y libranzas manuales)</button>'+
+      '<button class="btn danger" style="width:100%;margin-top:8px" data-action="month-reset-all">Borrar TODO el mes, incluidas ausencias</button>'+
+      '<button class="btn" style="width:100%;margin-top:8px" data-action="close-modal">Cancelar</button>'+
+      '</div></div>';
+  }else if(ui.genModal){
+    if(ui.genReport){
+      const r = ui.genReport;
+      root.innerHTML = '<div class="overlay" data-action="close-modal"><div class="modal" data-stop="1">'+
+        '<div class="row between"><b>Generación completada</b><button class="icon" data-action="close-modal" style="font-size:16px">✕</button></div>'+
+        '<p style="margin-top:10px;font-size:14px">Turnos asignados: <b>'+r.assigned+'</b>'+(r.cleared?' · Asignaciones previas retiradas: <b>'+r.cleared+'</b>':'')+'</p>'+
+        (r.unfilled.length?
+          '<p style="margin-top:8px;font-size:13px;color:var(--rose-700)"><b>Huecos sin poder cubrir</b> (ningún facultativo disponible):</p>'+
+          '<div style="margin-top:4px;font-size:13px">'+r.unfilled.map(u=>'<div class="cov"><span>'+fmtDate(u.date)+'</span><span style="text-align:right">'+u.codes.join(", ")+'</span></div>').join("")+'</div>'
+          :'<p style="margin-top:8px;font-size:13px;color:var(--emerald-700)">✓ Cobertura completa: no quedan huecos en el mes.</p>')+
+        '<button class="btn primary" style="width:100%;margin-top:14px" data-action="close-modal">Cerrar</button>'+
+        '</div></div>';
+    }else{
+      root.innerHTML = '<div class="overlay" data-action="close-modal"><div class="modal" data-stop="1">'+
+        '<div class="row between"><b>Generar cuadrante · '+MONTHS[ui.month]+' '+state.year+'</b><button class="icon" data-action="close-modal" style="font-size:16px">✕</button></div>'+
+        '<p class="muted" style="margin-top:8px;font-size:13px">Cada día se asigna una urgencia (URG en laborables, con libranza al día siguiente; URGF en sábados, domingos y festivos, retribuida como extra y sin libranza), repartida equitativamente solo entre quienes hacen urgencias. En laborables se cubre además el mínimo de consultas de mañana del pool y las tardes obligatorias, respetando ausencias, días bloqueados y consultas habituales, y equilibrando la carga según el % de contrato.</p>'+
+        '<label class="row" style="margin-top:12px;font-size:14px;cursor:pointer"><input type="radio" name="genmode" value="fill" checked style="accent-color:var(--teal-700)"> Solo rellenar huecos (respeta lo ya asignado)</label>'+
+        '<label class="row" style="margin-top:8px;font-size:14px;cursor:pointer"><input type="radio" name="genmode" value="regen" style="accent-color:var(--teal-700)"> Regenerar el mes (borra consultas, URG, URGF y libranzas automáticas; conserva vacaciones, bajas y permisos)</label>'+
+        '<div class="row" style="margin-top:14px"><button class="btn primary" style="flex:1" data-action="gen-run">Generar</button>'+
+        '<button class="btn" data-action="close-modal">Cancelar</button></div>'+
+        '</div></div>';
+    }
+  }else{
+    root.innerHTML = "";
+  }
+}
+
+// ------------------ Export / Import ------------------
+function download(name, content, type){
+  const blob = new Blob([content],{type:type});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href=url; a.download=name; a.click();
+  URL.revokeObjectURL(url);
+}
+function exportCSV(){
+  const hmap = holidayMap();
+  const all=[]; const dt = new Date(state.year,0,1);
+  while(dt.getFullYear()===state.year){ all.push(keyOf(dt.getFullYear(),dt.getMonth(),dt.getDate())); dt.setDate(dt.getDate()+1); }
+  const head = ["Facultativo","% Jornada"].concat(all.map(fmtDate));
+  const rows = state.physicians.map(p=>[p.name, p.pct+"%"].concat(all.map(k=>{
+    const a = state.assignments[p.id+"|"+k];
+    if(!a){
+      const dow = new Date(k).getDay();
+      if((p.blocked||[]).includes(dow)) return "BLOQ";
+      return hmap[k]?"F":"";
+    }
+    if(a.f) return a.f;
+    return [a.m,a.t].filter(Boolean).join("+");
+  })));
+  const csv = [head].concat(rows).map(r=>r.join(";")).join("\n");
+  download("cuadrante_"+state.year+".csv", "\uFEFF"+csv, "text/csv;charset=utf-8");
+}
+function exportBackup(){
+  download("cuadrante_copia_"+new Date().toISOString().slice(0,10)+".json", JSON.stringify(state,null,1), "application/json");
+}
+function importBackup(file){
+  const r = new FileReader();
+  r.onload = ()=>{
+    try{
+      const d = JSON.parse(r.result);
+      if(!d || typeof d!=="object" || !("assignments" in d) || !("physicians" in d)) throw 0;
+      state.physicians = (d.physicians||[]).map(p=>Object.assign({blocked:[]},p));
+      state.assignments = d.assignments||{};
+      state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
+      state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
+      if(!d.settings || !d.settings.v){ state.settings.required = Object.assign({}, DEFAULT_REQUIRED); state.settings.v = 2; }
+      else{ state.settings.required = Object.assign({}, DEFAULT_REQUIRED, d.settings.required||{}); }
+      state.year = d.year||2026;
+      save(); render();
+      alert("Copia restaurada correctamente.");
+    }catch(e){ alert("El archivo no es una copia de seguridad válida."); }
+  };
+  r.readAsText(file);
+}
+
+// ------------------ Generación automática ------------------
+function generateMonth(mode){
+  const allDays = monthDays();
+  const hset = new Set(state.holidays.map(h=>h.date));
+  const pool = poolCodes();
+  const reqT = reqAfternoon();
+  const minM = Math.min(state.settings.minMorning||7, pool.length);
+  const urgReq = state.settings.urgRequired!==false;
+  let cleared=0;
+  if(mode==="regen"){
+    allDays.forEach(d=>{
+      state.physicians.forEach(p=>{
+        const k=p.id+"|"+d.key; const a=state.assignments[k];
+        if(!a) return;
+        if(a.f==="URG" || a.f==="URGF" || (a.f==="L"&&a.auto) || !a.f){ delete state.assignments[k]; cleared++; }
+      });
+    });
+  }
+  // Cargas del mes: turnos ordinarios (URGF no suma) y contador propio de urgencias
+  const load={}, urgLoad={};
+  state.physicians.forEach(p=>{load[p.id]=0; urgLoad[p.id]=0;});
+  const monthPrefix = state.year+"-"+pad(ui.month+1);
+  Object.entries(state.assignments).forEach(([k,a])=>{
+    const i=k.indexOf("|"); const pid=k.slice(0,i), date=k.slice(i+1);
+    if(date.indexOf(monthPrefix)!==0 || load[pid]===undefined) return;
+    load[pid]+=turnosOf(a);
+    if(a.f==="URG"||a.f==="URGF") urgLoad[pid]++;
+  });
+  const weight = p=>(p.pct||100)/100;
+  const getA = (pid,date)=>state.assignments[pid+"|"+date];
+  const free = (p,date,slot)=>{ const a=getA(p.id,date); return !(a&&(a.f||a[slot])); };
+  const byLoad = arr=>arr.slice().sort((x,y)=>((load[x.id]/weight(x))-(load[y.id]/weight(y))) || (Math.random()-0.5));
+  const byUrg = arr=>arr.slice().sort((x,y)=>((urgLoad[x.id]/weight(x))-(urgLoad[y.id]/weight(y))) || ((load[x.id]/weight(x))-(load[y.id]/weight(y))) || (Math.random()-0.5));
+  let assigned=0; const unfilled=[];
+
+  allDays.forEach(d=>{
+    const lab = d.dow!==0&&d.dow!==6&&!d.holiday;
+    const missing=[];
+    const notAbsent = p=>{const a=getA(p.id,d.key); return !(a&&a.f);};
+
+    // 1) Urgencias todos los días: URG en laborable, URGF en festivo/fin de semana
+    if(urgReq){
+      const code = lab?"URG":"URGF";
+      const has = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&(a.f==="URG"||a.f==="URGF");});
+      if(!has){
+        const cand = byUrg(state.physicians.filter(p=>
+          !p.noUrg && notAbsent(p) && (!lab || !(p.blocked||[]).includes(d.dow)) && free(p,d.key,"m") && free(p,d.key,"t")
+        ));
+        if(cand.length){
+          const p=cand[0];
+          state.assignments[p.id+"|"+d.key]={f:code};
+          urgLoad[p.id]++; assigned++;
+          if(code==="URG"){
+            load[p.id]+=2;
+            if(state.settings.autoLibranza){
+              const nwd=nextWorkingDay(d.key,hset,p.blocked);
+              if(nwd&&isEmptyA(state.assignments[p.id+"|"+nwd])) state.assignments[p.id+"|"+nwd]={f:"L",auto:true};
+            }
+          }
+        }else missing.push(code);
+      }
+    }
+
+    // 2) Días laborables: mañanas hasta el mínimo del pool + tardes obligatorias
+    if(lab){
+      const dayAvail = state.physicians.filter(p=>!(p.blocked||[]).includes(d.dow)&&notAbsent(p));
+      const cmapDay={};
+      state.physicians.forEach(p=>{const a=getA(p.id,d.key); if(a&&a.m) cmapDay[a.m]=true;});
+      let covered = pool.filter(c=>cmapDay[c]).length;
+      // Primera pasada: consultas habituales
+      pool.forEach(c=>{
+        if(covered>=minM||cmapDay[c]) return;
+        const p = dayAvail.find(pp=>pp.pref===c&&free(pp,d.key,"m"));
+        if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:c}); load[p.id]++; assigned++; cmapDay[c]=true; covered++; }
+      });
+      // Segunda pasada: menor carga ponderada
+      pool.forEach(c=>{
+        if(covered>=minM||cmapDay[c]) return;
+        const cand = byLoad(dayAvail.filter(pp=>free(pp,d.key,"m")));
+        if(cand.length){ const p=cand[0]; state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:c}); load[p.id]++; assigned++; cmapDay[c]=true; covered++; }
+      });
+      if(covered<minM) missing.push("Mañanas: faltan "+(minM-covered));
+      // Tardes obligatorias
+      reqT.forEach(c=>{
+        const taken = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&a.t===c;});
+        if(taken) return;
+        let p = dayAvail.find(pp=>pp.pref===c&&free(pp,d.key,"t"));
+        if(!p){ const cand=byLoad(dayAvail.filter(pp=>free(pp,d.key,"t"))); p=cand.length?cand[0]:null; }
+        if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{t:c}); load[p.id]++; assigned++; }
+        else missing.push(c);
+      });
+    }
+    if(missing.length) unfilled.push({date:d.key,codes:missing});
+  });
+  save();
+  return {assigned, cleared, unfilled};
+}
+
+function resetMonth(all){
+  const prefix = state.year+"-"+pad(ui.month+1);
+  let n=0;
+  Object.keys(state.assignments).forEach(k=>{
+    const date = k.slice(k.indexOf("|")+1);
+    if(date.indexOf(prefix)!==0) return;
+    const a = state.assignments[k];
+    if(all || a.f==="URG" || a.f==="URGF" || (a.f==="L"&&a.auto) || !a.f){ delete state.assignments[k]; n++; }
+  });
+  save(); return n;
+}
+
+// ------------------ Eventos ------------------
+document.addEventListener("click", e=>{
+  const stop = e.target.closest("[data-stop]");
+  const el = e.target.closest("[data-action]");
+  if(!el){ return; }
+  const act = el.dataset.action;
+  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-required","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+    if(act==="cell"){
+      ui.reqModal = {pid: el.dataset.pid, date: el.dataset.date};
+      ui.reqDraft = {m:"", t:"", f:""};
+      renderModal();
+    }
+    return;
+  }
+  if(act==="close-modal"){ if(stop && !el.closest(".modal")) return; ui.editCell=null; ui.dayDetail=null; ui.genModal=false; ui.genReport=null; ui.resetMonthModal=false; ui.reqModal=null; ui.reviewModal=null; renderModal(); return; }
+  switch(act){
+    case "tab": ui.tab = el.dataset.tab; ui.confirmReset=false; render(); break;
+    case "prev-month": if(ui.month===0){ui.month=11; state.year--;} else ui.month--; save(); render(); break;
+    case "next-month": if(ui.month===11){ui.month=0; state.year++;} else ui.month++; save(); render(); break;
+    case "print": window.print(); break;
+    case "publish-json": {
+      const d = JSON.parse(JSON.stringify(state));
+      d.publishedAt = new Date().toISOString();
+      download("data.json", JSON.stringify(d), "application/json");
+      break;
+    }
+    case "viewer-refresh":
+      (async()=>{
+        try{
+          const r = await fetch("data.json",{cache:"no-store"});
+          if(r.ok){ applyPublished(await r.json()); render(); setSave("✓ Actualizado"); }
+          else setSave("Sin datos publicados");
+        }catch(e){ setSave("Sin conexión"); }
+      })();
+      break;
+    case "viewer-edit":
+      MODE="editor"; save(); render(); break;
+    case "req-open": {
+      const n = new Date();
+      ui.reqModal = {pid:(state.physicians[0]||{}).id, date: keyOf(n.getFullYear(), n.getMonth(), n.getDate())};
+      ui.reqDraft = {m:"", t:"", f:""};
+      renderModal(); break;
+    }
+    case "req-copy": case "req-send-mail": case "req-send-wa": {
+      const txt = buildRequestText();
+      try{ localStorage.setItem(KEY_REQNAME, (document.getElementById("rq-name")||{value:""}).value.trim()); }catch(e){}
+      if(act==="req-copy"){
+        (navigator.clipboard && navigator.clipboard.writeText ? navigator.clipboard.writeText(txt) : Promise.reject())
+          .then(()=>setSave("✓ Copiado")).catch(()=>{ window.prompt("Copia el texto:", txt); });
+      }else if(act==="req-send-mail"){
+        location.href = "mailto:"+encodeURIComponent(state.settings.reqEmail)+
+          "?subject="+encodeURIComponent("Solicitud cambio cuadrante")+
+          "&body="+encodeURIComponent(txt);
+      }else{
+        window.open("https://wa.me/"+String(state.settings.reqPhone).replace(/[^0-9]/g,"")+"?text="+encodeURIComponent(txt), "_blank");
+      }
+      break;
+    }
+    case "review-open": ui.reviewModal = {}; renderModal(); break;
+    case "review-back": ui.reviewModal = {}; renderModal(); break;
+    case "review-parse": {
+      const txt = (document.getElementById("rv-in")||{value:""}).value;
+      const r = parseRequest(txt);
+      ui.reviewModal = r ? {req:r} : {err:"No se ha podido leer la solicitud. Asegúrate de pegar el mensaje completo, incluida la línea [SOLICITUD]{…}."};
+      renderModal(); break;
+    }
+    case "review-apply": {
+      if(ui.reviewModal && ui.reviewModal.req){
+        const err = applyRequest(ui.reviewModal.req);
+        if(err){ ui.reviewModal.err = err; renderModal(); }
+        else{ ui.reviewModal = null; setSave("✓ Solicitud aplicada"); render(); }
+      }
+      break;
+    }
+    case "sync-save": {
+      SYNC.owner  = (document.getElementById("sy-owner").value||"").trim();
+      SYNC.repo   = (document.getElementById("sy-repo").value||"").trim();
+      SYNC.branch = ((document.getElementById("sy-branch").value||"").trim())||"main";
+      SYNC.token  = (document.getElementById("sy-token").value||"").trim();
+      SYNC.auto   = document.getElementById("sy-auto").checked;
+      saveSync();
+      ghPublish(true);
+      break;
+    }
+    case "gen-open": ui.genModal=true; ui.genReport=null; renderModal(); break;
+    case "month-reset": ui.resetMonthModal=true; renderModal(); break;
+    case "month-reset-soft": resetMonth(false); ui.resetMonthModal=false; render(); break;
+    case "month-reset-all": resetMonth(true); ui.resetMonthModal=false; render(); break;
+    case "gen-run": {
+      const sel = document.querySelector('input[name=genmode]:checked');
+      ui.genReport = generateMonth(sel?sel.value:"fill");
+      render(); break;
+    }
+    case "export-csv": exportCSV(); break;
+    case "export-backup": exportBackup(); break;
+    case "import-backup": document.getElementById("import-file").click(); break;
+    case "brush": ui.brush = ui.brush===el.dataset.code?null:el.dataset.code; render(); break;
+    case "cell": {
+      const pid = el.dataset.pid, date = el.dataset.date, blocked = el.dataset.blocked==="1";
+      if(ui.brush){
+        if(blocked && ui.brush!=="ERASE") break;
+        applyCode(pid, date, ui.brush==="ERASE"?"CLEAR":ui.brush);
+        render();
+      }else{
+        ui.editCell = {pid,date}; renderModal();
+      }
+      break;
+    }
+    case "day": ui.dayDetail = el.dataset.date; renderModal(); break;
+    case "pick": if(ui.editCell){ applyCode(ui.editCell.pid, ui.editCell.date, el.dataset.code); render(); } break;
+    case "pick-clear": if(ui.editCell){ applyCode(ui.editCell.pid, ui.editCell.date, "CLEAR"); ui.editCell=null; render(); } break;
+    case "add-phys": {
+      const n = document.getElementById("new-name").value.trim();
+      const pct = Number(document.getElementById("new-pct").value)||100;
+      if(!n) break;
+      state.physicians.push({id:uid(), name:n, pct:pct, blocked:[]});
+      save(); render(); break;
+    }
+    case "seed-phys":
+      state.physicians = Array.from({length:11},(_,i)=>({id:uid(), name:"Facultativo "+(i+1), pct:100, blocked:[]}));
+      save(); render(); break;
+    case "del-phys": {
+      const pid = el.dataset.pid;
+      state.physicians = state.physicians.filter(p=>p.id!==pid);
+      Object.keys(state.assignments).forEach(k=>{ if(k.indexOf(pid+"|")===0) delete state.assignments[k]; });
+      save(); render(); break;
+    }
+    case "move-phys": {
+      const pid = el.dataset.pid, dir = Number(el.dataset.dir);
+      const i = state.physicians.findIndex(p=>p.id===pid); const j=i+dir;
+      if(i<0||j<0||j>=state.physicians.length) break;
+      const tmp = state.physicians[i]; state.physicians[i]=state.physicians[j]; state.physicians[j]=tmp;
+      save(); render(); break;
+    }
+    case "toggle-block": {
+      const p = state.physicians.find(x=>x.id===el.dataset.pid); if(!p) break;
+      const dow = Number(el.dataset.dow);
+      p.blocked = p.blocked||[];
+      const ix = p.blocked.indexOf(dow);
+      if(ix>=0) p.blocked.splice(ix,1); else p.blocked.push(dow);
+      save(); render(); break;
+    }
+    case "toggle-urg": {
+      const p = state.physicians.find(x=>x.id===el.dataset.pid); if(!p) break;
+      p.noUrg = !p.noUrg;
+      save(); render(); break;
+    }
+    case "scope-month": ui.scope="month"; render(); break;
+    case "scope-year": ui.scope="year"; render(); break;
+    case "toggle-required": {
+      const c = el.dataset.code;
+      state.settings.required[c] = !state.settings.required[c];
+      save(); render(); break;
+    }
+    case "add-holiday": {
+      const d = document.getElementById("hol-date").value;
+      const n = document.getElementById("hol-name").value.trim();
+      if(!d||!n) break;
+      state.holidays = state.holidays.filter(h=>h.date!==d);
+      state.holidays.push({date:d,name:n});
+      save(); render(); break;
+    }
+    case "del-holiday":
+      state.holidays = state.holidays.filter(h=>h.date!==el.dataset.date);
+      save(); render(); break;
+    case "reset-ask": ui.confirmReset=true; render(); break;
+    case "reset-no": ui.confirmReset=false; render(); break;
+    case "reset-yes":
+      state = {physicians:[], assignments:{}, holidays:DEFAULT_HOLIDAYS.slice(),
+               settings:DEFAULT_SETTINGS(), year:2026};
+      ui.confirmReset=false; save(); render(); break;
+  }
+});
+
+document.addEventListener("change", e=>{
+  const el = e.target;
+  const fld = el.dataset ? (el.dataset.field||"") : "";
+  if(fld.indexOf("rq-")===0){
+    if(fld==="rq-phys"){ if(ui.reqModal){ ui.reqModal.pid = el.value; renderModal(); } }
+    else if(fld==="rq-date"){ if(ui.reqModal && el.value){ ui.reqModal.date = el.value; renderModal(); } }
+    else if(fld==="rq-f"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.f = el.value; if(el.value){ ui.reqDraft.m=""; ui.reqDraft.t=""; } renderModal(); }
+    else if(fld==="rq-m"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.m = el.value; ui.reqDraft.f=""; renderModal(); }
+    else if(fld==="rq-t"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.t = el.value; ui.reqDraft.f=""; renderModal(); }
+    else if(fld==="rq-name"){ ui.reqName = el.value; try{ localStorage.setItem(KEY_REQNAME, el.value.trim()); }catch(e2){} }
+    return;
+  }
+  if(MODE==="viewer") return;
+  const field = el.dataset.field;
+  if(el.id==="import-file"){ if(el.files&&el.files[0]) importBackup(el.files[0]); el.value=""; return; }
+  if(!field) return;
+  if(field==="phys-name"){ const p=state.physicians.find(x=>x.id===el.dataset.pid); if(p){p.name=el.value.trim()||p.name; save(); render();} }
+  else if(field==="phys-pct"){ const p=state.physicians.find(x=>x.id===el.dataset.pid); if(p){p.pct=Math.min(100,Math.max(10,Number(el.value)||100)); save(); render();} }
+  else if(field==="phys-pref"){ const p=state.physicians.find(x=>x.id===el.dataset.pid); if(p){p.pref=el.value||null; save();} }
+  else if(field==="autolib"){ state.settings.autoLibranza = el.checked; save(); }
+  else if(field==="urgreq"){ state.settings.urgRequired = el.checked; save(); }
+  else if(field==="minmorning"){ state.settings.minMorning = Math.min(10,Math.max(0,Number(el.value)||0)); save(); }
+  else if(field==="req-email"){ state.settings.reqEmail = el.value.trim(); save(); }
+  else if(field==="req-phone"){ state.settings.reqPhone = el.value.replace(/[^0-9+ ]/g,"").trim(); save(); }
+});
+
+document.addEventListener("keydown", e=>{
+  if(e.key==="Escape"&&(ui.editCell||ui.dayDetail||ui.genModal||ui.resetMonthModal||ui.reqModal||ui.reviewModal)){ ui.editCell=null; ui.dayDetail=null; ui.genModal=false; ui.genReport=null; ui.resetMonthModal=false; ui.reqModal=null; ui.reviewModal=null; renderModal(); }
+});
+
+// ------------------ Inicio ------------------
+function applyPublished(d){
+  state.physicians = (d.physicians||[]).map(p=>Object.assign({blocked:[]},p));
+  state.assignments = d.assignments||{};
+  state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
+  state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
+  state.settings.required = Object.assign({}, DEFAULT_REQUIRED, (d.settings&&d.settings.required)||{});
+  state.year = d.year||2026;
+  PUBLISHED_AT = d.publishedAt||null;
+}
+async function boot(){
+  loadState();
+  let published=null, hasLocal=false;
+  try{ hasLocal = !!localStorage.getItem(KEY); }catch(e){}
+  try{
+    const r = await fetch("data.json",{cache:"no-store"});
+    if(r.ok) published = await r.json();
+  }catch(e){ /* sin publicación o sin conexión */ }
+  if(published && !hasLocal){ MODE="viewer"; applyPublished(published); }
+  setSave(MODE==="viewer" ? "Solo consulta" : "✓ Guardado");
+  render();
+}
+boot();
+if("serviceWorker" in navigator){
+  navigator.serviceWorker.register("sw.js").catch(()=>{});
+}
+</script>
+</body>
+</html>
