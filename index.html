@@ -788,6 +788,8 @@ function viewEquipo(){
     state.physicians.forEach(p=>{
       h+='<div style="padding:6px 0;border-bottom:1px solid var(--slate-100);font-size:14px"><b>'+esc(p.name)+'</b><span class="muted"> · '+p.pct+'%'+
         (p.noUrg?' · sin URG':'')+
+        (p.noRhb?' · sin RHB':'')+
+        (p.noAlru?' · sin ALRU':'')+
         (((p.blocked||[]).length)?' · no trabaja: '+(p.blocked||[]).map(d=>WD[d]).join(" "):'')+
         (p.pref?' · habitual: '+p.pref:'')+'</span></div>';
     });
@@ -814,6 +816,10 @@ function viewEquipo(){
       [1,2,3,4,5].map(dow=>'<button class="dowbtn'+((p.blocked||[]).includes(dow)?" on":"")+'" data-action="toggle-block" data-pid="'+p.id+'" data-dow="'+dow+'">'+WD[dow]+'</button>').join("")+
       '<span class="tiny" style="margin-left:10px;margin-right:2px">Urgencias:</span>'+
       '<button class="dowbtn'+(p.noUrg?"":" on")+'" style="width:auto;padding:0 8px'+(p.noUrg?"":";background:var(--teal-700);border-color:var(--teal-700)")+'" data-action="toggle-urg" data-pid="'+p.id+'">'+(p.noUrg?"No":"Sí")+'</button>'+
+      '<span class="tiny" style="margin-left:10px;margin-right:2px">RHB:</span>'+
+      '<button class="dowbtn'+(p.noRhb?"":" on")+'" style="width:auto;padding:0 8px'+(p.noRhb?"":";background:var(--teal-700);border-color:var(--teal-700)")+'" data-action="toggle-rhb" data-pid="'+p.id+'">'+(p.noRhb?"No":"Sí")+'</button>'+
+      '<span class="tiny" style="margin-left:10px;margin-right:2px">ALRU:</span>'+
+      '<button class="dowbtn'+(p.noAlru?"":" on")+'" style="width:auto;padding:0 8px'+(p.noAlru?"":";background:var(--teal-700);border-color:var(--teal-700)")+'" data-action="toggle-alru" data-pid="'+p.id+'">'+(p.noAlru?"No":"Sí")+'</button>'+
       '<span class="tiny" style="margin-left:10px;margin-right:2px">Habitual:</span>'+
       '<select data-field="phys-pref" data-pid="'+p.id+'" style="padding:4px 6px;border:1px solid var(--slate-300);border-radius:6px;font-size:12px;background:#fff">'+
       '<option value="">— Ninguna</option>'+
@@ -861,7 +867,7 @@ function viewStats(){
   res.forEach(({p,turnos,URG,URGF,AL,ALT,INT,RHB,ORT,aus})=>{
     const expected = totalPct?(totalT*(p.pct||100))/totalPct:0;
     const dev = turnos-expected;
-    html += '<tr style="border-bottom:1px solid var(--slate-100)"><td>'+esc(p.name)+(p.pct<100?' <span class="muted">('+p.pct+'%)</span>':'')+(p.noUrg?' <span class="muted" style="font-size:11px">[sin URG]</span>':'')+'</td>'+
+    html += '<tr style="border-bottom:1px solid var(--slate-100)"><td>'+esc(p.name)+(p.pct<100?' <span class="muted">('+p.pct+'%)</span>':'')+(p.noUrg?' <span class="muted" style="font-size:11px">[sin URG]</span>':'')+(p.noRhb?' <span class="muted" style="font-size:11px">[sin RHB]</span>':'')+(p.noAlru?' <span class="muted" style="font-size:11px">[sin ALRU]</span>':'')+'</td>'+
       '<td style="text-align:left"><div style="display:flex;align-items:center;gap:6px;width:150px"><span class="bar" style="width:'+Math.round((turnos/maxT)*100)+'px;min-width:'+(turnos?6:0)+'px;flex:none"></span><b style="font-size:12px">'+turnos+'</b></div></td>'+
       '<td class="'+(Math.abs(dev)>=3?"dev-bad":"muted")+'" style="font-size:12px">'+expected.toFixed(1)+' ('+(dev>=0?"+":"")+dev.toFixed(1)+')</td>'+
       '<td style="color:#b45309;font-weight:600">'+(URG||"–")+'</td><td style="color:#c2410c;font-weight:600">'+(URGF||"–")+'</td><td>'+(AL||"–")+'</td><td>'+(ALT||"–")+'</td><td>'+(INT||"–")+'</td><td>'+(RHB||"–")+'</td><td>'+(ORT||"–")+'</td><td>'+(aus||"–")+'</td></tr>';
@@ -1233,16 +1239,17 @@ function generateMonth(mode){
       const cmapDay={};
       state.physicians.forEach(p=>{const a=getA(p.id,d.key); if(a&&a.m) cmapDay[a.m]=true;});
       let covered = pool.filter(c=>cmapDay[c]).length;
+      const canDo = (pp,c)=> !((c==="RHB1"||c==="RHB2") && pp.noRhb) && !(c==="ALRU" && pp.noAlru);
       // Primera pasada: consultas habituales
       pool.forEach(c=>{
         if(covered>=minM||cmapDay[c]) return;
-        const p = dayAvail.find(pp=>pp.pref===c&&free(pp,d.key,"m"));
+        const p = dayAvail.find(pp=>pp.pref===c&&canDo(pp,c)&&free(pp,d.key,"m"));
         if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:c}); load[p.id]++; assigned++; cmapDay[c]=true; covered++; }
       });
       // Segunda pasada: menor carga ponderada
       pool.forEach(c=>{
         if(covered>=minM||cmapDay[c]) return;
-        const cand = byLoad(dayAvail.filter(pp=>free(pp,d.key,"m")));
+        const cand = byLoad(dayAvail.filter(pp=>canDo(pp,c)&&free(pp,d.key,"m")));
         if(cand.length){ const p=cand[0]; state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:c}); load[p.id]++; assigned++; cmapDay[c]=true; covered++; }
       });
       if(covered<minM) missing.push("Mañanas: faltan "+(minM-covered));
@@ -1250,8 +1257,8 @@ function generateMonth(mode){
       reqT.forEach(c=>{
         const taken = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&a.t===c;});
         if(taken) return;
-        let p = dayAvail.find(pp=>pp.pref===c&&free(pp,d.key,"t"));
-        if(!p){ const cand=byLoad(dayAvail.filter(pp=>free(pp,d.key,"t"))); p=cand.length?cand[0]:null; }
+        let p = dayAvail.find(pp=>pp.pref===c&&canDo(pp,c)&&free(pp,d.key,"t"));
+        if(!p){ const cand=byLoad(dayAvail.filter(pp=>canDo(pp,c)&&free(pp,d.key,"t"))); p=cand.length?cand[0]:null; }
         if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{t:c}); load[p.id]++; assigned++; }
         else missing.push(c);
       });
@@ -1280,7 +1287,7 @@ document.addEventListener("click", e=>{
   const el = e.target.closest("[data-action]");
   if(!el){ return; }
   const act = el.dataset.action;
-  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-required","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-rhb","toggle-alru","toggle-required","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
       ui.reqDraft = {}; ui.reqNote = "";
@@ -1497,6 +1504,16 @@ document.addEventListener("click", e=>{
     case "toggle-urg": {
       const p = state.physicians.find(x=>x.id===el.dataset.pid); if(!p) break;
       p.noUrg = !p.noUrg;
+      save(); render(); break;
+    }
+    case "toggle-rhb": {
+      const p = state.physicians.find(x=>x.id===el.dataset.pid); if(!p) break;
+      p.noRhb = !p.noRhb;
+      save(); render(); break;
+    }
+    case "toggle-alru": {
+      const p = state.physicians.find(x=>x.id===el.dataset.pid); if(!p) break;
+      p.noAlru = !p.noAlru;
       save(); render(); break;
     }
     case "scope-month": ui.scope="month"; render(); break;
