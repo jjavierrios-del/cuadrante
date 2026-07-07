@@ -841,7 +841,7 @@ function viewEquipo(){
 }
 
 function viewStats(){
-  const res = state.physicians.map(p=>({p,turnos:0,URG:0,URGF:0,AL:0,ALT:0,INT:0,RHB:0,ORT:0,aus:0}));
+  const res = state.physicians.map(p=>({p,turnos:0,URG:0,URGF:0,AL:0,ALRU:0,ALT:0,INT:0,RHB:0,ORT:0,aus:0}));
   const byId = Object.fromEntries(res.map(r=>[r.p.id,r]));
   Object.entries(state.assignments).forEach(([k,a])=>{
     const i=k.indexOf("|"); const pid=k.slice(0,i), date=k.slice(i+1);
@@ -856,6 +856,7 @@ function viewStats(){
     [a.m,a.t].forEach(c=>{
       if(!c) return;
       if(c==="ORT") r.ORT++;
+      else if(c==="ALRU") r.ALRU++;
       else if(c.indexOf("ALT")===0) r.ALT++;
       else if(c==="ALINTER") r.INT++;
       else if(c.indexOf("RHB")===0) r.RHB++;
@@ -872,8 +873,8 @@ function viewStats(){
   if(!state.physicians.length){ return html+'<p class="muted" style="margin-top:12px">Añade facultativos en la pestaña Equipo.</p></div>'; }
   html += '<p class="muted" style="margin-top:6px">Turnos totales: <b>'+totalT+'</b> (URG computa 2; URGF se retribuye como extra, se cuenta aparte y no suma turnos). «Esperado» reparte proporcionalmente al % de contrato.</p>';
   html += '<div style="overflow-x:auto;margin-top:10px"><table class="stats" style="width:100%">'+
-    '<thead><tr><th>Facultativo</th><th>Turnos</th><th>Esperado</th><th>URG</th><th>URGF</th><th>AL</th><th>ALT</th><th>INT</th><th>RHB</th><th>ORT</th><th>Aus.</th></tr></thead><tbody>';
-  res.forEach(({p,turnos,URG,URGF,AL,ALT,INT,RHB,ORT,aus})=>{
+    '<thead><tr><th>Facultativo</th><th>Turnos</th><th>Esperado</th><th>URG</th><th>URGF</th><th>AL</th><th>ALRU</th><th>ALT</th><th>INT</th><th>RHB</th><th>ORT</th><th>Aus.</th></tr></thead><tbody>';
+  res.forEach(({p,turnos,URG,URGF,AL,ALRU,ALT,INT,RHB,ORT,aus})=>{
     const expected = totalPct?(totalT*(p.pct||100))/totalPct:0;
     const dev = turnos-expected;
     html += '<tr style="border-bottom:1px solid var(--slate-100)"><td>'+esc(p.name)+(p.pct<100?' <span class="muted">('+p.pct+'%)</span>':'')+(p.noUrg?' <span class="muted" style="font-size:11px">[sin URG]</span>':'')+(p.noRhb?' <span class="muted" style="font-size:11px">[sin RHB]</span>':'')+(p.noAlru?' <span class="muted" style="font-size:11px">[sin ALRU]</span>':'')+(p.noInt?' <span class="muted" style="font-size:11px">[sin ALINTER]</span>':'')+'</td>'+
