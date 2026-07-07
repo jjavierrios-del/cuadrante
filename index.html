@@ -87,9 +87,14 @@
   .fest{background:var(--teal-100); color:var(--teal-900)}
   .cell{width:100%; height:36px; display:flex; flex-direction:column; overflow:hidden; padding:0; font-size:10px}
   @media(max-width:900px){
-    .namecol{width:74px; max-width:74px; font-size:10px; padding:4px 3px}
-    .cell{height:30px} .cell .half{font-size:7px} .cell .full{font-size:8px}
-    .dayhead b{font-size:9px} .dayhead small{font-size:7px}
+    /* En pantallas pequeñas: rejilla desplazable con barra, columna de nombres fija */
+    .gridbox{overflow-x:auto; -webkit-overflow-scrolling:touch}
+    .gridbox table{width:auto; table-layout:auto}
+    .namecol{position:sticky; left:0; z-index:5; width:88px; max-width:88px; min-width:88px; font-size:10px; padding:4px 4px}
+    .dayhead{width:34px; min-width:34px; font-size:10px}
+    .cell{width:34px; min-width:34px; height:34px} .cell .half{font-size:8px} .cell .full{font-size:9px}
+    .dayhead b{font-size:10px} .dayhead small{font-size:8px}
+    .sumrow td{min-width:34px}
   }
   .cell:hover{filter:brightness(.96)}
   .cell .half{height:50%; width:100%; display:flex; align-items:center; justify-content:center; font-size:9px; line-height:1}
@@ -117,7 +122,8 @@
   .updown button:hover{color:var(--slate-800)}
 
   /* Estadísticas */
-  .stats{min-width:780px}
+  .stats{min-width:820px}
+  .stats td,.stats th{white-space:nowrap}
   .stats th{text-align:center; font-size:11px; color:var(--slate-500); padding:6px}
   .stats th:first-child{text-align:left}
   .stats td{padding:8px 6px; text-align:center; white-space:nowrap}
@@ -401,6 +407,35 @@ function draftToCell(d){
   const out = {m:d.m||null, t:d.t||null, f:null};
   return (!out.m && !out.t) ? {} : out;
 }
+function partLabel(part){
+  if(!part) return "— (nada, solo añadir)";
+  const i = part.indexOf(":"); const slot = part.slice(0,i), code = part.slice(i+1);
+  const nm = ABSENCES[code] ? ABSENCES[code].label : code;
+  return nm + (slot==="m" ? " (mañana)" : slot==="t" ? " (tarde)" : " (día completo)");
+}
+function codeLabel(code){
+  if(!code) return "Ninguna (liberar)";
+  if(ABSENCES[code]) return ABSENCES[code].label;
+  const def = byCode[code];
+  return code + (def ? (def.group==="M" ? " (mañana)" : def.group==="T" ? " (tarde)" : " (día completo)") : "");
+}
+function proposeCell(cur, fromPart, toCode){
+  let c = cur ? JSON.parse(JSON.stringify(cur)) : {};
+  if(fromPart){
+    const slot = fromPart.split(":")[0];
+    if(slot==="f") c = {};
+    else c[slot] = null;
+  }
+  if(toCode){
+    if(ABSENCES[toCode] || toCode==="URG" || toCode==="URGF"){ c = {f:toCode}; }
+    else{
+      const def = byCode[toCode];
+      if(def){ c.f = null; if(def.group==="M") c.m = toCode; else if(def.group==="T") c.t = toCode; }
+    }
+  }
+  if(!c.m && !c.t && !c.f) return null;
+  return {m:c.m||null, t:c.t||null, f:c.f||null};
+}
 function buildRequestText(){
   const rq = ui.reqModal; if(!rq) return "";
   const noteEl = document.getElementById("rq-note");
@@ -423,15 +458,18 @@ function buildRequestText(){
   }
   const p = state.physicians.find(x=>x.id===rq.pid);
   const cur = state.assignments[(rq.pid||"")+"|"+rq.date];
-  const to = draftToCell(ui.reqDraft||{});
-  const payload = {v:1, by:name, pid:rq.pid, phys:p?p.name:"", date:rq.date,
-                   from:cur||{}, to:(Object.keys(to).length?to:{clear:true}), note:note};
+  const d2 = ui.reqDraft||{};
+  const prop = proposeCell(cur, d2.fromPart, d2.toCode);
+  const payload = {v:2, by:name, pid:rq.pid, phys:p?p.name:"", date:rq.date,
+                   from:cur||{}, fromPart:d2.fromPart||"", toCode:d2.toCode||"",
+                   to:(prop?prop:{clear:true}), note:note};
   return "Solicitud de cambio de cuadrante\n"+
     "Solicitante: "+(name||"(sin nombre)")+"\n"+
     "Facultativo: "+(p?p.name:"")+"\n"+
     "Fecha: "+fmtDate(rq.date)+"\n"+
-    "Actual: "+cellToText(cur)+"\n"+
-    "Propuesto: "+cellToText(draftToCell(ui.reqDraft||{}))+"\n"+
+    "Consulta inicial: "+partLabel(d2.fromPart)+"\n"+
+    "Nueva consulta: "+codeLabel(d2.toCode)+"\n"+
+    "El día quedaría: "+cellToText(prop)+"\n"+
     (note?("Motivo: "+note+"\n"):"")+
     "\n[SOLICITUD]"+JSON.stringify(payload);
 }
@@ -520,27 +558,38 @@ function solicitudFormHTML(){
     rq.dateB = rq.dateB || rq.date;
     const pb = phys.find(x=>x.id===rq.pidB) || null;
     const curB = pb ? state.assignments[pb.id+"|"+rq.dateB] : null;
-    core = '<p class="tiny" style="margin-top:10px">Facultativo A y su día</p>'+
+    core = '<p class="tiny" style="margin-top:10px">Facultativo inicial (quien solicita) y su día</p>'+
       '<div class="row" style="margin-top:4px">'+physSel("rq-phys", p?p.id:"")+'<input type="date" value="'+rq.date+'" data-field="rq-date" style="padding:7px"></div>'+
       '<p class="muted" style="margin-top:4px;font-size:13px">A cede: <b>'+cellToText(cur)+'</b></p>'+
-      '<p class="tiny" style="margin-top:10px">Facultativo B y su día</p>'+
+      '<p class="tiny" style="margin-top:10px">Facultativo con quien intercambia y su día</p>'+
       '<div class="row" style="margin-top:4px">'+physSel("rq-physb", pb?pb.id:"")+'<input type="date" value="'+rq.dateB+'" data-field="rq-dateb" style="padding:7px"></div>'+
       '<p class="muted" style="margin-top:4px;font-size:13px">B cede: <b>'+cellToText(curB)+'</b></p>'+
       '<p class="muted" style="font-size:12px;margin-top:6px">Al autorizarse, B asumirá lo de A en el día de A, y A asumirá lo de B en el día de B.</p>';
   }else{
-    const fOpts = '<option value="">— (mañana/tarde abajo)</option>'+
-      ['URG','URGF'].map(c=>'<option value="'+c+'"'+(d.f===c?" selected":"")+'>'+c+'</option>').join("")+
-      Object.entries(ABSENCES).map(([c,x])=>'<option value="'+c+'"'+(d.f===c?" selected":"")+'>'+x.label+'</option>').join("");
-    core = '<div class="row" style="margin-top:10px">'+physSel("rq-phys", p?p.id:"")+
+    if(d.fromPart===undefined){
+      d.fromPart = cur ? (cur.f ? "f:"+cur.f : (cur.m ? "m:"+cur.m : (cur.t ? "t:"+cur.t : ""))) : "";
+      d.toCode = d.toCode || "";
+    }
+    let fromOpts = '';
+    if(cur && cur.f) fromOpts += '<option value="f:'+cur.f+'"'+(d.fromPart==="f:"+cur.f?" selected":"")+'>'+partLabel("f:"+cur.f)+'</option>';
+    if(cur && cur.m) fromOpts += '<option value="m:'+cur.m+'"'+(d.fromPart==="m:"+cur.m?" selected":"")+'>'+partLabel("m:"+cur.m)+'</option>';
+    if(cur && cur.t) fromOpts += '<option value="t:'+cur.t+'"'+(d.fromPart==="t:"+cur.t?" selected":"")+'>'+partLabel("t:"+cur.t)+'</option>';
+    fromOpts += '<option value=""'+(d.fromPart===""?" selected":"")+'>'+((cur&&(cur.m||cur.t||cur.f))?"— (no quitar nada, solo añadir)":"— (día vacío)")+'</option>';
+    const toOpts = '<option value=""'+(d.toCode?"":" selected")+'>Ninguna (liberar)</option>'+
+      '<optgroup label="Mañana">'+MORNING.map(c=>'<option value="'+c.code+'"'+(d.toCode===c.code?" selected":"")+'>'+c.code+'</option>').join("")+'</optgroup>'+
+      '<optgroup label="Tarde">'+AFTERNOON.map(c=>'<option value="'+c.code+'"'+(d.toCode===c.code?" selected":"")+'>'+c.code+'</option>').join("")+'</optgroup>'+
+      '<optgroup label="Día completo">'+['URG','URGF'].map(c=>'<option value="'+c+'"'+(d.toCode===c?" selected":"")+'>'+c+'</option>').join("")+
+        Object.entries(ABSENCES).map(([c,x])=>'<option value="'+c+'"'+(d.toCode===c?" selected":"")+'>'+x.label+'</option>').join("")+'</optgroup>';
+    const prop = proposeCell(cur, d.fromPart, d.toCode);
+    core = '<p class="tiny" style="margin-top:10px">Facultativo y fecha</p>'+
+      '<div class="row" style="margin-top:4px">'+physSel("rq-phys", p?p.id:"")+
       '<input type="date" value="'+rq.date+'" data-field="rq-date" style="padding:7px"></div>'+
-      '<p class="muted" style="margin-top:8px;font-size:13px">Asignación actual: <b>'+cellToText(cur)+'</b></p>'+
-      '<p class="tiny" style="margin-top:10px">Propuesta · Día completo</p>'+
-      '<select data-field="rq-f" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+fOpts+'</select>'+
-      '<div class="row" style="margin-top:8px">'+
-        '<span style="flex:1"><span class="tiny">Mañana</span><select data-field="rq-m" '+(d.f?"disabled":"")+' style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+selOpts(MORNING,d.m)+'</select></span>'+
-        '<span style="flex:1"><span class="tiny">Tarde</span><select data-field="rq-t" '+(d.f?"disabled":"")+' style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+selOpts(AFTERNOON,d.t)+'</select></span>'+
-      '</div>'+
-      '<p class="muted" style="font-size:12px;margin-top:4px">Propuesto: <b>'+cellToText(draftToCell(d))+'</b> (todo vacío = solicitar liberar el día)</p>';
+      '<p class="muted" style="margin-top:6px;font-size:13px">Asignación actual del día: <b>'+cellToText(cur)+'</b></p>'+
+      '<p class="tiny" style="margin-top:10px">Consulta inicial (la que quieres cambiar)</p>'+
+      '<select data-field="rq-from" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+fromOpts+'</select>'+
+      '<p class="tiny" style="margin-top:10px">Nueva consulta (por la que la cambias)</p>'+
+      '<select data-field="rq-to" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+toOpts+'</select>'+
+      '<p class="muted" style="font-size:12px;margin-top:6px">El día quedaría: <b>'+cellToText(prop)+'</b></p>';
   }
   return '<p class="tiny" style="margin-top:10px">Tipo de solicitud</p>'+
     '<select data-field="rq-type" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+
@@ -563,7 +612,7 @@ function viewSolicitudes(){
     if(!ui.reqModal || !ui.reqModal.tab){
       const n = new Date();
       ui.reqModal = {tab:true, pid:(state.physicians[0]||{}).id, date: keyOf(n.getFullYear(), n.getMonth(), n.getDate())};
-      ui.reqDraft = ui.reqDraft || {m:"",t:"",f:""};
+      ui.reqDraft = ui.reqDraft || {};
     }
     let log=[]; try{ log = JSON.parse(localStorage.getItem(KEY_REQLOG)||"[]"); }catch(e){}
     let h = '<div class="card"><h2>Solicitar un cambio</h2>'+
@@ -600,7 +649,8 @@ function viewSolicitudes(){
     }else{
       ficha = '<p style="font-size:14px"><b>Solicitante:</b> '+esc(r.by||"(sin nombre)")+'</p>'+
         '<p style="font-size:14px;margin-top:4px"><b>Facultativo:</b> '+esc(r.phys||"")+' · <b>Fecha:</b> '+fmtDate(r.date)+'</p>'+
-        '<p style="font-size:14px;margin-top:4px"><b>Actual:</b> '+cellToText(r.from)+' → <b>Propuesto:</b> '+cellToText(r.to&&r.to.clear?null:r.to)+'</p>'+
+        ((r.fromPart!==undefined && r.toCode!==undefined)?'<p style="font-size:14px;margin-top:4px"><b>Cambia:</b> '+esc(partLabel(r.fromPart||""))+' → <b>'+esc(codeLabel(r.toCode||""))+'</b></p>':'')+
+        '<p style="font-size:14px;margin-top:4px"><b>Día actual:</b> '+cellToText(r.from)+' → <b>Quedaría:</b> '+cellToText(r.to&&r.to.clear?null:r.to)+'</p>'+
         (r.note?'<p style="font-size:14px;margin-top:4px"><b>Motivo:</b> '+esc(r.note)+'</p>':'');
     }
     h += '<div class="card" style="margin-top:10px;background:var(--slate-50)">'+ficha+'</div>'+
@@ -812,7 +862,7 @@ function viewStats(){
     const expected = totalPct?(totalT*(p.pct||100))/totalPct:0;
     const dev = turnos-expected;
     html += '<tr style="border-bottom:1px solid var(--slate-100)"><td>'+esc(p.name)+(p.pct<100?' <span class="muted">('+p.pct+'%)</span>':'')+(p.noUrg?' <span class="muted" style="font-size:11px">[sin URG]</span>':'')+'</td>'+
-      '<td style="min-width:150px;text-align:left"><span class="bar" style="width:'+Math.round((turnos/maxT)*110)+'px;min-width:'+(turnos?6:0)+'px"></span> <b style="font-size:12px">'+turnos+'</b></td>'+
+      '<td style="text-align:left"><div style="display:flex;align-items:center;gap:6px;width:150px"><span class="bar" style="width:'+Math.round((turnos/maxT)*100)+'px;min-width:'+(turnos?6:0)+'px;flex:none"></span><b style="font-size:12px">'+turnos+'</b></div></td>'+
       '<td class="'+(Math.abs(dev)>=3?"dev-bad":"muted")+'" style="font-size:12px">'+expected.toFixed(1)+' ('+(dev>=0?"+":"")+dev.toFixed(1)+')</td>'+
       '<td style="color:#b45309;font-weight:600">'+(URG||"–")+'</td><td style="color:#c2410c;font-weight:600">'+(URGF||"–")+'</td><td>'+(AL||"–")+'</td><td>'+(ALT||"–")+'</td><td>'+(INT||"–")+'</td><td>'+(RHB||"–")+'</td><td>'+(ORT||"–")+'</td><td>'+(aus||"–")+'</td></tr>';
   });
@@ -1233,7 +1283,7 @@ document.addEventListener("click", e=>{
   if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-required","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
-      ui.reqDraft = {m:"", t:"", f:""}; ui.reqNote = "";
+      ui.reqDraft = {}; ui.reqNote = "";
       ui.tab = "solicitudes"; render();
     }
     return;
@@ -1267,7 +1317,7 @@ document.addEventListener("click", e=>{
     case "req-open": {
       const n = new Date();
       ui.reqModal = {tab:true, pid:(state.physicians[0]||{}).id, date: keyOf(n.getFullYear(), n.getMonth(), n.getDate())};
-      ui.reqDraft = {m:"", t:"", f:""}; ui.reqNote = "";
+      ui.reqDraft = {}; ui.reqNote = "";
       ui.tab = "solicitudes"; render(); break;
     }
     case "req-copy": case "req-send-mail": case "req-send-wa": {
@@ -1292,7 +1342,8 @@ document.addEventListener("click", e=>{
           entry = {at:new Date().toISOString(), phys:(pa?pa.name:"")+" ⇄ "+(pb?pb.name:""), date:ui.reqModal.date, prop:"Intercambio con "+fmtDate(ui.reqModal.dateB||ui.reqModal.date)};
         }else{
           const pp = state.physicians.find(x=>x.id===(ui.reqModal||{}).pid);
-          entry = {at:new Date().toISOString(), phys:pp?pp.name:"", date:(ui.reqModal||{}).date, prop:cellToText(draftToCell(ui.reqDraft||{}))};
+          entry = {at:new Date().toISOString(), phys:pp?pp.name:"", date:(ui.reqModal||{}).date,
+                   prop:partLabel((ui.reqDraft||{}).fromPart||"")+" → "+codeLabel((ui.reqDraft||{}).toCode||"")};
         }
         lg.unshift(entry);
         localStorage.setItem(KEY_REQLOG, JSON.stringify(lg.slice(0,30)));
@@ -1353,8 +1404,8 @@ document.addEventListener("click", e=>{
           const pr = dref.split("-").map(Number);
           state.year = pr[0]; ui.month = pr[1]-1; save();
           ui.reviewTab = {}; ui.tab = "cuadrante";
-          setSave("✓ Cambio aplicado y en publicación");
           render();
+          ghPublish(true); // publicación inmediata, sin esperar; el indicador mostrará ✓ Publicado o el error concreto
         }
       }
       break;
@@ -1481,12 +1532,14 @@ document.addEventListener("change", e=>{
   if(fld.indexOf("rq-")===0){
     const nt = document.getElementById("rq-note"); if(nt) ui.reqNote = nt.value;
     const rqRefresh = ()=>{ (ui.reqModal && ui.reqModal.tab) ? render() : renderModal(); };
-    if(fld==="rq-phys"){ if(ui.reqModal){ ui.reqModal.pid = el.value; rqRefresh(); } }
-    else if(fld==="rq-date"){ if(ui.reqModal && el.value){ ui.reqModal.date = el.value; rqRefresh(); } }
+    if(fld==="rq-phys"){ if(ui.reqModal){ ui.reqModal.pid = el.value; if(ui.reqDraft) ui.reqDraft.fromPart = undefined; rqRefresh(); } }
+    else if(fld==="rq-date"){ if(ui.reqModal && el.value){ ui.reqModal.date = el.value; if(ui.reqDraft) ui.reqDraft.fromPart = undefined; rqRefresh(); } }
     else if(fld==="rq-f"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.f = el.value; if(el.value){ ui.reqDraft.m=""; ui.reqDraft.t=""; } rqRefresh(); }
     else if(fld==="rq-m"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.m = el.value; ui.reqDraft.f=""; rqRefresh(); }
     else if(fld==="rq-t"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.t = el.value; ui.reqDraft.f=""; rqRefresh(); }
     else if(fld==="rq-type"){ if(ui.reqModal){ ui.reqModal.type = el.value; rqRefresh(); } }
+    else if(fld==="rq-from"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.fromPart = el.value; rqRefresh(); }
+    else if(fld==="rq-to"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.toCode = el.value; rqRefresh(); }
     else if(fld==="rq-physb"){ if(ui.reqModal){ ui.reqModal.pidB = el.value; rqRefresh(); } }
     else if(fld==="rq-dateb"){ if(ui.reqModal && el.value){ ui.reqModal.dateB = el.value; rqRefresh(); } }
     else if(fld==="rq-name"){ ui.reqName = el.value; try{ localStorage.setItem(KEY_REQNAME, el.value.trim()); }catch(e2){} }
