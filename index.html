@@ -117,6 +117,7 @@
   .updown button:hover{color:var(--slate-800)}
 
   /* Estadísticas */
+  .stats{min-width:780px}
   .stats th{text-align:center; font-size:11px; color:var(--slate-500); padding:6px}
   .stats th:first-child{text-align:left}
   .stats td{padding:8px 6px; text-align:center; white-space:nowrap}
@@ -141,9 +142,12 @@
   footer{text-align:center; color:var(--slate-400); font-size:12px; padding:10px 0 24px}
 
   @media print{
-    header nav,.palette,.controls,footer,.savebar{display:none!important}
+    @page{size:A4 landscape; margin:8mm}
+    *{-webkit-print-color-adjust:exact!important; print-color-adjust:exact!important}
+    header nav,.palette,.controls,footer,.savebar,.no-print,main > p{display:none!important}
     body{background:#fff}
-    .gridbox{border:none}
+    .gridbox{border:1px solid var(--slate-300); border-radius:0}
+    .cell:hover{filter:none}
     main{max-width:none; padding:0}
   }
 </style>
@@ -399,12 +403,27 @@ function draftToCell(d){
 }
 function buildRequestText(){
   const rq = ui.reqModal; if(!rq) return "";
-  const p = state.physicians.find(x=>x.id===rq.pid);
-  const cur = state.assignments[(rq.pid||"")+"|"+rq.date];
-  const to = draftToCell(ui.reqDraft||{});
   const noteEl = document.getElementById("rq-note");
   const note = (noteEl ? noteEl.value : (ui.reqNote||"")).trim();
   const name = (document.getElementById("rq-name")||{value:""}).value.trim();
+  if(rq.type==="intercambio"){
+    const pa = state.physicians.find(x=>x.id===rq.pid);
+    const pb = state.physicians.find(x=>x.id===rq.pidB);
+    const fromA = pa ? state.assignments[pa.id+"|"+rq.date] : null;
+    const fromB = pb ? state.assignments[pb.id+"|"+rq.dateB] : null;
+    const payload = {v:1, type:"swap", by:name, note:note,
+      pidA:rq.pid, physA:pa?pa.name:"", dateA:rq.date, fromA:fromA||{},
+      pidB:rq.pidB, physB:pb?pb.name:"", dateB:rq.dateB, fromB:fromB||{}};
+    return "Solicitud de INTERCAMBIO de cuadrante\n"+
+      "Solicitante: "+(name||"(sin nombre)")+"\n"+
+      (pa?pa.name:"")+" cede "+fmtDate(rq.date)+" ("+cellToText(fromA)+")\n"+
+      (pb?pb.name:"")+" cede "+fmtDate(rq.dateB)+" ("+cellToText(fromB)+")\n"+
+      (note?("Motivo: "+note+"\n"):"")+
+      "\n[SOLICITUD]"+JSON.stringify(payload);
+  }
+  const p = state.physicians.find(x=>x.id===rq.pid);
+  const cur = state.assignments[(rq.pid||"")+"|"+rq.date];
+  const to = draftToCell(ui.reqDraft||{});
   const payload = {v:1, by:name, pid:rq.pid, phys:p?p.name:"", date:rq.date,
                    from:cur||{}, to:(Object.keys(to).length?to:{clear:true}), note:note};
   return "Solicitud de cambio de cuadrante\n"+
@@ -417,17 +436,39 @@ function buildRequestText(){
     "\n[SOLICITUD]"+JSON.stringify(payload);
 }
 function parseRequest(txt){
+  txt = String(txt||"").replace(/[\u201C\u201D\u00AB\u00BB]/g,'"').replace(/[\u2019\u2018]/g,"'").replace(/[\u00A0\u200B\u200C\u200D]/g," ");
   const i = txt.indexOf("[SOLICITUD]");
   let raw = i>=0 ? txt.slice(i+11) : txt;
   const a = raw.indexOf("{"), b = raw.lastIndexOf("}");
   if(a<0 || b<0) return null;
-  try{
-    const r = JSON.parse(raw.slice(a, b+1));
-    if(!r || !r.date || (!r.pid && !r.phys)) return null;
+  const chunk = raw.slice(a, b+1);
+  let r = null;
+  try{ r = JSON.parse(chunk); }
+  catch(e){ try{ r = JSON.parse(chunk.replace(/[\r\n]+/g," ")); }catch(e2){ return null; } }
+  if(!r) return null;
+  if(r.type==="swap"){
+    if(!r.dateA || !r.dateB || (!r.pidA && !r.physA) || (!r.pidB && !r.physB)) return null;
     return r;
-  }catch(e){ return null; }
+  }
+  if(!r.date || (!r.pid && !r.phys)) return null;
+  return r;
 }
 function applyRequest(r){
+  if(r.type==="swap"){
+    let pa = state.physicians.find(x=>x.id===r.pidA) || state.physicians.find(x=>x.name===r.physA);
+    let pb = state.physicians.find(x=>x.id===r.pidB) || state.physicians.find(x=>x.name===r.physB);
+    if(!pa || !pb) return "No se encuentra a alguno de los facultativos del intercambio.";
+    const kA = pa.id+"|"+r.dateA, kB = pb.id+"|"+r.dateB;
+    const kBA = pb.id+"|"+r.dateA, kAB = pa.id+"|"+r.dateB;
+    const cellA = state.assignments[kA] ? JSON.parse(JSON.stringify(state.assignments[kA])) : null;
+    const cellB = state.assignments[kB] ? JSON.parse(JSON.stringify(state.assignments[kB])) : null;
+    if(cellA) state.assignments[kBA] = cellA; else delete state.assignments[kBA];
+    if(cellB) state.assignments[kAB] = cellB; else delete state.assignments[kAB];
+    if(kA!==kAB && kA!==kBA) delete state.assignments[kA];
+    if(kB!==kAB && kB!==kBA) delete state.assignments[kB];
+    save();
+    return null;
+  }
   let p = state.physicians.find(x=>x.id===r.pid);
   if(!p) p = state.physicians.find(x=>x.name===r.phys);
   if(!p) return "No se encuentra al facultativo «"+(r.phys||"")+"» en el equipo.";
@@ -446,6 +487,7 @@ function applyRequest(r){
 
 // ------------------ Render ------------------
 function render(){
+  if(MODE==="viewer" && (ui.tab==="equipo" || ui.tab==="ajustes")) ui.tab = "cuadrante";
   renderNav();
   const main = document.getElementById("main");
   if(ui.tab==="cuadrante") main.innerHTML = viewCuadrante();
@@ -465,23 +507,47 @@ function solicitudFormHTML(){
   let name = ui.reqName;
   if(name===undefined){ try{ name = localStorage.getItem(KEY_REQNAME)||""; }catch(e){ name=""; } ui.reqName=name; }
   const selOpts = (list, val)=>'<option value="">—</option>'+list.map(c=>'<option value="'+c.code+'"'+(val===c.code?" selected":"")+'>'+c.code+'</option>').join("");
-  const fOpts = '<option value="">— (mañana/tarde abajo)</option>'+
-    ['URG','URGF'].map(c=>'<option value="'+c+'"'+(d.f===c?" selected":"")+'>'+c+'</option>').join("")+
-    Object.entries(ABSENCES).map(([c,x])=>'<option value="'+c+'"'+(d.f===c?" selected":"")+'>'+x.label+'</option>').join("");
+  const physSel = (field, val)=>'<select data-field="'+field+'" style="flex:1;padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
+      phys.map(x=>'<option value="'+x.id+'"'+(val===x.id?" selected":"")+'>'+esc(x.name)+'</option>').join("")+'</select>';
   const hasContact = !!(state.settings.reqEmail||state.settings.reqPhone);
-  return '<div class="row" style="margin-top:10px">'+
-      '<select data-field="rq-phys" style="flex:1;padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
-        phys.map(x=>'<option value="'+x.id+'"'+(p&&p.id===x.id?" selected":"")+'>'+esc(x.name)+'</option>').join("")+'</select>'+
-      '<input type="date" value="'+rq.date+'" data-field="rq-date" style="padding:7px">'+
-    '</div>'+
-    '<p class="muted" style="margin-top:8px;font-size:13px">Asignación actual: <b>'+cellToText(cur)+'</b></p>'+
-    '<p class="tiny" style="margin-top:10px">Propuesta · Día completo</p>'+
-    '<select data-field="rq-f" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+fOpts+'</select>'+
-    '<div class="row" style="margin-top:8px">'+
-      '<span style="flex:1"><span class="tiny">Mañana</span><select data-field="rq-m" '+(d.f?"disabled":"")+' style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+selOpts(MORNING,d.m)+'</select></span>'+
-      '<span style="flex:1"><span class="tiny">Tarde</span><select data-field="rq-t" '+(d.f?"disabled":"")+' style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+selOpts(AFTERNOON,d.t)+'</select></span>'+
-    '</div>'+
-    '<p class="muted" style="font-size:12px;margin-top:4px">Propuesto: <b>'+cellToText(draftToCell(d))+'</b> (todo vacío = solicitar liberar el día)</p>'+
+  rq.type = rq.type || "cambio";
+  let core;
+  if(rq.type==="intercambio"){
+    if(!rq.pidB || !phys.find(x=>x.id===rq.pidB)){
+      const alt = phys.find(x=>!p || x.id!==p.id) || p;
+      rq.pidB = alt ? alt.id : null;
+    }
+    rq.dateB = rq.dateB || rq.date;
+    const pb = phys.find(x=>x.id===rq.pidB) || null;
+    const curB = pb ? state.assignments[pb.id+"|"+rq.dateB] : null;
+    core = '<p class="tiny" style="margin-top:10px">Facultativo A y su día</p>'+
+      '<div class="row" style="margin-top:4px">'+physSel("rq-phys", p?p.id:"")+'<input type="date" value="'+rq.date+'" data-field="rq-date" style="padding:7px"></div>'+
+      '<p class="muted" style="margin-top:4px;font-size:13px">A cede: <b>'+cellToText(cur)+'</b></p>'+
+      '<p class="tiny" style="margin-top:10px">Facultativo B y su día</p>'+
+      '<div class="row" style="margin-top:4px">'+physSel("rq-physb", pb?pb.id:"")+'<input type="date" value="'+rq.dateB+'" data-field="rq-dateb" style="padding:7px"></div>'+
+      '<p class="muted" style="margin-top:4px;font-size:13px">B cede: <b>'+cellToText(curB)+'</b></p>'+
+      '<p class="muted" style="font-size:12px;margin-top:6px">Al autorizarse, B asumirá lo de A en el día de A, y A asumirá lo de B en el día de B.</p>';
+  }else{
+    const fOpts = '<option value="">— (mañana/tarde abajo)</option>'+
+      ['URG','URGF'].map(c=>'<option value="'+c+'"'+(d.f===c?" selected":"")+'>'+c+'</option>').join("")+
+      Object.entries(ABSENCES).map(([c,x])=>'<option value="'+c+'"'+(d.f===c?" selected":"")+'>'+x.label+'</option>').join("");
+    core = '<div class="row" style="margin-top:10px">'+physSel("rq-phys", p?p.id:"")+
+      '<input type="date" value="'+rq.date+'" data-field="rq-date" style="padding:7px"></div>'+
+      '<p class="muted" style="margin-top:8px;font-size:13px">Asignación actual: <b>'+cellToText(cur)+'</b></p>'+
+      '<p class="tiny" style="margin-top:10px">Propuesta · Día completo</p>'+
+      '<select data-field="rq-f" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+fOpts+'</select>'+
+      '<div class="row" style="margin-top:8px">'+
+        '<span style="flex:1"><span class="tiny">Mañana</span><select data-field="rq-m" '+(d.f?"disabled":"")+' style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+selOpts(MORNING,d.m)+'</select></span>'+
+        '<span style="flex:1"><span class="tiny">Tarde</span><select data-field="rq-t" '+(d.f?"disabled":"")+' style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+selOpts(AFTERNOON,d.t)+'</select></span>'+
+      '</div>'+
+      '<p class="muted" style="font-size:12px;margin-top:4px">Propuesto: <b>'+cellToText(draftToCell(d))+'</b> (todo vacío = solicitar liberar el día)</p>';
+  }
+  return '<p class="tiny" style="margin-top:10px">Tipo de solicitud</p>'+
+    '<select data-field="rq-type" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+
+      '<option value="cambio"'+(rq.type==="cambio"?" selected":"")+'>Cambio de asignación</option>'+
+      '<option value="intercambio"'+(rq.type==="intercambio"?" selected":"")+'>Intercambio de días entre facultativos</option>'+
+    '</select>'+
+    core+
     '<input type="text" id="rq-name" placeholder="Tu nombre" value="'+esc(name)+'" data-field="rq-name" style="width:100%;padding:8px;margin-top:10px;border:1px solid var(--slate-300);border-radius:8px">'+
     '<textarea id="rq-note" placeholder="Motivo (opcional)" style="width:100%;height:64px;padding:8px;margin-top:8px;border:1px solid var(--slate-300);border-radius:8px;font-family:inherit;font-size:14px">'+esc(ui.reqNote||"")+'</textarea>'+
     '<div class="row" style="margin-top:12px">'+
@@ -515,11 +581,29 @@ function viewSolicitudes(){
     '<p class="muted" style="margin-top:2px">Pega el mensaje recibido (correo o WhatsApp), analízalo y autoriza el cambio con un clic. Con la publicación automática activada, el equipo lo verá al momento.</p>';
   if(rv.req){
     const r = rv.req;
-    h += '<div class="card" style="margin-top:10px;background:var(--slate-50)">'+
-      '<p style="font-size:14px"><b>Solicitante:</b> '+esc(r.by||"(sin nombre)")+'</p>'+
-      '<p style="font-size:14px;margin-top:4px"><b>Facultativo:</b> '+esc(r.phys||"")+' · <b>Fecha:</b> '+fmtDate(r.date)+'</p>'+
-      '<p style="font-size:14px;margin-top:4px"><b>Actual:</b> '+cellToText(r.from)+' → <b>Propuesto:</b> '+cellToText(r.to&&r.to.clear?null:r.to)+'</p>'+
-      (r.note?'<p style="font-size:14px;margin-top:4px"><b>Motivo:</b> '+esc(r.note)+'</p>':'')+'</div>'+
+    let ficha;
+    if(r.type==="swap"){
+      const pa = state.physicians.find(x=>x.id===r.pidA) || state.physicians.find(x=>x.name===r.physA);
+      const pb = state.physicians.find(x=>x.id===r.pidB) || state.physicians.find(x=>x.name===r.physB);
+      const warns = [];
+      if(pa && pb && r.dateA!==r.dateB){
+        const wBA = state.assignments[pb.id+"|"+r.dateA];
+        const wAB = state.assignments[pa.id+"|"+r.dateB];
+        if(wBA) warns.push(esc(r.physB||"B")+" ya tiene "+cellToText(wBA)+" el "+fmtDate(r.dateA)+"; se sobrescribirá.");
+        if(wAB) warns.push(esc(r.physA||"A")+" ya tiene "+cellToText(wAB)+" el "+fmtDate(r.dateB)+"; se sobrescribirá.");
+      }
+      ficha = '<p style="font-size:14px"><b>Solicitante:</b> '+esc(r.by||"(sin nombre)")+' · <b>INTERCAMBIO</b></p>'+
+        '<p style="font-size:14px;margin-top:4px"><b>'+esc(r.physA||"")+'</b> cede '+fmtDate(r.dateA)+' ('+cellToText(r.fromA)+')</p>'+
+        '<p style="font-size:14px;margin-top:4px"><b>'+esc(r.physB||"")+'</b> cede '+fmtDate(r.dateB)+' ('+cellToText(r.fromB)+')</p>'+
+        (r.note?'<p style="font-size:14px;margin-top:4px"><b>Motivo:</b> '+esc(r.note)+'</p>':'')+
+        warns.map(w=>'<p style="font-size:12px;color:#92400e;margin-top:4px">⚠ '+w+'</p>').join("");
+    }else{
+      ficha = '<p style="font-size:14px"><b>Solicitante:</b> '+esc(r.by||"(sin nombre)")+'</p>'+
+        '<p style="font-size:14px;margin-top:4px"><b>Facultativo:</b> '+esc(r.phys||"")+' · <b>Fecha:</b> '+fmtDate(r.date)+'</p>'+
+        '<p style="font-size:14px;margin-top:4px"><b>Actual:</b> '+cellToText(r.from)+' → <b>Propuesto:</b> '+cellToText(r.to&&r.to.clear?null:r.to)+'</p>'+
+        (r.note?'<p style="font-size:14px;margin-top:4px"><b>Motivo:</b> '+esc(r.note)+'</p>':'');
+    }
+    h += '<div class="card" style="margin-top:10px;background:var(--slate-50)">'+ficha+'</div>'+
       (rv.err?'<p style="color:var(--rose-700);font-size:13px;margin-top:8px">'+esc(rv.err)+'</p>':'')+
       '<div class="row" style="margin-top:10px">'+
       '<button class="btn primary" data-action="reviewt-apply">Autorizar y aplicar</button>'+
@@ -540,7 +624,8 @@ function viewSolicitudes(){
 }
 
 function renderNav(){
-  const tabs = [["cuadrante","Cuadrante"],["solicitudes","Solicitudes"],["equipo","Equipo"],["stats","Estadísticas"],["ajustes","Ajustes"]];
+  let tabs = [["cuadrante","Cuadrante"],["solicitudes","Solicitudes"],["equipo","Equipo"],["stats","Estadísticas"],["ajustes","Ajustes"]];
+  if(MODE==="viewer") tabs = tabs.filter(t=>t[0]==="cuadrante"||t[0]==="solicitudes"||t[0]==="stats");
   document.getElementById("nav").innerHTML = tabs.map(([id,l])=>
     '<button data-action="tab" data-tab="'+id+'" class="'+(ui.tab===id?"active":"")+'">'+l+'</button>').join("");
 }
@@ -562,13 +647,14 @@ function viewCuadrante(){
   const chip = (code, txt, cls)=>'<button class="chip '+cls+(ui.brush===code?" on":"")+'" data-action="brush" data-code="'+code+'">'+txt+'</button>';
   let html = '';
   if(MODE==="viewer"){
-    html += '<div class="card" style="padding:8px 12px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:8px">'+
+    html += '<div class="card no-print" style="padding:8px 12px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">'+
       '<span class="muted" style="font-size:13px">Solo consulta'+(PUBLISHED_AT?(' · publicado '+new Date(PUBLISHED_AT).toLocaleDateString('es-ES')):'')+'</span>'+
       '<span class="row" style="gap:6px"><button class="btn primary" data-action="req-open">Solicitar cambio</button>'+
-      '<button class="btn" data-action="viewer-refresh">Actualizar</button></span></div>';
+      '<button class="btn" data-action="viewer-refresh">Actualizar</button>'+
+      '<button class="btn" data-action="viewer-edit" title="Solo administración" style="padding:6px 9px">⚙</button></span></div>';
   }
   if(MODE==="editor" && NEWER){
-    html += '<div class="card" style="padding:8px 12px;margin-bottom:10px;background:#fffbeb;border-color:#fcd34d;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">'+
+    html += '<div class="card no-print" style="padding:8px 12px;margin-bottom:10px;background:#fffbeb;border-color:#fcd34d;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">'+
       '<span style="font-size:13px;color:#92400e">Hay una versión publicada más reciente que la copia de este dispositivo.</span>'+
       '<span class="row" style="gap:6px"><button class="btn primary" data-action="pull-published">Cargar la publicada</button>'+
       '<button class="btn" data-action="dismiss-newer">Seguir con la local</button></span></div>';
@@ -1174,7 +1260,10 @@ document.addEventListener("click", e=>{
       })();
       break;
     case "viewer-edit":
-      MODE="editor"; save(); render(); break;
+      if(window.confirm("Modo edición (solo administración). Los cambios hechos en este dispositivo NO se publican al equipo salvo que configures la publicación con tu token de GitHub. ¿Continuar?")){
+        MODE="editor"; save(); render();
+      }
+      break;
     case "req-open": {
       const n = new Date();
       ui.reqModal = {tab:true, pid:(state.physicians[0]||{}).id, date: keyOf(n.getFullYear(), n.getMonth(), n.getDate())};
@@ -1195,9 +1284,17 @@ document.addEventListener("click", e=>{
         window.open("https://wa.me/"+String(state.settings.reqPhone).replace(/[^0-9]/g,"")+"?text="+encodeURIComponent(txt), "_blank");
       }
       try{
-        const pp = state.physicians.find(x=>x.id===(ui.reqModal||{}).pid);
         const lg = JSON.parse(localStorage.getItem(KEY_REQLOG)||"[]");
-        lg.unshift({at:new Date().toISOString(), phys:pp?pp.name:"", date:(ui.reqModal||{}).date, prop:cellToText(draftToCell(ui.reqDraft||{}))});
+        let entry;
+        if((ui.reqModal||{}).type==="intercambio"){
+          const pa = state.physicians.find(x=>x.id===ui.reqModal.pid);
+          const pb = state.physicians.find(x=>x.id===ui.reqModal.pidB);
+          entry = {at:new Date().toISOString(), phys:(pa?pa.name:"")+" ⇄ "+(pb?pb.name:""), date:ui.reqModal.date, prop:"Intercambio con "+fmtDate(ui.reqModal.dateB||ui.reqModal.date)};
+        }else{
+          const pp = state.physicians.find(x=>x.id===(ui.reqModal||{}).pid);
+          entry = {at:new Date().toISOString(), phys:pp?pp.name:"", date:(ui.reqModal||{}).date, prop:cellToText(draftToCell(ui.reqDraft||{}))};
+        }
+        lg.unshift(entry);
         localStorage.setItem(KEY_REQLOG, JSON.stringify(lg.slice(0,30)));
       }catch(e){}
       if(ui.reqModal && ui.reqModal.tab) render();
@@ -1246,10 +1343,18 @@ document.addEventListener("click", e=>{
         else{
           try{
             const lg = JSON.parse(localStorage.getItem(KEY_APPLIEDLOG)||"[]");
-            lg.unshift({at:new Date().toISOString(), by:rq0.by||"", phys:rq0.phys||"", date:rq0.date, prop:cellToText(rq0.to&&rq0.to.clear?null:rq0.to)});
+            const entry = rq0.type==="swap"
+              ? {at:new Date().toISOString(), by:rq0.by||"", phys:(rq0.physA||"")+" ⇄ "+(rq0.physB||""), date:rq0.dateA, prop:"Intercambio "+fmtDate(rq0.dateA)+" / "+fmtDate(rq0.dateB)}
+              : {at:new Date().toISOString(), by:rq0.by||"", phys:rq0.phys||"", date:rq0.date, prop:cellToText(rq0.to&&rq0.to.clear?null:rq0.to)};
+            lg.unshift(entry);
             localStorage.setItem(KEY_APPLIEDLOG, JSON.stringify(lg.slice(0,50)));
           }catch(e){}
-          ui.reviewTab = {}; setSave("✓ Solicitud aplicada"); render();
+          const dref = rq0.type==="swap" ? rq0.dateA : rq0.date;
+          const pr = dref.split("-").map(Number);
+          state.year = pr[0]; ui.month = pr[1]-1; save();
+          ui.reviewTab = {}; ui.tab = "cuadrante";
+          setSave("✓ Cambio aplicado y en publicación");
+          render();
         }
       }
       break;
@@ -1381,6 +1486,9 @@ document.addEventListener("change", e=>{
     else if(fld==="rq-f"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.f = el.value; if(el.value){ ui.reqDraft.m=""; ui.reqDraft.t=""; } rqRefresh(); }
     else if(fld==="rq-m"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.m = el.value; ui.reqDraft.f=""; rqRefresh(); }
     else if(fld==="rq-t"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.t = el.value; ui.reqDraft.f=""; rqRefresh(); }
+    else if(fld==="rq-type"){ if(ui.reqModal){ ui.reqModal.type = el.value; rqRefresh(); } }
+    else if(fld==="rq-physb"){ if(ui.reqModal){ ui.reqModal.pidB = el.value; rqRefresh(); } }
+    else if(fld==="rq-dateb"){ if(ui.reqModal && el.value){ ui.reqModal.dateB = el.value; rqRefresh(); } }
     else if(fld==="rq-name"){ ui.reqName = el.value; try{ localStorage.setItem(KEY_REQNAME, el.value.trim()); }catch(e2){} }
     return;
   }
