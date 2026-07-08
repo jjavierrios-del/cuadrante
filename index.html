@@ -384,6 +384,10 @@ function applyCode(pid, dateKey, code){
   else if(ABSENCES[code]) next = a.f===code?{}:{f:code};
   else{
     const def = byCode[code]; if(!def) return;
+    if(def.group==="T"){
+      const pr = dateKey.split("-").map(Number);
+      if(new Date(pr[0],pr[1]-1,pr[2]).getDay()===5){ return; }  // viernes: sin tarde
+    }
     if(def.group==="F") next = a.f===code?{}:{f:code};
     else if(def.group==="M") next = {f:null, t:a.f?null:a.t, m:a.m===code?null:code};
     else next = {f:null, m:a.f?null:a.m, t:a.t===code?null:code};
@@ -1006,8 +1010,10 @@ function renderModal(){
       (blocked?'<div class="warnbox">⚠ Día bloqueado en su patrón semanal. Puedes asignar igualmente si es una excepción.</div>':"")+
       '<div class="tiny" style="margin-top:12px">Mañana</div><div class="optgrid">'+
       MORNING.map(c=>opt(c.code,c.short,c.cls,a.m===c.code)).join("")+opt("CLEAR_M","Quitar","plain",false)+'</div>'+
-      '<div class="tiny" style="margin-top:10px">Tarde</div><div class="optgrid">'+
-      AFTERNOON.map(c=>opt(c.code,c.short,c.cls,a.t===c.code)).join("")+opt("CLEAR_T","Quitar","plain",false)+'</div>'+
+      (dow===5
+        ? '<div class="warnbox" style="margin-top:10px">Los viernes no tienen consulta de tarde.</div>'
+        : '<div class="tiny" style="margin-top:10px">Tarde</div><div class="optgrid">'+
+          AFTERNOON.map(c=>opt(c.code,c.short,c.cls,a.t===c.code)).join("")+opt("CLEAR_T","Quitar","plain",false)+'</div>')+
       '<div class="tiny" style="margin-top:10px">Día completo</div><div class="optgrid" style="grid-template-columns:repeat(3,1fr)">'+
       opt("URG","URG laborable","k-urg",a.f==="URG")+
       opt("URGF","URG festivo","k-urgf",a.f==="URGF")+
@@ -1390,6 +1396,7 @@ function generateMonth(mode){
   // FASE 5 · Tardes obligatorias (mayor déficit)
   // =========================================================
   labDays.forEach(d=>{
+    if(d.dow===5) return;   // viernes: sin consulta de tarde
     reqT.forEach(c=>{
       const taken = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&a.t===c;});
       if(taken) return;
@@ -1466,7 +1473,7 @@ function generateMonth(mode){
             state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:c});
             load[p.id]++; assigned++; progress=true; done=true; break;
           }
-          if(freeT(p,d.key)){                         // 2º tarde (doble turno si ya tiene mañana)
+          if(d.dow!==5 && freeT(p,d.key)){            // 2º tarde (doble turno); nunca viernes
             const c = freeCode(allT, d.key);
             state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{t:c});
             load[p.id]++; assigned++; progress=true; done=true; break;
