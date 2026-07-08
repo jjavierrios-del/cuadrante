@@ -859,17 +859,36 @@ function viewStats(){
   });
   const maxT = Math.max(1, ...res.map(c=>c.turnos));
   const totalT = res.reduce((a,c)=>a+c.turnos,0);
-  const totalPct = state.physicians.reduce((a,p)=>a+(p.pct||100),0);
+  // «Esperado» = objetivo de contrato: días laborables (en que puede trabajar) × % de contrato.
+  // Mismo criterio que usa el generador. En scope "año" suma los 12 meses; en "mes" solo el visible.
+  const hmapStats = Object.fromEntries(state.holidays.map(h=>[h.date,1]));
+  const laborablesFor = (p)=>{
+    let n=0;
+    const months = ui.scope==="month" ? [ui.month] : [0,1,2,3,4,5,6,7,8,9,10,11];
+    months.forEach(mo=>{
+      const dim = new Date(state.year, mo+1, 0).getDate();
+      for(let day=1; day<=dim; day++){
+        const dt = new Date(state.year, mo, day);
+        const dow = dt.getDay();
+        if(dow===0||dow===6) continue;
+        const key = keyOf(state.year, mo, day);
+        if(hmapStats[key]) continue;
+        if((p.blocked||[]).includes(dow)) continue;
+        n++;
+      }
+    });
+    return n;
+  };
 
   let html = '<div class="card"><div class="row between"><h2>Reparto y equidad</h2>'+
     '<div class="seg"><button class="'+(ui.scope==="month"?"on":"")+'" data-action="scope-month">'+MONTHS[ui.month]+'</button>'+
     '<button class="'+(ui.scope==="year"?"on":"")+'" data-action="scope-year">Año '+state.year+'</button></div></div>';
   if(!state.physicians.length){ return html+'<p class="muted" style="margin-top:12px">Añade facultativos en la pestaña Equipo.</p></div>'; }
-  html += '<p class="muted" style="margin-top:6px">Turnos totales: <b>'+totalT+'</b> (URG computa 2; URGF se retribuye como extra, se cuenta aparte y no suma turnos). «Esperado» reparte proporcionalmente al % de contrato.</p>';
+  html += '<p class="muted" style="margin-top:6px">Turnos totales: <b>'+totalT+'</b> (URG computa 2; URGF se retribuye como extra, se cuenta aparte y no suma turnos). «Esperado» = jornadas laborables del periodo × % de contrato (URG cuenta 2; URGF no cuenta).</p>';
   html += '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:10px"><table class="stats">'+
     '<thead><tr><th>Facultativo</th><th>Turnos</th><th>Esperado</th><th>URG</th><th>URGF</th><th>AL</th><th>ALRU</th><th>ALT</th><th>INT</th><th>RHB</th><th>ORT</th><th>Aus.</th></tr></thead><tbody>';
   res.forEach(({p,turnos,URG,URGF,AL,ALRU,ALT,INT,RHB,ORT,aus})=>{
-    const expected = totalPct?(totalT*(p.pct||100))/totalPct:0;
+    const expected = laborablesFor(p) * (p.pct||100)/100;
     const dev = turnos-expected;
     html += '<tr style="border-bottom:1px solid var(--slate-100)"><td>'+esc(p.name)+(p.pct<100?' <span class="muted">('+p.pct+'%)</span>':'')+(p.noUrg?' <span class="muted" style="font-size:11px">[sin URG]</span>':'')+(p.noRhb?' <span class="muted" style="font-size:11px">[sin RHB]</span>':'')+(p.noAlru?' <span class="muted" style="font-size:11px">[sin ALRU]</span>':'')+(p.noInt?' <span class="muted" style="font-size:11px">[sin ALINTER]</span>':'')+'</td>'+
       '<td><div style="display:flex;align-items:center;gap:6px"><span class="bar" style="width:'+Math.round((turnos/maxT)*90)+'px;min-width:'+(turnos?6:0)+'px;flex:none"></span><b style="font-size:12px">'+turnos+'</b></div></td>'+
