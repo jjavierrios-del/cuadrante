@@ -1251,6 +1251,11 @@ function generateMonth(mode){
   const alruTarget = (state.settings.alruPerWeek!==undefined ? state.settings.alruPerWeek : 2);
   let cleared=0, assigned=0; const unfilled=[];
   const labDays = allDays.filter(d=> d.dow!==0 && d.dow!==6 && !d.holiday);
+  const isoWeek = (k)=>{ const pr=k.split("-").map(Number); const dt=new Date(Date.UTC(pr[0],pr[1]-1,pr[2]));
+    const day=(dt.getUTCDay()+6)%7; dt.setUTCDate(dt.getUTCDate()-day+3);
+    const first=new Date(Date.UTC(dt.getUTCFullYear(),0,4)); const fday=(first.getUTCDay()+6)%7;
+    first.setUTCDate(first.getUTCDate()-fday+3);
+    return dt.getUTCFullYear()+"-W"+String(1+Math.round((dt-first)/(7*864e5))).padStart(2,"0"); };
 
   if(mode==="regen"){
     allDays.forEach(d=>{
@@ -1393,30 +1398,50 @@ function generateMonth(mode){
   });
 
   // =========================================================
-  // FASE 5 · Tardes obligatorias (mayor déficit)
+  // FASE 5 · Tardes obligatorias, REPARTIDAS a lo largo del mes
+  // Se cuenta cuántas tardes lleva cada adjunto por semana; se prioriza a quien
+  // menos tardes tiene en TOTAL y ninguna esa semana, para no amontonarlas.
   // =========================================================
-  labDays.forEach(d=>{
-    if(d.dow===5) return;   // viernes: sin consulta de tarde
+  {
+    const tardeSemana = {};   // pid -> { semanaISO -> nº tardes }
+    const tardeTotal = {};    // pid -> nº tardes en el mes
+    state.physicians.forEach(p=>{ tardeSemana[p.id]={}; tardeTotal[p.id]=0; });
+    // Contar tardes ya existentes (asignadas a mano)
+    labDays.forEach(d=>{ state.physicians.forEach(p=>{ const a=getA(p.id,d.key);
+      if(a && a.t){ const wk=isoWeek(d.key); tardeSemana[p.id][wk]=(tardeSemana[p.id][wk]||0)+1; tardeTotal[p.id]++; } }); });
+
+    const tardeDays = labDays.filter(d=>d.dow!==5);  // sin viernes
     reqT.forEach(c=>{
-      const taken = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&a.t===c;});
-      if(taken) return;
-      const cand = state.physicians.filter(pp=> !blockedOn(pp,d) && notAbsent(pp,d.key) && freeT(pp,d.key));
-      const pref = cand.filter(pp=>pp.pref===c && !wouldExceed(pp,1));
-      const p = pref.length ? byDeficit(pref)[0] : pick(cand);
-      if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{t:c}); load[p.id]++; assigned++; }
-      else missing_push(unfilled,d.key,c);
+      tardeDays.forEach(d=>{
+        const taken = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&a.t===c;});
+        if(taken) return;
+        const wk = isoWeek(d.key);
+        let cand = state.physicians.filter(pp=> !blockedOn(pp,d) && notAbsent(pp,d.key) && freeT(pp,d.key));
+        cand = cand.filter(pp=>!wouldExceed(pp,1));
+        if(!cand.length) cand = strictMode ? [] : state.physicians.filter(pp=> !blockedOn(pp,d) && notAbsent(pp,d.key) && freeT(pp,d.key));
+        if(!cand.length){ missing_push(unfilled,d.key,c); return; }
+        // Puntuación: primero quien no tenga tarde esa semana; luego menos tardes totales;
+        // luego mayor déficit de jornadas; algo de azar para desempatar.
+        cand.sort((x,y)=>{
+          const xw=(tardeSemana[x.id][wk]||0), yw=(tardeSemana[y.id][wk]||0);
+          if(xw!==yw) return xw-yw;                      // preferir 0 tardes esa semana
+          if(tardeTotal[x.id]!==tardeTotal[y.id]) return tardeTotal[x.id]-tardeTotal[y.id]; // menos tardes en el mes
+          const dd = deficit(y)-deficit(x);              // mayor déficit
+          if(Math.abs(dd)>1e-9) return dd;
+          return Math.random()-0.5;
+        });
+        const p = cand[0];
+        state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{t:c});
+        load[p.id]++; assigned++;
+        tardeSemana[p.id][wk]=(tardeSemana[p.id][wk]||0)+1; tardeTotal[p.id]++;
+      });
     });
-  });
+  }
 
   // =========================================================
   // FASE 6 · ALRU: objetivo por semana natural, entre quienes la hacen (mayor déficit)
   // =========================================================
   if(alruTarget > 0){
-    const isoWeek = (k)=>{ const pr=k.split("-").map(Number); const dt=new Date(Date.UTC(pr[0],pr[1]-1,pr[2]));
-      const day=(dt.getUTCDay()+6)%7; dt.setUTCDate(dt.getUTCDate()-day+3);
-      const first=new Date(Date.UTC(dt.getUTCFullYear(),0,4)); const fday=(first.getUTCDay()+6)%7;
-      first.setUTCDate(first.getUTCDate()-fday+3);
-      return dt.getUTCFullYear()+"-W"+String(1+Math.round((dt-first)/(7*864e5))).padStart(2,"0"); };
     const weeks = {};
     labDays.forEach(d=>{ (weeks[isoWeek(d.key)] = weeks[isoWeek(d.key)]||[]).push(d); });
     Object.keys(weeks).forEach(wk=>{
