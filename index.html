@@ -298,6 +298,7 @@ function loadState(){
         if(state.settings.minMorning===undefined || state.settings.minMorning<8) state.settings.minMorning = 8;
         if(state.settings.alruPerWeek===undefined) state.settings.alruPerWeek = 2;
         if(state.settings.alinterDaily===undefined) state.settings.alinterDaily = true;
+        if(state.settings.strictQuota===undefined) state.settings.strictQuota = false;
         state.settings.v = 3;
       }
       else{ state.settings.required = Object.assign({}, DEFAULT_REQUIRED, d.settings.required||{}); }
@@ -1170,6 +1171,7 @@ function importBackup(file){
         if(state.settings.minMorning===undefined || state.settings.minMorning<8) state.settings.minMorning = 8;
         if(state.settings.alruPerWeek===undefined) state.settings.alruPerWeek = 2;
         if(state.settings.alinterDaily===undefined) state.settings.alinterDaily = true;
+        if(state.settings.strictQuota===undefined) state.settings.strictQuota = false;
         state.settings.v = 3;
       }
       else{ state.settings.required = Object.assign({}, DEFAULT_REQUIRED, d.settings.required||{}); }
@@ -1183,6 +1185,7 @@ function importBackup(file){
 
 // ------------------ Generación automática ------------------
 function generateMonth(mode){
+  const strictMode = state.settings.strictQuota===true;
   const allDays = monthDays();
   const hset = new Set(state.holidays.map(h=>h.date));
   const pool = poolCodes();
@@ -1222,22 +1225,27 @@ function generateMonth(mode){
       if((p.blocked||[]).includes(d.dow)) return;
       laborables++;
     });
-    // Redondeo al alza para no infrautilizar; mínimo 0
-    capacity[p.id] = Math.round(laborables * (p.pct||100)/100);
+    // Cupo = jornadas laborables potenciales × % de contrato (redondeo estándar, mínimo 1 si trabaja algún día)
+    const raw = laborables * (p.pct||100)/100;
+    capacity[p.id] = laborables>0 ? Math.max(1, Math.round(raw)) : 0;
   });
   // Margen: permite pasar del cupo solo si es imprescindible para cubrir un hueco obligatorio
   const overCap = (p)=> load[p.id] >= capacity[p.id];
 
   const getA = (pid,date)=>state.assignments[pid+"|"+date];
   const free = (p,date,slot)=>{ const a=getA(p.id,date); return !(a&&(a.f||a[slot])); };
-  // Ordena por carga ponderada, pero dando prioridad ABSOLUTA a quien no ha alcanzado su cupo.
-  // Si todos han llegado al cupo, se permite repartir el excedente igualmente (para no dejar huecos).
+  // Reparto proporcional: prioridad ABSOLUTA a quien no ha alcanzado su cupo.
+  // Si todos lo alcanzaron, el excedente va a quien más margen tiene (mayor % y menos sobrecarga relativa).
   const sortByLoad = (x,y)=>((load[x.id]/weight(x))-(load[y.id]/weight(y))) || (Math.random()-0.5);
-  const withCap = arr=>{ const u=arr.filter(p=>!overCap(p)); return u.length?u:arr; };
-  const byLoad = arr=>withCap(arr).slice().sort(sortByLoad);
+  // Sobrecarga relativa: cuánto se ha pasado del cupo en proporción a su capacidad
+  const over = p=> capacity[p.id]>0 ? (load[p.id]-capacity[p.id])/capacity[p.id] : 999;
+  const sortOver = (x,y)=> (over(x)-over(y)) || (weight(y)-weight(x)) || (Math.random()-0.5);
+  const withCap = arr=>{ const u=arr.filter(p=>!overCap(p)); return u.length ? {list:u,strict:true} : {list:arr,strict:false}; };
+  const byLoad = arr=>{ const {list,strict}=withCap(arr); return list.slice().sort(strict?sortByLoad:sortOver); };
   const byUrg = arr=>{
-    const u = arr.filter(p=>!overCap(p)); const base = u.length?u:arr;
-    return base.slice().sort((x,y)=>((urgLoad[x.id]/weight(x))-(urgLoad[y.id]/weight(y))) || sortByLoad(x,y));
+    const {list,strict}=withCap(arr);
+    if(strict) return list.slice().sort((x,y)=>((urgLoad[x.id]/weight(x))-(urgLoad[y.id]/weight(y))) || sortByLoad(x,y));
+    return list.slice().sort(sortOver);
   };
   let assigned=0; const unfilled=[];
 
@@ -1288,7 +1296,7 @@ function generateMonth(mode){
         const yaInt = state.physicians.some(p=>{const a=getA(p.id,d.key); return a && a.m==="ALINTER";});
         if(!yaInt){
           let p = dayAvail.find(pp=>pp.pref==="ALINTER" && !pp.noInt && !overCap(pp) && free(pp,d.key,"m"));
-          if(!p){ const cand=byLoad(dayAvail.filter(pp=>!pp.noInt && free(pp,d.key,"m"))); p=cand.length?cand[0]:null; }
+          if(!p){ const cand=byLoad(dayAvail.filter(pp=>!pp.noInt && (!strictMode||!overCap(pp)) && free(pp,d.key,"m"))); p=cand.length?cand[0]:null; }
           if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:"ALINTER"}); load[p.id]++; assigned++; }
           else missing.push("ALINTER");
         }
@@ -1316,10 +1324,10 @@ function generateMonth(mode){
       return dt.getUTCFullYear()+"-W"+String(1+Math.round((dt-first)/(7*864e5))).padStart(2,"0"); };
     // Agrupar los días laborables del mes por semana
     const weeks = {};
-    days.forEach(d=>{ if(d.dow!==0 && d.dow!==6 && !d.holiday){ (weeks[isoWeek(d.key)] = weeks[isoWeek(d.key)]||[]).push(d); } });
+    allDays.forEach(d=>{ if(d.dow!==0 && d.dow!==6 && !d.holiday){ (weeks[isoWeek(d.key)] = weeks[isoWeek(d.key)]||[]).push(d); } });
     const alruLoad = {}; state.physicians.forEach(p=>alruLoad[p.id]=0);
     // Contar ALRU ya presentes (asignadas a mano o en pasadas previas) en todo el mes
-    days.forEach(d=>state.physicians.forEach(p=>{ const a=getA(p.id,d.key); if(a && a.m==="ALRU") alruLoad[p.id]++; }));
+    allDays.forEach(d=>state.physicians.forEach(p=>{ const a=getA(p.id,d.key); if(a && a.m==="ALRU") alruLoad[p.id]++; }));
     const canAlru = (pp)=> !pp.noAlru;
     Object.keys(weeks).forEach(wk=>{
       const wdays = weeks[wk];
@@ -1332,6 +1340,7 @@ function generateMonth(mode){
         wdays.forEach(d=>{
           state.physicians.forEach(p=>{
             if(!canAlru(p)) return;
+            if(strictMode && load[p.id]>=capacity[p.id]) return;
             if((p.blocked||[]).includes(d.dow)) return;
             const a = getA(p.id,d.key);
             if(a && (a.f || a.m)) return;               // libre por la mañana (sin ausencia ni consulta)
