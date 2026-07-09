@@ -67,7 +67,7 @@
   .k-urg{background:#fbbf24; color:#451a03; font-weight:600}
   .k-urgf{background:#fb923c; color:#431407; font-weight:600}
   .k-alru{background:#c4b5fd; color:#2e1065}
-  .k-ort{background:#67e8f9; color:#155e75}
+  .k-ort{background:#a97142; color:#ffffff}
   .k-L{background:#fed7aa; color:#7c2d12}
   .k-V{background:#6ee7b7; color:#064e3b}
   .k-B{background:#fda4af; color:#881337}
@@ -840,6 +840,11 @@ function viewEquipo(){
 }
 
 function viewStats(){
+  // Rango de meses para el cómputo (modo "range"). Por defecto octubre..diciembre.
+  if(ui.statsFrom===undefined) ui.statsFrom = 9;   // octubre
+  if(ui.statsTo===undefined) ui.statsTo = 11;      // diciembre
+  const statsFrom = Math.min(ui.statsFrom, ui.statsTo);
+  const statsTo = Math.max(ui.statsFrom, ui.statsTo);
   const res = state.physicians.map(p=>({p,turnos:0,URG:0,URGF:0,AL:0,ALRU:0,ALT:0,INT:0,RHB:0,ORT:0,aus:0}));
   const byId = Object.fromEntries(res.map(r=>[r.p.id,r]));
   Object.entries(state.assignments).forEach(([k,a])=>{
@@ -848,6 +853,7 @@ function viewStats(){
     const [y,m] = date.split("-").map(Number);
     if(y!==state.year) return;
     if(ui.scope==="month" && m-1!==ui.month) return;
+    if(ui.scope==="range"){ const mo=m-1; if(mo<statsFrom || mo>statsTo) return; }
     r.turnos += turnosOf(a);
     if(a.f==="URG") r.URG++;
     else if(a.f==="URGF") r.URGF++;
@@ -869,7 +875,10 @@ function viewStats(){
   const hmapStats = Object.fromEntries(state.holidays.map(h=>[h.date,1]));
   const laborablesFor = (p)=>{
     let n=0;
-    const months = ui.scope==="month" ? [ui.month] : [0,1,2,3,4,5,6,7,8,9,10,11];
+    let months;
+    if(ui.scope==="month") months=[ui.month];
+    else if(ui.scope==="range"){ months=[]; for(let mo=statsFrom; mo<=statsTo; mo++) months.push(mo); }
+    else months=[0,1,2,3,4,5,6,7,8,9,10,11];
     months.forEach(mo=>{
       const dim = new Date(state.year, mo+1, 0).getDate();
       for(let day=1; day<=dim; day++){
@@ -886,17 +895,27 @@ function viewStats(){
 
   let html = '<div class="card"><div class="row between"><h2>Reparto y equidad</h2>'+
     '<div class="seg"><button class="'+(ui.scope==="month"?"on":"")+'" data-action="scope-month">'+MONTHS[ui.month]+'</button>'+
-    '<button class="'+(ui.scope==="year"?"on":"")+'" data-action="scope-year">Año '+state.year+'</button></div></div>';
+    '<button class="'+(ui.scope==="year"?"on":"")+'" data-action="scope-year">Año '+state.year+'</button>'+
+    '<button class="'+(ui.scope==="range"?"on":"")+'" data-action="scope-range">Rango</button></div></div>';
+  if(ui.scope==="range"){
+    const mopt = (sel)=>MONTHS.map((m,idx)=>'<option value="'+idx+'"'+(sel===idx?" selected":"")+'>'+m+'</option>').join("");
+    html += '<div class="row" style="margin-top:8px;align-items:center;gap:8px;flex-wrap:wrap">'+
+      '<span class="tiny">Computar de</span>'+
+      '<select data-field="stats-from" style="padding:6px;border:1px solid var(--slate-300);border-radius:8px">'+mopt(statsFrom)+'</select>'+
+      '<span class="tiny">a</span>'+
+      '<select data-field="stats-to" style="padding:6px;border:1px solid var(--slate-300);border-radius:8px">'+mopt(statsTo)+'</select>'+
+      '<span class="tiny">de '+state.year+'</span></div>';
+  }
   if(!state.physicians.length){ return html+'<p class="muted" style="margin-top:12px">Añade facultativos en la pestaña Equipo.</p></div>'; }
-  html += '<p class="muted" style="margin-top:6px">Turnos totales: <b>'+totalT+'</b> (URG computa 2; URGF se retribuye como extra, se cuenta aparte y no suma turnos). «Esperado» = jornadas laborables del periodo × % de contrato. «Saldo anual» = jornadas trabajadas menos las debidas en lo que va de año (+ de más, − de menos); el generador lo compensa en el mes siguiente.</p>';
+  html += '<p class="muted" style="margin-top:6px">Turnos totales: <b>'+totalT+'</b> (URG computa 2; URGF se retribuye como extra, se cuenta aparte y no suma turnos). «Esperado» = jornadas laborables del periodo × % de contrato. «Saldo» = jornadas trabajadas menos las debidas en el periodo elegido (+ de más, − de menos); el generador lo compensa en el mes siguiente. Usa <b>Rango</b> para computar solo los meses que ya gestionas (p.ej. octubre a diciembre).</p>';
   html += '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:10px"><table class="stats">'+
     '<thead><tr><th>Facultativo</th><th>Turnos</th><th>Esperado</th><th>Saldo anual</th><th>URG</th><th>URGF</th><th>AL</th><th>ALRU</th><th>ALT</th><th>INT</th><th>RHB</th><th>ORT</th><th>Aus.</th></tr></thead><tbody>';
   res.forEach(({p,turnos,URG,URGF,AL,ALRU,ALT,INT,RHB,ORT,aus})=>{
     const expected = laborablesFor(p) * (p.pct||100)/100;
     const dev = turnos-expected;
     // Saldo anual acumulado: trabajado - objetivo, en el rango [enero .. mes visible] (o todo el año)
-    const upto = ui.scope==="month" ? ui.month+1 : 12;
-    const saldo = carryBalance(p, upto);
+    const upto = ui.scope==="month" ? ui.month+1 : (ui.scope==="range" ? statsTo+1 : 12);
+    const saldo = ui.scope==="range" ? carryBalance(p, upto, statsFrom) : carryBalance(p, upto);
     html += '<tr style="border-bottom:1px solid var(--slate-100)"><td>'+esc(p.name)+(p.pct<100?' <span class="muted">('+p.pct+'%)</span>':'')+(p.noUrg?' <span class="muted" style="font-size:11px">[sin URG]</span>':'')+(p.noRhb?' <span class="muted" style="font-size:11px">[sin RHB]</span>':'')+(p.noAlru?' <span class="muted" style="font-size:11px">[sin ALRU]</span>':'')+(p.noInt?' <span class="muted" style="font-size:11px">[sin ALINTER]</span>':'')+'</td>'+
       '<td><div style="display:flex;align-items:center;gap:6px"><span class="bar" style="width:'+Math.round((turnos/maxT)*90)+'px;min-width:'+(turnos?6:0)+'px;flex:none"></span><b style="font-size:12px">'+turnos+'</b></div></td>'+
       '<td class="'+(Math.abs(dev)>=3?"dev-bad":"muted")+'" style="font-size:12px">'+expected.toFixed(1)+' ('+(dev>=0?"+":"")+dev.toFixed(1)+')</td>'+
@@ -1223,10 +1242,11 @@ function monthHasSchedule(mo){
   for(const k in state.assignments){ if(k.slice(k.indexOf("|")+1).indexOf(pre)===0) return true; }
   return false;
 }
-function carryBalance(p, beforeMonth){
+function carryBalance(p, beforeMonth, fromMonth){
   const hmap = Object.fromEntries(state.holidays.map(h=>[h.date,1]));
+  const start = fromMonth||0;
   let done=0, due=0;
-  for(let mo=0; mo<beforeMonth; mo++){
+  for(let mo=start; mo<beforeMonth; mo++){
     if(!monthHasSchedule(mo)) continue;
     const dim = new Date(state.year, mo+1, 0).getDate();
     let lab=0;
@@ -1836,6 +1856,7 @@ document.addEventListener("click", e=>{
     }
     case "scope-month": ui.scope="month"; render(); break;
     case "scope-year": ui.scope="year"; render(); break;
+    case "scope-range": ui.scope="range"; render(); break;
     case "toggle-required": {
       const c = el.dataset.code;
       state.settings.required[c] = !state.settings.required[c];
@@ -1893,6 +1914,8 @@ document.addEventListener("change", e=>{
   else if(field==="alruweek"){ state.settings.alruPerWeek = Math.min(10,Math.max(0,Number(el.value)||0)); save(); }
   else if(field==="alinterdaily"){ state.settings.alinterDaily = el.checked; save(); }
   else if(field==="ortmonthly"){ state.settings.ortMonthly = Math.min(10,Math.max(0,Number(el.value)||0)); save(); }
+  else if(field==="stats-from"){ ui.statsFrom = Number(el.value); render(); }
+  else if(field==="stats-to"){ ui.statsTo = Number(el.value); render(); }
   else if(field==="req-email"){ state.settings.reqEmail = el.value.trim(); save(); }
   else if(field==="req-phone"){ state.settings.reqPhone = el.value.replace(/[^0-9+ ]/g,"").trim(); save(); }
 });
