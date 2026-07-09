@@ -1398,35 +1398,42 @@ function generateMonth(mode){
   });
 
   // =========================================================
-  // FASE 5 · Tardes obligatorias, REPARTIDAS a lo largo del mes
-  // Se cuenta cuántas tardes lleva cada adjunto por semana; se prioriza a quien
-  // menos tardes tiene en TOTAL y ninguna esa semana, para no amontonarlas.
+  // =========================================================
+  // FASE 5 · Tardes: máximo UNA por semana y adjunto (de cualquier tipo ALT1/ALT2/ALT3).
+  // Las tardes NO son obligatorias cada día: se cubren tantas como sea posible sin que
+  // nadie pase de 1 tarde/semana. Los huecos sobrantes quedan vacíos (algún día tendrá
+  // 3 tardes, otro 2 o 1). Se reparten equitativamente a lo largo del mes.
   // =========================================================
   {
     const tardeSemana = {};   // pid -> { semanaISO -> nº tardes }
-    const tardeTotal = {};    // pid -> nº tardes en el mes
+    const tardeTotal = {};    // pid -> nº total de tardes en el mes
     state.physicians.forEach(p=>{ tardeSemana[p.id]={}; tardeTotal[p.id]=0; });
-    // Contar tardes ya existentes (asignadas a mano)
+    // Contar tardes ya asignadas a mano
     labDays.forEach(d=>{ state.physicians.forEach(p=>{ const a=getA(p.id,d.key);
       if(a && a.t){ const wk=isoWeek(d.key); tardeSemana[p.id][wk]=(tardeSemana[p.id][wk]||0)+1; tardeTotal[p.id]++; } }); });
+    const yaTieneTardeEsaSemana = (pid,wk)=> (tardeSemana[pid][wk]||0) > 0;
 
-    const tardeDays = labDays.filter(d=>d.dow!==5);  // sin viernes
-    reqT.forEach(c=>{
-      tardeDays.forEach(d=>{
+    const tardeDays = labDays.filter(d=>d.dow!==5);   // sin viernes
+    // Recorremos día a día y, en cada día, cada consulta de tarde requerida.
+    tardeDays.forEach(d=>{
+      const wk = isoWeek(d.key);
+      reqT.forEach(c=>{
         const taken = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&a.t===c;});
         if(taken) return;
-        const wk = isoWeek(d.key);
-        let cand = state.physicians.filter(pp=> !blockedOn(pp,d) && notAbsent(pp,d.key) && freeT(pp,d.key));
-        cand = cand.filter(pp=>!wouldExceed(pp,1));
-        if(!cand.length) cand = strictMode ? [] : state.physicians.filter(pp=> !blockedOn(pp,d) && notAbsent(pp,d.key) && freeT(pp,d.key));
-        if(!cand.length){ missing_push(unfilled,d.key,c); return; }
-        // Puntuación: primero quien no tenga tarde esa semana; luego menos tardes totales;
-        // luego mayor déficit de jornadas; algo de azar para desempatar.
+        // Candidatos: libres esa tarde, no bloqueados, no ausentes, SIN tarde aún esa semana.
+        let cand = state.physicians.filter(pp=>
+          !blockedOn(pp,d) && notAbsent(pp,d.key) && freeT(pp,d.key) && !yaTieneTardeEsaSemana(pp.id,wk)
+        );
+        // Preferimos a quien no se pase de su objetivo de contrato; si ninguno cumple, se permite
+        // (para no desperdiciar cobertura), pero SIEMPRE respetando el tope de 1 tarde/semana.
+        const within = cand.filter(pp=>!wouldExceed(pp,1));
+        if(within.length) cand = within;
+        // Si NADIE puede sin superar su tope semanal, la tarde se queda sin cubrir (es opcional).
+        if(!cand.length) return;
+        // Entre válidos: menos tardes en el mes, luego mayor déficit de jornadas, luego azar.
         cand.sort((x,y)=>{
-          const xw=(tardeSemana[x.id][wk]||0), yw=(tardeSemana[y.id][wk]||0);
-          if(xw!==yw) return xw-yw;                      // preferir 0 tardes esa semana
-          if(tardeTotal[x.id]!==tardeTotal[y.id]) return tardeTotal[x.id]-tardeTotal[y.id]; // menos tardes en el mes
-          const dd = deficit(y)-deficit(x);              // mayor déficit
+          if(tardeTotal[x.id]!==tardeTotal[y.id]) return tardeTotal[x.id]-tardeTotal[y.id];
+          const dd = deficit(y)-deficit(x);
           if(Math.abs(dd)>1e-9) return dd;
           return Math.random()-0.5;
         });
@@ -1477,11 +1484,16 @@ function generateMonth(mode){
     // Catálogos de relleno: TODAS las consultas de mañana y de tarde (excepto ALINTER, ya gestionada)
     const allM = MORNING.map(c=>c.code).filter(c=>c!=="ALINTER");
     const allT = AFTERNOON.map(c=>c.code);
-    // Elige una consulta libre ese día (no asignada aún a nadie); si todas están, la primera del catálogo
     const freeCode = (list, dkey)=>{
       const usados = {};
       state.physicians.forEach(q=>{ const a=getA(q.id,dkey); if(a){ if(a.m)usados[a.m]=1; if(a.t)usados[a.t]=1; } });
       return list.find(c=>!usados[c]) || list[0];
+    };
+    // Nº de tardes que tiene un adjunto en la semana de una fecha (para respetar el tope de 1/semana)
+    const tardesSemanaDe = (pid, dkey)=>{
+      const wk = isoWeek(dkey); let n=0;
+      labDays.forEach(dd=>{ if(isoWeek(dd.key)===wk){ const a=getA(pid,dd.key); if(a&&a.t) n++; } });
+      return n;
     };
     let progress=true, safety=0;
     while(progress && safety++<3000){
@@ -1489,16 +1501,25 @@ function generateMonth(mode){
       const needing = state.physicians.filter(p=> deficit(p) >= 1-1e-9).sort((x,y)=>deficit(y)-deficit(x));
       for(const p of needing){
         let done=false;
+        // 1ª vuelta: intentar SOLO mañanas (no añade tardes)
         for(const d of labDays){
           if(blockedOn(p,d)) continue;
           const a=getA(p.id,d.key);
-          if(a&&a.f) continue;                       // ausencia o URG/URGF ese día
-          if(freeM(p,d.key)){                        // 1º mañana
+          if(a&&a.f) continue;
+          if(freeM(p,d.key)){
             const c = freeCode(allM, d.key);
             state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:c});
             load[p.id]++; assigned++; progress=true; done=true; break;
           }
-          if(d.dow!==5 && freeT(p,d.key)){            // 2º tarde (doble turno); nunca viernes
+        }
+        if(done) break;
+        // 2ª vuelta: tardes, respetando el tope de 1 tarde por semana
+        for(const d of labDays){
+          if(d.dow===5) continue;                    // nunca viernes
+          if(blockedOn(p,d)) continue;
+          const a=getA(p.id,d.key);
+          if(a&&a.f) continue;
+          if(freeT(p,d.key) && tardesSemanaDe(p.id,d.key)===0){
             const c = freeCode(allT, d.key);
             state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{t:c});
             load[p.id]++; assigned++; progress=true; done=true; break;
