@@ -1403,15 +1403,21 @@ function generateMonth(mode){
   // FASE 2b · RXINT: consulta de mañana los JUEVES (dow 4). Debe cubrirse siempre.
   // Solo la hacen quienes NO tengan "RXINT: No". Reparto equitativo por rondas.
   // =========================================================
+  // Contador COMBINADO de intervencionismo = RXINT + ALINTER, para repartirlo en conjunto.
+  // Se inicializa con lo que cada uno ya lleva en TODO el año (para compensar entre meses).
+  const intvLoad = {}; state.physicians.forEach(p=>intvLoad[p.id]=0);
   {
-    const rxLoad = {}; state.physicians.forEach(p=>rxLoad[p.id]=0);
-    labDays.forEach(d=>state.physicians.forEach(p=>{ const a=getA(p.id,d.key); if(a&&a.m==="RXINT") rxLoad[p.id]++; }));
+    const yPref = state.year+"-";
+    Object.entries(state.assignments).forEach(([k,a])=>{ const i=k.indexOf("|"); const pid=k.slice(0,i), dk=k.slice(i+1);
+      if(dk.indexOf(yPref)===0 && a && (a.m==="RXINT"||a.m==="ALINTER") && intvLoad[pid]!==undefined) intvLoad[pid]++; });
+  }
+  {
     labDays.filter(d=>d.dow===4).forEach(d=>{
       const ya = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&a.m==="RXINT";});
       if(ya) return;
       const cand = state.physicians.filter(p=> !p.noRxint && !blockedOn(p,d) && freeM(p,d.key));
-      const p = pickRound(cand, rxLoad, 1);
-      if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:"RXINT"}); load[p.id]++; rxLoad[p.id]++; assigned++; }
+      const p = pickRound(cand, intvLoad, 1);   // reparto por intervencionismo TOTAL
+      if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:"RXINT"}); load[p.id]++; intvLoad[p.id]++; assigned++; }
       else missing_push(unfilled,d.key,"RXINT");
     });
   }
@@ -1424,9 +1430,9 @@ function generateMonth(mode){
       const ya = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&a.m==="ALINTER";});
       if(ya) return;
       const cand = state.physicians.filter(p=> !p.noInt && !blockedOn(p,d) && freeM(p,d.key));
-      // prioriza consulta habitual ALINTER, pero manteniendo el equilibrio por rondas
-      const p = pickRound(cand, intLoad, 1);
-      if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:"ALINTER"}); load[p.id]++; intLoad[p.id]++; assigned++; }
+      // Reparto por intervencionismo TOTAL (RXINT+ALINTER): prioriza a quien menos lleva en conjunto
+      const p = pickRound(cand, intvLoad, 1);
+      if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:"ALINTER"}); load[p.id]++; intvLoad[p.id]++; assigned++; }
       else missing_push(unfilled,d.key,"ALINTER");
     });
   }
