@@ -206,7 +206,7 @@ const DEFAULT_HOLIDAYS = [
 ];
 const POOL_DEFAULT = {AL1:1,AL2:1,AL3:1,AL4:1,AL5:1,AL6:1,RHB1:1,RHB2:1,ALINTER:1};
 const DEFAULT_REQUIRED = Object.fromEntries(CONSULTAS.map(c=>[c.code, !!POOL_DEFAULT[c.code]]));
-const DEFAULT_SETTINGS = ()=>({autoLibranza:true, urgRequired:true, minMorning:8, alruPerWeek:2, alinterDaily:true, v:3, reqEmail:"", reqPhone:"", required:Object.assign({},DEFAULT_REQUIRED)});
+const DEFAULT_SETTINGS = ()=>({autoLibranza:true, urgRequired:true, minMorning:8, alruPerWeek:2, alinterDaily:true, ortMonthly:1, v:3, reqEmail:"", reqPhone:"", required:Object.assign({},DEFAULT_REQUIRED)});
 
 // ------------------ Estado ------------------
 const KEY = "cuadrante-gestor-html-v1";
@@ -299,6 +299,7 @@ function loadState(){
         if(state.settings.alruPerWeek===undefined) state.settings.alruPerWeek = 2;
         if(state.settings.alinterDaily===undefined) state.settings.alinterDaily = true;
         if(state.settings.strictQuota===undefined) state.settings.strictQuota = false;
+        if(state.settings.ortMonthly===undefined) state.settings.ortMonthly = 1;
         state.settings.v = 3;
       }
       else{ state.settings.required = Object.assign({}, DEFAULT_REQUIRED, d.settings.required||{}); }
@@ -926,6 +927,8 @@ function viewAjustes(){
     '<label class="row" style="margin-top:10px;font-size:14px">Consultas de ALRU por semana:'+
     '<input type="number" min="0" max="10" value="'+(state.settings.alruPerWeek!==undefined?state.settings.alruPerWeek:2)+'" data-field="alruweek" style="width:64px;text-align:center"></label>'+
     '<label class="row" style="margin-top:10px;font-size:14px;cursor:pointer"><input type="checkbox" data-field="alinterdaily" '+(state.settings.alinterDaily!==false?"checked":"")+' style="accent-color:var(--teal-700)"> Asignar una consulta de ALINTER cada día laborable</label>'+
+    '<label class="row between" style="margin-top:12px;font-size:14px">Consultas de ORT al mes'+
+    '<input type="number" min="0" max="10" value="'+(state.settings.ortMonthly!==undefined?state.settings.ortMonthly:1)+'" data-field="ortmonthly" style="width:64px;text-align:center"></label>'+
     '<p class="muted" style="font-size:12px;margin-top:2px">El generador colocará ese número de ALRU cada semana natural, repartidas entre quienes la realizan (interruptor ALRU en Equipo).</p>'+
     '<p class="muted" style="margin-top:12px">Consultas de mañana que cuentan para el mínimo (pool):</p>'+
     '<div class="optgrid req" style="grid-template-columns:repeat(auto-fill,minmax(84px,1fr));margin-top:8px">'+
@@ -1200,6 +1203,7 @@ function importBackup(file){
         if(state.settings.alruPerWeek===undefined) state.settings.alruPerWeek = 2;
         if(state.settings.alinterDaily===undefined) state.settings.alinterDaily = true;
         if(state.settings.strictQuota===undefined) state.settings.strictQuota = false;
+        if(state.settings.ortMonthly===undefined) state.settings.ortMonthly = 1;
         state.settings.v = 3;
       }
       else{ state.settings.required = Object.assign({}, DEFAULT_REQUIRED, d.settings.required||{}); }
@@ -1372,6 +1376,40 @@ function generateMonth(mode){
   }
 
   // =========================================================
+  // FASE 3b · ORT: N consultas al mes (por defecto 1), como consulta de mañana,
+  // repartidas entre quienes la hacen (menor carga de ORT primero) y en días distintos.
+  // =========================================================
+  {
+    const ortTarget = (state.settings.ortMonthly!==undefined ? state.settings.ortMonthly : 1);
+    if(ortTarget > 0){
+      // ORT ya colocadas (a mano) este mes
+      let have = 0; const ortLoad={};
+      state.physicians.forEach(p=>ortLoad[p.id]=0);
+      labDays.forEach(d=>state.physicians.forEach(p=>{ const a=getA(p.id,d.key); if(a&&a.m==="ORT"){ have++; ortLoad[p.id]++; } }));
+      let guard=0;
+      while(have<ortTarget && guard++<40){
+        let best=null;
+        labDays.forEach(d=>{
+          // que no haya ya una ORT ese día
+          if(state.physicians.some(q=>{const aa=getA(q.id,d.key); return aa&&aa.m==="ORT";})) return;
+          state.physicians.forEach(p=>{
+            if(p.noOrt || blockedOn(p,d)) return;
+            const a=getA(p.id,d.key); if(a&&(a.f||a.m)) return;    // mañana libre y sin ausencia
+            if(strictMode && wouldExceed(p,1)) return;
+            // Prioriza: menos ORT acumuladas, luego mayor déficit
+            const score = ortLoad[p.id]*1000 + (-deficit(p)) + (wouldExceed(p,1)?1e6:0);
+            if(!best || score<best.score) best={d,p,score};
+          });
+        });
+        if(!best) break;
+        state.assignments[best.p.id+"|"+best.d.key]=Object.assign({},getA(best.p.id,best.d.key)||{},{m:"ORT"});
+        load[best.p.id]++; ortLoad[best.p.id]++; assigned++; have++;
+      }
+      if(have<ortTarget) missing_push(unfilled, labDays.length?labDays[0].key:(monthPrefix+"-01"), "ORT mes: "+have+"/"+ortTarget);
+    }
+  }
+
+  // =========================================================
   // FASE 4 · Resto de mañanas del pool hasta el mínimo (mayor déficit)
   // =========================================================
   labDays.forEach(d=>{
@@ -1454,12 +1492,17 @@ function generateMonth(mode){
     Object.keys(weeks).forEach(wk=>{
       const wdays = weeks[wk]; let have=0;
       wdays.forEach(d=>state.physicians.forEach(p=>{ const a=getA(p.id,d.key); if(a&&a.m==="ALRU") have++; }));
+      // Nº de ALRU que ya tiene cada adjunto ESTA semana (para no darle más de 1)
+      const alruEnSemana = {};
+      state.physicians.forEach(p=>{ alruEnSemana[p.id]=0; });
+      wdays.forEach(d=>state.physicians.forEach(p=>{ const a=getA(p.id,d.key); if(a&&a.m==="ALRU") alruEnSemana[p.id]++; }));
       let guard=0;
       while(have<alruTarget && guard++<30){
         let best=null;
         wdays.forEach(d=>{
           state.physicians.forEach(p=>{
             if(p.noAlru || blockedOn(p,d)) return;
+            if(alruEnSemana[p.id]>=1) return;   // máximo 1 ALRU por semana y adjunto
             const a=getA(p.id,d.key); if(a&&(a.f||a.m)) return;
             if(state.physicians.some(q=>{const aa=getA(q.id,d.key); return aa&&aa.m==="ALRU";})) return;
             if(strictMode && wouldExceed(p,1)) return;
@@ -1469,7 +1512,7 @@ function generateMonth(mode){
         });
         if(!best) break;
         state.assignments[best.p.id+"|"+best.d.key]=Object.assign({},getA(best.p.id,best.d.key)||{},{m:"ALRU"});
-        load[best.p.id]++; assigned++; have++;
+        load[best.p.id]++; assigned++; have++; alruEnSemana[best.p.id]++;
       }
       if(have<alruTarget) missing_push(unfilled, wdays[0].key, "ALRU semana: "+have+"/"+alruTarget);
     });
@@ -1849,6 +1892,7 @@ document.addEventListener("change", e=>{
   else if(field==="minmorning"){ state.settings.minMorning = Math.min(10,Math.max(0,Number(el.value)||0)); save(); }
   else if(field==="alruweek"){ state.settings.alruPerWeek = Math.min(10,Math.max(0,Number(el.value)||0)); save(); }
   else if(field==="alinterdaily"){ state.settings.alinterDaily = el.checked; save(); }
+  else if(field==="ortmonthly"){ state.settings.ortMonthly = Math.min(10,Math.max(0,Number(el.value)||0)); save(); }
   else if(field==="req-email"){ state.settings.reqEmail = el.value.trim(); save(); }
   else if(field==="req-phone"){ state.settings.reqPhone = el.value.replace(/[^0-9+ ]/g,"").trim(); save(); }
 });
