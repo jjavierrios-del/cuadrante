@@ -68,6 +68,8 @@
   .k-urgf{background:#fb923c; color:#431407; font-weight:600}
   .k-alru{background:#c4b5fd; color:#2e1065}
   .k-ort{background:#a97142; color:#ffffff}
+  .k-rxint{background:#7c3aed; color:#ffffff}
+  .k-urglv{background:#b91c1c; color:#ffffff}
   .k-L{background:#fed7aa; color:#7c2d12}
   .k-V{background:#6ee7b7; color:#064e3b}
   .k-B{background:#fda4af; color:#881337}
@@ -187,7 +189,9 @@ const CONSULTAS = [
   {code:"ORT",short:"ORT",group:"M",cls:"k-ort"},
   {code:"ALT1",short:"AT1",group:"T",cls:"k-alt"},{code:"ALT2",short:"AT2",group:"T",cls:"k-alt"},
   {code:"ALT3",short:"AT3",group:"T",cls:"k-alt"},
+  {code:"RXINT",short:"RXI",group:"M",cls:"k-rxint"},
   {code:"URG",short:"URG",group:"F",cls:"k-urg"},
+  {code:"URGLV",short:"URGLV",group:"F",cls:"k-urglv"},
   {code:"URGF",short:"URGF",group:"F",cls:"k-urgf"},
 ];
 const ABSENCES = {L:{label:"Libranza",cls:"k-L"},V:{label:"Vacaciones",cls:"k-V"},B:{label:"Baja / IT",cls:"k-B"},P:{label:"Permiso",cls:"k-P"}};
@@ -326,7 +330,7 @@ const keyOf = (y,m,d)=>y+"-"+pad(m+1)+"-"+pad(d);
 const uid = ()=>Math.random().toString(36).slice(2,9);
 const esc = s=>String(s==null?"":s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const isEmptyA = a=>!a||(!a.m&&!a.t&&!a.f);
-const turnosOf = a=>!a?0:(a.f==="URG"?2:(a.f?0:((a.m?1:0)+(a.t?1:0))));
+const turnosOf = a=>!a?0:((a.f==="URG"||a.f==="URGLV")?2:(a.f?0:((a.m?1:0)+(a.t?1:0))));
 const fmtDate = k=>k.split("-").reverse().join("/");
 function holidayMap(){ const m={}; state.holidays.forEach(h=>m[h.date]=h.name); return m; }
 function nextWorkingDay(dateKey, hset, blocked){
@@ -358,7 +362,7 @@ function codeMapFor(days){
     const i = k.indexOf("|"); const pid=k.slice(0,i), date=k.slice(i+1);
     if(!map[date]) return;
     const p = physById[pid]; if(!p) return;
-    [a.m, a.t, (a.f==="URG"||a.f==="URGF")?a.f:null].forEach(c=>{
+    [a.m, a.t, (a.f==="URG"||a.f==="URGLV"||a.f==="URGF")?a.f:null].forEach(c=>{
       if(!c) return;
       (map[date][c]=map[date][c]||[]).push(p.name);
     });
@@ -389,7 +393,7 @@ function applyCode(pid, dateKey, code){
       const pr = dateKey.split("-").map(Number);
       if(new Date(pr[0],pr[1]-1,pr[2]).getDay()===5){ return; }  // viernes: sin tarde
     }
-    if(def.group==="F") next = a.f===code?{}:{f:code};
+    if(def.group==="F") next = a.f===code?{}:{f:code};  // URG/URGLV/URGF ocupan el día
     else if(def.group==="M") next = {f:null, t:a.f?null:a.t, m:a.m===code?null:code};
     else next = {f:null, m:a.f?null:a.m, t:a.t===code?null:code};
   }
@@ -728,7 +732,7 @@ function viewCuadrante(){
   if(MODE!=="viewer") html += '<div class="palette"><div class="row"><span class="tiny lbl">Mañana</span>'+
     MORNING.map(c=>chip(c.code,c.short,c.cls)).join("")+'</div>'+
     '<div class="row"><span class="tiny lbl">Tarde</span>'+AFTERNOON.map(c=>chip(c.code,c.short,c.cls)).join("")+
-    '<span class="tiny" style="margin-left:8px">Día</span>'+chip("URG","URG","k-urg")+chip("URGF","URGF","k-urgf")+'</div>'+
+    '<span class="tiny" style="margin-left:8px">Día</span>'+chip("URG","URG","k-urg")+chip("URGLV","URGLV","k-urglv")+chip("URGF","URGF","k-urgf")+'</div>'+
     '<div class="row"><span class="tiny lbl">Ausenc.</span>'+
     Object.entries(ABSENCES).map(([c,s])=>chip(c,c+" "+s.label,s.cls)).join("")+
     '<button class="chip plain'+(ui.brush==="ERASE"?" on":"")+'" data-action="brush" data-code="ERASE">⌫ Borrar</button></div>'+
@@ -748,12 +752,12 @@ function viewCuadrante(){
       const a = state.assignments[p.id+"|"+d.key];
       const blocked = (p.blocked||[]).includes(d.dow);
       const base = d.holiday?"base-fest":(d.dow===0||d.dow===6?"base-wknd":"base-lab");
-      const conflict = a && [a.m,a.t,(a.f==="URG"||a.f==="URGF")?a.f:null].some(c=>c&&(cmap[d.key][c]||[]).length>1);
+      const conflict = a && [a.m,a.t,(a.f==="URG"||a.f==="URGLV"||a.f==="URGF")?a.f:null].some(c=>c&&(cmap[d.key][c]||[]).length>1);
       let inner;
       if(!a){
         inner = blocked?'<span class="full blockcell">×</span>':'<span class="full '+base+'"></span>';
       }else if(a.f){
-        const cls = a.f==="URG"?"k-urg":(a.f==="URGF"?"k-urgf":ABSENCES[a.f].cls);
+        const cls = a.f==="URG"?"k-urg":(a.f==="URGLV"?"k-urglv":(a.f==="URGF"?"k-urgf":ABSENCES[a.f].cls));
         inner = '<span class="full '+cls+'">'+a.f+'</span>';
       }else{
         const half = (c)=>c?('<span class="half '+byCode[c].cls+'">'+byCode[c].short+'</span>')
@@ -773,11 +777,11 @@ function viewCuadrante(){
       let miss=0;
       const covered = pool.filter(c=>(cmap[d.key][c]||[]).length).length;
       miss += Math.max(0, minM-covered);
-      if(urgReq && !(cmap[d.key]["URG"]||[]).length && !(cmap[d.key]["URGF"]||[]).length) miss++;
+      if(urgReq && !(cmap[d.key]["URG"]||[]).length && !(cmap[d.key]["URGLV"]||[]).length && !(cmap[d.key]["URGF"]||[]).length) miss++;
       miss += reqT.filter(c=>!(cmap[d.key][c]||[]).length).length;
       cls = miss?"bad":"ok"; show = miss||"✓";
     }else if(urgReq){
-      const cov = (cmap[d.key]["URGF"]||[]).length || (cmap[d.key]["URG"]||[]).length;
+      const cov = (cmap[d.key]["URGF"]||[]).length || (cmap[d.key]["URG"]||[]).length || (cmap[d.key]["URGLV"]||[]).length;
       cls = cov?"ok":"bad"; show = cov?"✓":"1";
     }
     html += '<td class="'+cls+'" data-action="day" data-date="'+d.key+'">'+show+'</td>';
@@ -845,7 +849,7 @@ function viewStats(){
   if(ui.statsTo===undefined) ui.statsTo = 11;      // diciembre
   const statsFrom = Math.min(ui.statsFrom, ui.statsTo);
   const statsTo = Math.max(ui.statsFrom, ui.statsTo);
-  const res = state.physicians.map(p=>({p,turnos:0,URG:0,URGF:0,AL:0,ALRU:0,ALT:0,INT:0,RHB:0,ORT:0,aus:0}));
+  const res = state.physicians.map(p=>({p,turnos:0,URGLV:0,URG:0,URGF:0,AL:0,ALRU:0,ALT:0,INT:0,RHB:0,ORT:0,RXINT:0,aus:0}));
   const byId = Object.fromEntries(res.map(r=>[r.p.id,r]));
   Object.entries(state.assignments).forEach(([k,a])=>{
     const i=k.indexOf("|"); const pid=k.slice(0,i), date=k.slice(i+1);
@@ -856,11 +860,13 @@ function viewStats(){
     if(ui.scope==="range"){ const mo=m-1; if(mo<statsFrom || mo>statsTo) return; }
     r.turnos += turnosOf(a);
     if(a.f==="URG") r.URG++;
+    else if(a.f==="URGLV") r.URGLV++;
     else if(a.f==="URGF") r.URGF++;
     else if(a.f&&ABSENCES[a.f]) r.aus++;
     [a.m,a.t].forEach(c=>{
       if(!c) return;
       if(c==="ORT") r.ORT++;
+      else if(c==="RXINT") r.RXINT++;
       else if(c==="ALRU") r.ALRU++;
       else if(c.indexOf("ALT")===0) r.ALT++;
       else if(c==="ALINTER") r.INT++;
@@ -909,8 +915,8 @@ function viewStats(){
   if(!state.physicians.length){ return html+'<p class="muted" style="margin-top:12px">Añade facultativos en la pestaña Equipo.</p></div>'; }
   html += '<p class="muted" style="margin-top:6px">Turnos totales: <b>'+totalT+'</b> (URG computa 2; URGF se retribuye como extra, se cuenta aparte y no suma turnos). «Esperado» = jornadas laborables del periodo × % de contrato. «Saldo» = jornadas trabajadas menos las debidas en el periodo elegido (+ de más, − de menos); el generador lo compensa en el mes siguiente. Usa <b>Rango</b> para computar solo los meses que ya gestionas (p.ej. octubre a diciembre).</p>';
   html += '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:10px"><table class="stats">'+
-    '<thead><tr><th>Facultativo</th><th>Turnos</th><th>Esperado</th><th>Saldo anual</th><th>URG</th><th>URGF</th><th>AL</th><th>ALRU</th><th>ALT</th><th>INT</th><th>RHB</th><th>ORT</th><th>Aus.</th></tr></thead><tbody>';
-  res.forEach(({p,turnos,URG,URGF,AL,ALRU,ALT,INT,RHB,ORT,aus})=>{
+    '<thead><tr><th>Facultativo</th><th>Turnos</th><th>Esperado</th><th>Saldo</th><th>URGLV</th><th>URG</th><th>URGF</th><th>AL</th><th>ALRU</th><th>ALT</th><th>INT</th><th>RHB</th><th>ORT</th><th>RXI</th><th>Aus.</th></tr></thead><tbody>';
+  res.forEach(({p,turnos,URGLV,URG,URGF,AL,ALRU,ALT,INT,RHB,ORT,RXINT,aus})=>{
     const expected = laborablesFor(p) * (p.pct||100)/100;
     const dev = turnos-expected;
     // Saldo anual acumulado: trabajado - objetivo, en el rango [enero .. mes visible] (o todo el año)
@@ -920,7 +926,7 @@ function viewStats(){
       '<td><div style="display:flex;align-items:center;gap:6px"><span class="bar" style="width:'+Math.round((turnos/maxT)*90)+'px;min-width:'+(turnos?6:0)+'px;flex:none"></span><b style="font-size:12px">'+turnos+'</b></div></td>'+
       '<td class="'+(Math.abs(dev)>=3?"dev-bad":"muted")+'" style="font-size:12px">'+expected.toFixed(1)+' ('+(dev>=0?"+":"")+dev.toFixed(1)+')</td>'+
       '<td style="font-size:12px;font-weight:600;color:'+(Math.abs(saldo)<0.5?"var(--slate-400)":(saldo>0?"#c2410c":"#0369a1"))+'">'+(saldo>=0?"+":"")+saldo.toFixed(1)+'</td>'+
-      '<td style="color:#b45309;font-weight:600">'+(URG||"–")+'</td><td style="color:#c2410c;font-weight:600">'+(URGF||"–")+'</td><td>'+(AL||"–")+'</td><td>'+(ALRU||"–")+'</td><td>'+(ALT||"–")+'</td><td>'+(INT||"–")+'</td><td>'+(RHB||"–")+'</td><td>'+(ORT||"–")+'</td><td>'+(aus||"–")+'</td></tr>';
+      '<td style="color:#991b1b;font-weight:600">'+(URGLV||"–")+'</td><td style="color:#b45309;font-weight:600">'+(URG||"–")+'</td><td style="color:#c2410c;font-weight:600">'+(URGF||"–")+'</td><td>'+(AL||"–")+'</td><td>'+(ALRU||"–")+'</td><td>'+(ALT||"–")+'</td><td>'+(INT||"–")+'</td><td>'+(RHB||"–")+'</td><td>'+(ORT||"–")+'</td><td style="color:#6d28d9;font-weight:600">'+(RXINT||"–")+'</td><td>'+(aus||"–")+'</td></tr>';
   });
   html += '</tbody></table></div></div>';
   return html;
@@ -1037,7 +1043,8 @@ function renderModal(){
         : '<div class="tiny" style="margin-top:10px">Tarde</div><div class="optgrid">'+
           AFTERNOON.map(c=>opt(c.code,c.short,c.cls,a.t===c.code)).join("")+opt("CLEAR_T","Quitar","plain",false)+'</div>')+
       '<div class="tiny" style="margin-top:10px">Día completo</div><div class="optgrid" style="grid-template-columns:repeat(3,1fr)">'+
-      opt("URG","URG laborable","k-urg",a.f==="URG")+
+      opt("URG","URG (M-J)","k-urg",a.f==="URG")+
+      opt("URGLV","URG (L/V)","k-urglv",a.f==="URGLV")+
       opt("URGF","URG festivo","k-urgf",a.f==="URGF")+
       Object.entries(ABSENCES).map(([c,s])=>opt(c,s.label,s.cls,a.f===c)).join("")+'</div>'+
       '<button class="btn" style="width:100%;margin-top:14px" data-action="pick-clear">Vaciar celda</button>'+
@@ -1055,7 +1062,7 @@ function renderModal(){
     const dd = new Date(date);
     const lab = dd.getDay()!==0&&dd.getDay()!==6&&!hmap[date];
     const covered = pool.filter(c=>(dm[c]||[]).length).length;
-    const urgCov = (dm["URG"]||[]).length||(dm["URGF"]||[]).length;
+    const urgCov = (dm["URG"]||[]).length||(dm["URGLV"]||[]).length||(dm["URGF"]||[]).length;
     let head = "";
     if(lab){
       head += '<p style="margin-top:8px;font-size:13px">Mañanas del pool cubiertas: <b style="color:'+(covered>=minM?"var(--emerald-700)":"var(--rose-700)")+'">'+covered+' / mín. '+minM+'</b></p>';
@@ -1309,8 +1316,8 @@ function generateMonth(mode){
   });
 
   // ===== Cargas iniciales =====
-  const load={}, urgfLoad={}, urgLoad={}, intLoad={};
-  state.physicians.forEach(p=>{load[p.id]=0; urgfLoad[p.id]=0; urgLoad[p.id]=0; intLoad[p.id]=0;});
+  const load={}, urgfLoad={}, urgLoad={}, urglvLoad={}, intLoad={};
+  state.physicians.forEach(p=>{load[p.id]=0; urgfLoad[p.id]=0; urgLoad[p.id]=0; urglvLoad[p.id]=0; intLoad[p.id]=0;});
   const monthPrefix = state.year+"-"+pad(ui.month+1);
   Object.entries(state.assignments).forEach(([k,a])=>{
     const idx=k.indexOf("|"); const pid=k.slice(0,idx), date=k.slice(idx+1);
@@ -1318,6 +1325,7 @@ function generateMonth(mode){
     load[pid]+=turnosOf(a);
     if(a.f==="URGF") urgfLoad[pid]++;
     if(a.f==="URG") urgLoad[pid]++;
+    if(a.f==="URGLV") urglvLoad[pid]++;
     if(a.m==="ALINTER") intLoad[pid]++;
   });
 
@@ -1364,19 +1372,43 @@ function generateMonth(mode){
   }
 
   // =========================================================
-  // FASE 2 · URG (laborables): 2 jornadas, sin libranza, repartido por rondas equitativas
+  // FASE 2 · Urgencias en días laborables, SEPARADAS por tipo de día:
+  //   · URGLV = lunes (dow 1) y viernes (dow 5)  → reparto equitativo propio (urglvLoad)
+  //   · URG   = martes, miércoles, jueves (2,3,4) → reparto equitativo propio (urgLoad)
+  // Ambas computan 2 jornadas y no generan libranza. Quien no trabaja los viernes
+  // acumulará más lunes de forma natural (el viernes queda bloqueado para él).
   // =========================================================
   if(urgReq){
     labDays.forEach(d=>{
-      const has = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&(a.f==="URG"||a.f==="URGF");});
+      const has = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&(a.f==="URG"||a.f==="URGLV"||a.f==="URGF");});
       if(has) return;
+      const esLV = (d.dow===1 || d.dow===5);
       const cand = state.physicians.filter(p=>
         !p.noUrg && !blockedOn(p,d) && notAbsent(p,d.key) && freeM(p,d.key) && freeT(p,d.key)
       );
-      const p = pickRound(cand, urgLoad, 2);
-      if(p){ state.assignments[p.id+"|"+d.key]={f:"URG"}; load[p.id]+=2; urgLoad[p.id]++; assigned++; }
-      else if(!cand.length) missing_push(unfilled,d.key,"URG");
-      else missing_push(unfilled,d.key,"URG (cupos completos)");
+      const counter = esLV ? urglvLoad : urgLoad;
+      const code = esLV ? "URGLV" : "URG";
+      const p = pickRound(cand, counter, 2);
+      if(p){ state.assignments[p.id+"|"+d.key]={f:code}; load[p.id]+=2; counter[p.id]++; assigned++; }
+      else if(!cand.length) missing_push(unfilled,d.key,code);
+      else missing_push(unfilled,d.key,code+" (cupos completos)");
+    });
+  }
+
+  // =========================================================
+  // FASE 2b · RXINT: consulta de mañana los JUEVES (dow 4). Debe cubrirse siempre.
+  // Solo la hacen quienes NO tengan "RXINT: No". Reparto equitativo por rondas.
+  // =========================================================
+  {
+    const rxLoad = {}; state.physicians.forEach(p=>rxLoad[p.id]=0);
+    labDays.forEach(d=>state.physicians.forEach(p=>{ const a=getA(p.id,d.key); if(a&&a.m==="RXINT") rxLoad[p.id]++; }));
+    labDays.filter(d=>d.dow===4).forEach(d=>{
+      const ya = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&a.m==="RXINT";});
+      if(ya) return;
+      const cand = state.physicians.filter(p=> !p.noRxint && !blockedOn(p,d) && freeM(p,d.key));
+      const p = pickRound(cand, rxLoad, 1);
+      if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:"RXINT"}); load[p.id]++; rxLoad[p.id]++; assigned++; }
+      else missing_push(unfilled,d.key,"RXINT");
     });
   }
 
@@ -1402,28 +1434,37 @@ function generateMonth(mode){
   {
     const ortTarget = (state.settings.ortMonthly!==undefined ? state.settings.ortMonthly : 1);
     if(ortTarget > 0){
-      // ORT ya colocadas (a mano) este mes
-      let have = 0; const ortLoad={};
-      state.physicians.forEach(p=>ortLoad[p.id]=0);
-      labDays.forEach(d=>state.physicians.forEach(p=>{ const a=getA(p.id,d.key); if(a&&a.m==="ORT"){ have++; ortLoad[p.id]++; } }));
+      // Reparto equitativo ANUAL: contamos cuántas ORT lleva cada uno en TODO el año,
+      // para que de octubre a diciembre roten y no recaiga siempre en el mismo.
+      const ortYear={}; state.physicians.forEach(p=>ortYear[p.id]=0);
+      const yPref = state.year+"-";
+      Object.entries(state.assignments).forEach(([k,a])=>{ const i=k.indexOf("|"); const pid=k.slice(0,i), dk=k.slice(i+1);
+        if(dk.indexOf(yPref)===0 && a && a.m==="ORT" && ortYear[pid]!==undefined) ortYear[pid]++; });
+      // ORT ya colocadas ESTE mes
+      let have = 0;
+      labDays.forEach(d=>state.physicians.forEach(p=>{ const a=getA(p.id,d.key); if(a&&a.m==="ORT") have++; }));
       let guard=0;
       while(have<ortTarget && guard++<40){
-        let best=null;
-        labDays.forEach(d=>{
-          // que no haya ya una ORT ese día
-          if(state.physicians.some(q=>{const aa=getA(q.id,d.key); return aa&&aa.m==="ORT";})) return;
-          state.physicians.forEach(p=>{
-            if(p.noOrt || blockedOn(p,d)) return;
-            const a=getA(p.id,d.key); if(a&&(a.f||a.m)) return;    // mañana libre y sin ausencia
-            if(strictMode && wouldExceed(p,1)) return;
-            // Prioriza: menos ORT acumuladas, luego mayor déficit
-            const score = ortLoad[p.id]*1000 + (-deficit(p)) + (wouldExceed(p,1)?1e6:0);
-            if(!best || score<best.score) best={d,p,score};
-          });
-        });
-        if(!best) break;
-        state.assignments[best.p.id+"|"+best.d.key]=Object.assign({},getA(best.p.id,best.d.key)||{},{m:"ORT"});
-        load[best.p.id]++; ortLoad[best.p.id]++; assigned++; have++;
+        // candidato global: el que MENOS ORT lleva en el año (desempate aleatorio), que la pueda hacer
+        const elegibles = state.physicians.filter(p=>!p.noOrt);
+        if(!elegibles.length) break;
+        const minY = Math.min.apply(null, elegibles.map(p=>ortYear[p.id]));
+        const conMenos = elegibles.filter(p=>ortYear[p.id]===minY).sort(()=>Math.random()-0.5);
+        let colocada=false;
+        for(const p of conMenos){
+          // buscar un día laborable con su mañana libre y sin ORT ese día
+          const dias = labDays.slice().sort(()=>Math.random()-0.5);   // aleatorio para variar el día
+          for(const d of dias){
+            if(blockedOn(p,d)) continue;
+            const a=getA(p.id,d.key); if(a&&(a.f||a.m)) continue;
+            if(strictMode && wouldExceed(p,1)) continue;
+            if(state.physicians.some(q=>{const aa=getA(q.id,d.key); return aa&&aa.m==="ORT";})) continue;
+            state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:"ORT"});
+            load[p.id]++; ortYear[p.id]++; assigned++; have++; colocada=true; break;
+          }
+          if(colocada) break;
+        }
+        if(!colocada) break;
       }
       if(have<ortTarget) missing_push(unfilled, labDays.length?labDays[0].key:(monthPrefix+"-01"), "ORT mes: "+have+"/"+ortTarget);
     }
@@ -1620,7 +1661,7 @@ document.addEventListener("click", e=>{
   const el = e.target.closest("[data-action]");
   if(!el){ return; }
   const act = el.dataset.action;
-  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-rhb","toggle-alru","toggle-int","toggle-required","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-required","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
       ui.reqDraft = {}; ui.reqNote = "";
