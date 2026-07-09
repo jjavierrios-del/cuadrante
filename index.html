@@ -832,6 +832,10 @@ function viewEquipo(){
       '<button class="dowbtn'+(p.noAlru?"":" on")+'" style="width:auto;padding:0 8px'+(p.noAlru?"":";background:var(--teal-700);border-color:var(--teal-700)")+'" data-action="toggle-alru" data-pid="'+p.id+'">'+(p.noAlru?"No":"Sí")+'</button>'+
       '<span class="tiny" style="margin-left:10px;margin-right:2px">ALINTER:</span>'+
       '<button class="dowbtn'+(p.noInt?"":" on")+'" style="width:auto;padding:0 8px'+(p.noInt?"":";background:var(--teal-700);border-color:var(--teal-700)")+'" data-action="toggle-int" data-pid="'+p.id+'">'+(p.noInt?"No":"Sí")+'</button>'+
+      '<span class="tiny" style="margin-left:10px;margin-right:2px">ORT:</span>'+
+      '<button class="dowbtn'+(p.noOrt?"":" on")+'" style="width:auto;padding:0 8px'+(p.noOrt?"":";background:var(--teal-700);border-color:var(--teal-700)")+'" data-action="toggle-ort" data-pid="'+p.id+'">'+(p.noOrt?"No":"Sí")+'</button>'+
+      '<span class="tiny" style="margin-left:10px;margin-right:2px">RXINT:</span>'+
+      '<button class="dowbtn'+(p.noRxint?"":" on")+'" style="width:auto;padding:0 8px'+(p.noRxint?"":";background:var(--teal-700);border-color:var(--teal-700)")+'" data-action="toggle-rxint" data-pid="'+p.id+'">'+(p.noRxint?"No":"Sí")+'</button>'+
       '<span class="tiny" style="margin-left:10px;margin-right:2px">Habitual:</span>'+
       '<select data-field="phys-pref" data-pid="'+p.id+'" style="padding:4px 6px;border:1px solid var(--slate-300);border-radius:6px;font-size:12px;background:#fff">'+
       '<option value="">— Ninguna</option>'+
@@ -1893,6 +1897,16 @@ document.addEventListener("click", e=>{
     case "toggle-int": {
       const p = state.physicians.find(x=>x.id===el.dataset.pid); if(!p) break;
       p.noInt = !p.noInt;
+      save(); render(); break;
+    }
+    case "toggle-ort": {
+      const p = state.physicians.find(x=>x.id===el.dataset.pid); if(!p) break;
+      p.noOrt = !p.noOrt;
+      save(); render(); break;
+    }
+    case "toggle-rxint": {
+      const p = state.physicians.find(x=>x.id===el.dataset.pid); if(!p) break;
+      p.noRxint = !p.noRxint;
       save(); render(); break;
     }
     case "scope-month": ui.scope="month"; render(); break;
