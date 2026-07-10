@@ -1322,11 +1322,14 @@ function generateMonth(mode){
   // ===== Cargas iniciales =====
   const load={}, urgfLoad={}, urgLoad={}, urglvLoad={}, intLoad={};
   state.physicians.forEach(p=>{load[p.id]=0; urgfLoad[p.id]=0; urgLoad[p.id]=0; urglvLoad[p.id]=0; intLoad[p.id]=0;});
-  // ALINTER acumulada en el AÑO (para repartir equitativamente entre meses, no solo dentro del mes)
+  // INTERVENCIONISMO combinado (RXINT + ALINTER) acumulado en el AÑO.
+  // Objetivo: que la SUMA de ambas quede pareja para todos a lo largo de 2026.
+  // Quien hace RXINT recibe menos ALINTER, de modo que el total de intervencionismo se iguala.
+  const intvLoad = {}; state.physicians.forEach(p=>intvLoad[p.id]=0);
   {
     const yPref = state.year+"-";
     Object.entries(state.assignments).forEach(([k,a])=>{ const i=k.indexOf("|"); const pid=k.slice(0,i), dk=k.slice(i+1);
-      if(dk.indexOf(yPref)===0 && a && a.m==="ALINTER" && intLoad[pid]!==undefined) intLoad[pid]++; });
+      if(dk.indexOf(yPref)===0 && a && (a.m==="ALINTER"||a.m==="RXINT") && intvLoad[pid]!==undefined) intvLoad[pid]++; });
   }
   const monthPrefix = state.year+"-"+pad(ui.month+1);
   Object.entries(state.assignments).forEach(([k,a])=>{
@@ -1409,18 +1412,15 @@ function generateMonth(mode){
   // FASE 2b · RXINT: consulta de mañana los JUEVES (dow 4). Debe cubrirse siempre.
   // Solo la hacen quienes NO tengan "RXINT: No". Reparto equitativo por rondas.
   // =========================================================
-  // RXINT: reparto equitativo entre quienes la hacen (contador propio, acumulado en el año).
+  // RXINT (jueves): se cubre siempre, eligiendo entre quienes la hacen a quien MENOS
+  // intervencionismo total (RXINT+ALINTER) lleva en el año → así la suma se equilibra.
   {
-    const rxLoad = {}; state.physicians.forEach(p=>rxLoad[p.id]=0);
-    const yPref = state.year+"-";
-    Object.entries(state.assignments).forEach(([k,a])=>{ const i=k.indexOf("|"); const pid=k.slice(0,i), dk=k.slice(i+1);
-      if(dk.indexOf(yPref)===0 && a && a.m==="RXINT" && rxLoad[pid]!==undefined) rxLoad[pid]++; });
     labDays.filter(d=>d.dow===4).forEach(d=>{
       const ya = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&a.m==="RXINT";});
       if(ya) return;
       const cand = state.physicians.filter(p=> !p.noRxint && !blockedOn(p,d) && freeM(p,d.key));
-      const p = pickRound(cand, rxLoad, 1);
-      if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:"RXINT"}); load[p.id]++; rxLoad[p.id]++; assigned++; }
+      const p = pickRound(cand, intvLoad, 1);
+      if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:"RXINT"}); load[p.id]++; intvLoad[p.id]++; assigned++; }
       else missing_push(unfilled,d.key,"RXINT");
     });
   }
@@ -1433,9 +1433,10 @@ function generateMonth(mode){
       const ya = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&a.m==="ALINTER";});
       if(ya) return;
       const cand = state.physicians.filter(p=> !p.noInt && !blockedOn(p,d) && freeM(p,d.key));
-      // ALINTER: reparto equitativo entre quienes la hacen (su propio contador)
-      const p = pickRound(cand, intLoad, 1);
-      if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:"ALINTER"}); load[p.id]++; intLoad[p.id]++; assigned++; }
+      // ALINTER: al de MENOS intervencionismo total (RXINT+ALINTER) en el año.
+      // Quien ya acumuló RXINT recibirá menos ALINTER, igualando la suma para todos.
+      const p = pickRound(cand, intvLoad, 1);
+      if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:"ALINTER"}); load[p.id]++; intvLoad[p.id]++; assigned++; }
       else missing_push(unfilled,d.key,"ALINTER");
     });
   }
