@@ -1336,34 +1336,78 @@ function generateMonth(mode){
     const idx=k.indexOf("|"); const pid=k.slice(0,idx), date=k.slice(idx+1);
     if(date.indexOf(monthPrefix)!==0 || load[pid]===undefined) return;
     load[pid]+=turnosOf(a);
-    if(a.f==="URGF") urgfLoad[pid]++;
-    if(a.f==="URG") urgLoad[pid]++;
-    if(a.f==="URGLV") urglvLoad[pid]++;
-    // (intLoad de ALINTER se computa con acumulado anual, más arriba)
+    // (urgLoad/urglvLoad/urgfLoad se computan con acumulado ANUAL, más abajo)
   });
+  // Reparto de urgencias equitativo a lo largo del AÑO: contamos las URG/URGLV/URGF
+  // de todos los meses ya generados, no solo del mes actual. Así nadie se queda sin
+  // URGLV por reiniciar el contador cada mes.
+  {
+    const yPref = state.year+"-";
+    Object.entries(state.assignments).forEach(([k,a])=>{
+      const i=k.indexOf("|"); const pid=k.slice(0,i), dk=k.slice(i+1);
+      if(dk.indexOf(yPref)!==0 || urgLoad[pid]===undefined) return;
+      if(a.f==="URG") urgLoad[pid]++;
+      else if(a.f==="URGLV") urglvLoad[pid]++;
+      else if(a.f==="URGF") urgfLoad[pid]++;
+    });
+  }
+  // ALRU acumulada en el AÑO (para reparto equitativo entre meses, no solo dentro del mes)
+  const alruLoad = {}; state.physicians.forEach(p=>alruLoad[p.id]=0);
+  {
+    const yPref = state.year+"-";
+    Object.entries(state.assignments).forEach(([k,a])=>{
+      const i=k.indexOf("|"); const pid=k.slice(0,i), dk=k.slice(i+1);
+      if(dk.indexOf(yPref)===0 && a && a.m==="ALRU" && alruLoad[pid]!==undefined) alruLoad[pid]++;
+    });
+  }
 
   const weight = p=>(p.pct||100)/100;
   const deficit = p=> target[p.id]-load[p.id];
   const wouldExceed = (p,add)=> (load[p.id]+add) > target[p.id] + 1e-9;
   const byDeficit = arr=> arr.slice().sort((x,y)=> (deficit(y)-deficit(x)) || (Math.random()-0.5));
-  // Selección para jornada ordinaria (add=1). En estricto no se pasa del objetivo; si no, sí como último recurso.
-  const pick = (cands)=>{
+
+  // ===== TOPE SEMANAL de turnos por facultativo =====
+  // Máximo de turnos por semana = redondeo(5 × % contrato / 100). 100%→5, 80%→4, 25%→1.
+  // Cuenta TODAS las consultas salvo fines de semana; URG y URGLV valen 2; URGF cuenta 0.
+  const weeklyCap = {};
+  state.physicians.forEach(p=>{ weeklyCap[p.id] = Math.round(5 * (p.pct||100)/100); });
+  // Turnos que un facultativo ya tiene en la semana (ISO) de una fecha (excluye sáb/dom y festivos)
+  const weekTurnos = (pid, dkey)=>{
+    const wk = isoWeek(dkey); let t=0;
+    allDays.forEach(d=>{
+      if(d.dow===0||d.dow===6||d.holiday) return;      // ignorar findes y festivos
+      if(isoWeek(d.key)!==wk) return;
+      const a = getA(pid, d.key);
+      t += turnosOf(a);                                 // URG/URGLV=2, URGF=0, mañana/tarde=1
+    });
+    return t;
+  };
+  // ¿Añadir 'add' turnos ese día dejaría al facultativo por encima de su tope semanal?
+  const weekFull = (p, dkey, add)=> (weekTurnos(p.id, dkey) + add) > weeklyCap[p.id];
+  // Selección para jornada ordinaria (add=1). Respeta el tope semanal SIEMPRE (duro) y el objetivo mensual.
+  // dkey = día para el que se asigna (para comprobar la carga semanal).
+  const pick = (cands, dkey)=>{
     if(!cands.length) return null;
-    const within = cands.filter(p=>!wouldExceed(p,1));
-    const poolC = within.length ? within : (strictMode ? [] : cands);
+    // El tope semanal es un límite duro: filtra primero
+    let base = dkey ? cands.filter(p=>!weekFull(p, dkey, 1)) : cands;
+    if(!base.length) return null;                         // nadie puede sin pasar su tope semanal → hueco
+    const within = base.filter(p=>!wouldExceed(p,1));
+    const poolC = within.length ? within : (strictMode ? [] : base);
     if(!poolC.length) return null;
     return byDeficit(poolC)[0];
   };
   // Selección por RONDAS para una consulta concreta (ALINTER/URG): equilibra su propio contador.
   // counter = objeto de conteo (intLoad/urgLoad). add = jornadas que suma (URG=2).
-  const pickRound = (cands, counter, add)=>{
+  const pickRound = (cands, counter, add, dkey)=>{
     if(!cands.length) return null;
-    let base = cands.filter(p=>!wouldExceed(p,add));
-    if(!base.length) base = strictMode ? [] : cands;
+    // Tope semanal duro
+    let cc = dkey ? cands.filter(p=>!weekFull(p, dkey, add)) : cands;
+    if(!cc.length) return null;
+    let base = cc.filter(p=>!wouldExceed(p,add));
+    if(!base.length) base = strictMode ? [] : cc;
     if(!base.length) return null;
     const minC = Math.min.apply(null, base.map(p=>counter[p.id]));
     const ronda = base.filter(p=>counter[p.id]===minC);
-    // dentro de la ronda, el de mayor déficit de jornadas
     return byDeficit(ronda)[0];
   };
 
@@ -1401,7 +1445,7 @@ function generateMonth(mode){
       );
       const counter = esLV ? urglvLoad : urgLoad;
       const code = esLV ? "URGLV" : "URG";
-      const p = pickRound(cand, counter, 2);
+      const p = pickRound(cand, counter, 2, d.key);
       if(p){ state.assignments[p.id+"|"+d.key]={f:code}; load[p.id]+=2; counter[p.id]++; assigned++; }
       else if(!cand.length) missing_push(unfilled,d.key,code);
       else missing_push(unfilled,d.key,code+" (cupos completos)");
@@ -1419,7 +1463,7 @@ function generateMonth(mode){
       const ya = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&a.m==="RXINT";});
       if(ya) return;
       const cand = state.physicians.filter(p=> !p.noRxint && !blockedOn(p,d) && freeM(p,d.key));
-      const p = pickRound(cand, intvLoad, 1);
+      const p = pickRound(cand, intvLoad, 1, d.key);
       if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:"RXINT"}); load[p.id]++; intvLoad[p.id]++; assigned++; }
       else missing_push(unfilled,d.key,"RXINT");
     });
@@ -1435,7 +1479,7 @@ function generateMonth(mode){
       const cand = state.physicians.filter(p=> !p.noInt && !blockedOn(p,d) && freeM(p,d.key));
       // ALINTER: al de MENOS intervencionismo total (RXINT+ALINTER) en el año.
       // Quien ya acumuló RXINT recibirá menos ALINTER, igualando la suma para todos.
-      const p = pickRound(cand, intvLoad, 1);
+      const p = pickRound(cand, intvLoad, 1, d.key);
       if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:"ALINTER"}); load[p.id]++; intvLoad[p.id]++; assigned++; }
       else missing_push(unfilled,d.key,"ALINTER");
     });
@@ -1472,6 +1516,7 @@ function generateMonth(mode){
             if(blockedOn(p,d)) continue;
             const a=getA(p.id,d.key); if(a&&(a.f||a.m)) continue;
             if(strictMode && wouldExceed(p,1)) continue;
+            if(weekFull(p,d.key,1)) continue;
             if(state.physicians.some(q=>{const aa=getA(q.id,d.key); return aa&&aa.m==="ORT";})) continue;
             state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:"ORT"});
             load[p.id]++; ortYear[p.id]++; assigned++; have++; colocada=true; break;
@@ -1482,6 +1527,64 @@ function generateMonth(mode){
       }
       if(have<ortTarget) missing_push(unfilled, labDays.length?labDays[0].key:(monthPrefix+"-01"), "ORT mes: "+have+"/"+ortTarget);
     }
+  }
+
+  // =========================================================
+  // FASE 3c · ALRU: objetivo por semana natural, ANTES que las consultas AL normales.
+  // Se coloca aquí (tras urgencias/intervencionismo/ORT) para que tenga sitio dentro de los topes.
+  // =========================================================
+  if(alruTarget > 0){
+    const weeks = {};
+    labDays.forEach(d=>{ (weeks[isoWeek(d.key)] = weeks[isoWeek(d.key)]||[]).push(d); });
+    // Contador de ALRU por semana y adjunto (para el tope de 1/semana), sembrado con lo ya asignado
+    const alruWk = {};   // pid -> {wk -> n}
+    state.physicians.forEach(p=>{ alruWk[p.id]={}; });
+    labDays.forEach(d=>state.physicians.forEach(p=>{ const a=getA(p.id,d.key);
+      if(a&&a.m==="ALRU"){ const w=isoWeek(d.key); alruWk[p.id][w]=(alruWk[p.id][w]||0)+1; } }));
+    const alruInWeek = (pid,wk)=> (alruWk[pid][wk]||0);
+
+    Object.keys(weeks).forEach(wk=>{
+      const wdays = weeks[wk];
+      let have=0;
+      wdays.forEach(d=>state.physicians.forEach(p=>{ const a=getA(p.id,d.key); if(a&&a.m==="ALRU") have++; }));
+
+      while(have<alruTarget){
+        // De TODOS los (día,persona) válidos esta semana, elegir la persona con MENOS ALRU en el año.
+        // Prioridad absoluta a alruLoad; desempate por menor carga total y azar. Recorremos primero
+        // por persona (elegimos quién) y luego le buscamos un día libre.
+        const elegibles = state.physicians.filter(p=>{
+          if(p.noAlru) return false;
+          if(alruInWeek(p.id,wk)>=1) return false;      // ya tiene ALRU esta semana
+          // ¿tiene algún día válido esta semana?
+          return wdays.some(d=>{
+            if(blockedOn(p,d)) return false;
+            const a=getA(p.id,d.key); if(a&&(a.f||a.m)) return false;
+            if(state.physicians.some(q=>{const aa=getA(q.id,d.key); return aa&&aa.m==="ALRU";})) return false;
+            if(strictMode && wouldExceed(p,1)) return false;
+            if(weekFull(p,d.key,1)) return false;
+            return true;
+          });
+        });
+        if(!elegibles.length) break;
+        // ordenar por ALRU anual (asc), luego carga total (asc), luego azar
+        elegibles.sort((x,y)=> (alruLoad[x.id]-alruLoad[y.id]) || (load[x.id]-load[y.id]) || (Math.random()-0.5));
+        const p = elegibles[0];
+        // buscar su primer día válido de la semana
+        const d = wdays.find(dd=>{
+          if(blockedOn(p,dd)) return false;
+          const a=getA(p.id,dd.key); if(a&&(a.f||a.m)) return false;
+          if(state.physicians.some(q=>{const aa=getA(q.id,dd.key); return aa&&aa.m==="ALRU";})) return false;
+          if(strictMode && wouldExceed(p,1)) return false;
+          if(weekFull(p,dd.key,1)) return false;
+          return true;
+        });
+        if(!d) break;
+        state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:"ALRU"});
+        load[p.id]++; assigned++; have++;
+        alruLoad[p.id]++; alruWk[p.id][wk]=(alruWk[p.id][wk]||0)+1;
+      }
+      if(have<alruTarget) missing_push(unfilled, wdays[0].key, "ALRU semana: "+have+"/"+alruTarget);
+    });
   }
 
   // =========================================================
@@ -1496,7 +1599,7 @@ function generateMonth(mode){
     pool.forEach(c=>{
       if(c==="ALINTER") return; // ya gestionado en fase 3
       if(covered>=minM || cmapDay[c]) return;
-      const cand = state.physicians.filter(pp=>pp.pref===c && canDo(pp,c) && !blockedOn(pp,d) && notAbsent(pp,d.key) && freeM(pp,d.key) && !wouldExceed(pp,1));
+      const cand = state.physicians.filter(pp=>pp.pref===c && canDo(pp,c) && !blockedOn(pp,d) && notAbsent(pp,d.key) && freeM(pp,d.key) && !wouldExceed(pp,1) && !weekFull(pp,d.key,1));
       if(cand.length){ const p=byDeficit(cand)[0]; state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:c}); load[p.id]++; assigned++; cmapDay[c]=true; covered++; }
     });
     // 2ª pasada: mayor déficit
@@ -1504,7 +1607,7 @@ function generateMonth(mode){
       if(c==="ALINTER") return;
       if(covered>=minM || cmapDay[c]) return;
       const cand = state.physicians.filter(pp=>canDo(pp,c) && !blockedOn(pp,d) && notAbsent(pp,d.key) && freeM(pp,d.key));
-      const p = pick(cand);
+      const p = pick(cand, d.key);
       if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:c}); load[p.id]++; assigned++; cmapDay[c]=true; covered++; }
     });
     if(covered<minM){ missing_push(unfilled,d.key,"Mañanas: faltan "+(minM-covered)); }
@@ -1535,7 +1638,7 @@ function generateMonth(mode){
         if(taken) return;
         // Candidatos: libres esa tarde, no bloqueados, no ausentes, SIN tarde aún esa semana.
         let cand = state.physicians.filter(pp=>
-          !blockedOn(pp,d) && notAbsent(pp,d.key) && freeT(pp,d.key) && !yaTieneTardeEsaSemana(pp.id,wk)
+          !blockedOn(pp,d) && notAbsent(pp,d.key) && freeT(pp,d.key) && !yaTieneTardeEsaSemana(pp.id,wk) && !weekFull(pp,d.key,1)
         );
         // Preferimos a quien no se pase de su objetivo de contrato; si ninguno cumple, se permite
         // (para no desperdiciar cobertura), pero SIEMPRE respetando el tope de 1 tarde/semana.
@@ -1555,41 +1658,6 @@ function generateMonth(mode){
         load[p.id]++; assigned++;
         tardeSemana[p.id][wk]=(tardeSemana[p.id][wk]||0)+1; tardeTotal[p.id]++;
       });
-    });
-  }
-
-  // =========================================================
-  // FASE 6 · ALRU: objetivo por semana natural, entre quienes la hacen (mayor déficit)
-  // =========================================================
-  if(alruTarget > 0){
-    const weeks = {};
-    labDays.forEach(d=>{ (weeks[isoWeek(d.key)] = weeks[isoWeek(d.key)]||[]).push(d); });
-    Object.keys(weeks).forEach(wk=>{
-      const wdays = weeks[wk]; let have=0;
-      wdays.forEach(d=>state.physicians.forEach(p=>{ const a=getA(p.id,d.key); if(a&&a.m==="ALRU") have++; }));
-      // Nº de ALRU que ya tiene cada adjunto ESTA semana (para no darle más de 1)
-      const alruEnSemana = {};
-      state.physicians.forEach(p=>{ alruEnSemana[p.id]=0; });
-      wdays.forEach(d=>state.physicians.forEach(p=>{ const a=getA(p.id,d.key); if(a&&a.m==="ALRU") alruEnSemana[p.id]++; }));
-      let guard=0;
-      while(have<alruTarget && guard++<30){
-        let best=null;
-        wdays.forEach(d=>{
-          state.physicians.forEach(p=>{
-            if(p.noAlru || blockedOn(p,d)) return;
-            if(alruEnSemana[p.id]>=1) return;   // máximo 1 ALRU por semana y adjunto
-            const a=getA(p.id,d.key); if(a&&(a.f||a.m)) return;
-            if(state.physicians.some(q=>{const aa=getA(q.id,d.key); return aa&&aa.m==="ALRU";})) return;
-            if(strictMode && wouldExceed(p,1)) return;
-            const score=(-deficit(p)) + (wouldExceed(p,1)?1000:0);
-            if(!best||score<best.score) best={d,p,score};
-          });
-        });
-        if(!best) break;
-        state.assignments[best.p.id+"|"+best.d.key]=Object.assign({},getA(best.p.id,best.d.key)||{},{m:"ALRU"});
-        load[best.p.id]++; assigned++; have++; alruEnSemana[best.p.id]++;
-      }
-      if(have<alruTarget) missing_push(unfilled, wdays[0].key, "ALRU semana: "+have+"/"+alruTarget);
     });
   }
 
@@ -1624,7 +1692,7 @@ function generateMonth(mode){
           if(blockedOn(p,d)) continue;
           const a=getA(p.id,d.key);
           if(a&&a.f) continue;
-          if(freeM(p,d.key)){
+          if(freeM(p,d.key) && !weekFull(p,d.key,1)){
             const c = freeCode(allM, d.key);
             state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:c});
             load[p.id]++; assigned++; progress=true; done=true; break;
@@ -1637,7 +1705,7 @@ function generateMonth(mode){
           if(blockedOn(p,d)) continue;
           const a=getA(p.id,d.key);
           if(a&&a.f) continue;
-          if(freeT(p,d.key) && tardesSemanaDe(p.id,d.key)===0){
+          if(freeT(p,d.key) && tardesSemanaDe(p.id,d.key)===0 && !weekFull(p,d.key,1)){
             const c = freeCode(allT, d.key);
             state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{t:c});
             load[p.id]++; assigned++; progress=true; done=true; break;
