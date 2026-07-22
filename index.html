@@ -1372,14 +1372,25 @@ function generateMonth(mode){
   const weeklyCap = {};
   state.physicians.forEach(p=>{ weeklyCap[p.id] = Math.round(5 * (p.pct||100)/100); });
   // Turnos que un facultativo ya tiene en la semana (ISO) de una fecha (excluye sáb/dom y festivos)
+  const hsetGlobal = new Set(state.holidays.map(h=>h.date));
   const weekTurnos = (pid, dkey)=>{
-    const wk = isoWeek(dkey); let t=0;
-    allDays.forEach(d=>{
-      if(d.dow===0||d.dow===6||d.holiday) return;      // ignorar findes y festivos
-      if(isoWeek(d.key)!==wk) return;
-      const a = getA(pid, d.key);
-      t += turnosOf(a);                                 // URG/URGLV=2, URGF=0, mañana/tarde=1
-    });
+    // Cuenta los turnos de la semana ISO COMPLETA (lunes a viernes), aunque parte de la semana
+    // caiga en otro mes. Así, si una semana se reparte entre noviembre y diciembre, los turnos
+    // del tramo del mes anterior también cuentan y no se genera un turno de más.
+    const pr = dkey.split("-").map(Number);
+    const base = new Date(pr[0], pr[1]-1, pr[2]);
+    // Retroceder hasta el lunes de esa semana
+    const dow = base.getDay();                 // 0=domingo..6=sábado
+    const offsetToMonday = (dow===0 ? -6 : 1-dow);
+    const monday = new Date(base); monday.setDate(base.getDate()+offsetToMonday);
+    let t=0;
+    for(let i=0;i<5;i++){                       // lunes..viernes
+      const d = new Date(monday); d.setDate(monday.getDate()+i);
+      const key = keyOf(d.getFullYear(), d.getMonth(), d.getDate());
+      if(hsetGlobal.has(key)) continue;         // festivo no cuenta
+      const a = state.assignments[pid+"|"+key];
+      t += turnosOf(a);                          // URG/URGLV=2, URGF=0, mañana/tarde=1
+    }
     return t;
   };
   // ¿Añadir 'add' turnos ese día dejaría al facultativo por encima de su tope semanal?
