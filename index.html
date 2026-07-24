@@ -210,7 +210,7 @@ const DEFAULT_HOLIDAYS = [
 ];
 const POOL_DEFAULT = {AL1:1,AL2:1,AL3:1,AL4:1,AL5:1,AL6:1,RHB1:1,RHB2:1,ALINTER:1};
 const DEFAULT_REQUIRED = Object.fromEntries(CONSULTAS.map(c=>[c.code, !!POOL_DEFAULT[c.code]]));
-const DEFAULT_SETTINGS = ()=>({autoLibranza:true, urgRequired:true, minMorning:8, alruPerWeek:2, alinterDaily:true, ortMonthly:1, v:3, reqEmail:"", reqPhone:"", required:Object.assign({},DEFAULT_REQUIRED)});
+const DEFAULT_SETTINGS = ()=>({autoLibranza:true, urgRequired:true, minMorning:8, alruPerWeek:2, alinterDaily:true, ortMonthly:1, strictQuota:true, v:3, reqEmail:"", reqPhone:"", required:Object.assign({},DEFAULT_REQUIRED)});
 
 // ------------------ Estado ------------------
 const KEY = "cuadrante-gestor-html-v1";
@@ -302,7 +302,8 @@ function loadState(){
         if(state.settings.minMorning===undefined || state.settings.minMorning<8) state.settings.minMorning = 8;
         if(state.settings.alruPerWeek===undefined) state.settings.alruPerWeek = 2;
         if(state.settings.alinterDaily===undefined) state.settings.alinterDaily = true;
-        if(state.settings.strictQuota===undefined) state.settings.strictQuota = false;
+        if(state.settings.strictQuota===undefined) state.settings.strictQuota = true;
+        if(!state.settings.strictQuotaMigrated){ state.settings.strictQuota = true; state.settings.strictQuotaMigrated = true; }
         if(state.settings.ortMonthly===undefined) state.settings.ortMonthly = 1;
         state.settings.v = 3;
       }
@@ -956,7 +957,12 @@ function viewAjustes(){
       '<p class="muted" style="font-size:12px;margin-top:8px">El modo edición crea una copia en este dispositivo; los cambios no se publican al resto del equipo.</p></div>';
   }
   let html = '<div class="card"><h2>Reglas</h2>'+
-    '<p class="muted" style="margin-top:8px;font-size:13px">La guardia de urgencias (URG) computa como <b>2 jornadas laborales</b> y no genera libranza. En festivo o fin de semana se registra como <b>URGF</b> (se retribuye aparte y no suma jornadas).</p></div>';
+    '<label class="row" style="margin-top:10px;font-size:14px;cursor:pointer;align-items:flex-start;gap:8px">'+
+    '<input type="checkbox" data-field="strictquota" '+(state.settings.strictQuota!==false?"checked":"")+' style="width:16px;height:16px;accent-color:var(--teal-700);margin-top:2px"> '+
+    '<span><b>Priorizar el % de contrato sobre la cobertura mínima</b><br>'+
+    '<span class="muted" style="font-size:12px">Activado: nadie supera las jornadas de su contrato; si por ello queda alguna consulta sin cubrir, se avisa en «Faltan». '+
+    'Desactivado: se prioriza cubrir el mínimo de mañanas, aunque algún facultativo trabaje de más.</span></span></label>'+
+    '<p class="muted" style="margin-top:12px;font-size:13px">La guardia de urgencias (URG/URGLV) computa como <b>2 jornadas laborales</b> y no genera libranza. En festivo o fin de semana se registra como <b>URGF</b> (se retribuye aparte y no suma jornadas).</p></div>';
 
   html += '<div class="card"><h2>Cobertura diaria</h2>'+
     '<label class="row" style="margin-top:10px;font-size:14px;cursor:pointer">'+
@@ -1243,7 +1249,8 @@ function importBackup(file){
         if(state.settings.minMorning===undefined || state.settings.minMorning<8) state.settings.minMorning = 8;
         if(state.settings.alruPerWeek===undefined) state.settings.alruPerWeek = 2;
         if(state.settings.alinterDaily===undefined) state.settings.alinterDaily = true;
-        if(state.settings.strictQuota===undefined) state.settings.strictQuota = false;
+        if(state.settings.strictQuota===undefined) state.settings.strictQuota = true;
+        if(!state.settings.strictQuotaMigrated){ state.settings.strictQuota = true; state.settings.strictQuotaMigrated = true; }
         if(state.settings.ortMonthly===undefined) state.settings.ortMonthly = 1;
         state.settings.v = 3;
       }
@@ -2089,6 +2096,7 @@ document.addEventListener("change", e=>{
   else if(field==="minmorning"){ state.settings.minMorning = Math.min(10,Math.max(0,Number(el.value)||0)); save(); }
   else if(field==="alruweek"){ state.settings.alruPerWeek = Math.min(10,Math.max(0,Number(el.value)||0)); save(); }
   else if(field==="alinterdaily"){ state.settings.alinterDaily = el.checked; save(); }
+  else if(field==="strictquota"){ state.settings.strictQuota = el.checked; save(); }
   else if(field==="ortmonthly"){ state.settings.ortMonthly = Math.min(10,Math.max(0,Number(el.value)||0)); save(); }
   else if(field==="stats-from"){ ui.statsFrom = Number(el.value); render(); }
   else if(field==="stats-to"){ ui.statsTo = Number(el.value); render(); }
