@@ -1313,10 +1313,13 @@ function generateMonth(mode){
   state.physicians.forEach(p=>{
     baseTarget[p.id] = labDays.length * (p.pct||100)/100;   // objetivo propio del mes
     carry[p.id] = carryBalance(p, ui.month);                 // saldo de meses previos del año
-    // Ajuste: se compensa el saldo, pero sin bajar de 0 ni disparar el mes (tope en el doble de lo normal)
-    let t = baseTarget[p.id] - carry[p.id];
-    t = Math.max(0, Math.min(t, baseTarget[p.id]*2));
-    target[p.id] = t;
+    // Ajuste por saldo, SUAVE: como mucho se compensa un 25% del objetivo mensual.
+    // Así un desfase grande se reparte entre varios meses en lugar de descargarse de golpe
+    // (evita que alguien acabe con +7 turnos en un mes por compensar meses anteriores).
+    const lim = baseTarget[p.id]*0.25;
+    let ajuste = -carry[p.id];                       // saldo negativo => trabajar más
+    ajuste = Math.max(-lim, Math.min(lim, ajuste));
+    target[p.id] = Math.max(0, baseTarget[p.id] + ajuste);
   });
 
   // ===== Cargas iniciales =====
@@ -1406,7 +1409,10 @@ function generateMonth(mode){
   const weekCap = (pid, dkey)=>{
     const p = state.physicians.find(x=>x.id===pid);
     const lab = Math.min(5, weekLaborables(dkey));
-    return Math.round(lab * ((p&&p.pct)||100)/100);
+    // Techo (no redondeo): un 25% con 5 laborables => 1,25 => tope 2. Así una semana puede llevar
+    // 2 y otra 1, promediando su 25% real. Si se redondeara a 1 nunca alcanzaría su contrato mensual.
+    // El límite efectivo lo pone el objetivo del mes (proporcional exacto al contrato).
+    return Math.ceil(lab * ((p&&p.pct)||100)/100 - 1e-9);
   };
   // ¿Añadir 'add' turnos ese día dejaría al facultativo por encima de su tope semanal?
   const weekFull = (p, dkey, add)=> (weekTurnos(p.id, dkey) + add) > weekCap(p.id, dkey);
