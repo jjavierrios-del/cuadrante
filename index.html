@@ -917,11 +917,22 @@ function viewStats(){
       '<span class="tiny">de '+state.year+'</span></div>';
   }
   if(!state.physicians.length){ return html+'<p class="muted" style="margin-top:12px">Añade facultativos en la pestaña Equipo.</p></div>'; }
-  html += '<p class="muted" style="margin-top:6px">Turnos totales: <b>'+totalT+'</b> (URG computa 2; URGF se retribuye como extra, se cuenta aparte y no suma turnos). «Esperado» = jornadas laborables del periodo × % de contrato. «Saldo» = jornadas trabajadas menos las debidas en el periodo elegido (+ de más, − de menos); el generador lo compensa en el mes siguiente. Usa <b>Rango</b> para computar solo los meses que ya gestionas (p.ej. octubre a diciembre).</p>';
+  html += '<p class="muted" style="margin-top:6px">Turnos totales: <b>'+totalT+'</b> (URG computa 2; URGF se retribuye como extra, se cuenta aparte y no suma turnos). «Esperado» = jornadas laborables del periodo × % de contrato (en vista de mes, ajustado para compensar el saldo previo). «Saldo» = jornadas trabajadas menos las debidas en el periodo elegido (+ de más, − de menos); el generador lo compensa en el mes siguiente. Usa <b>Rango</b> para computar solo los meses que ya gestionas (p.ej. octubre a diciembre).</p>';
   html += '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:10px"><table class="stats">'+
     '<thead><tr><th>Facultativo</th><th>Turnos</th><th>Esperado</th><th>Saldo</th><th>URGLV</th><th>URG</th><th>URGF</th><th>AL</th><th>ALRU</th><th>ALT</th><th>INT</th><th>RHB</th><th>ORT</th><th>RXI</th><th>Aus.</th></tr></thead><tbody>';
   res.forEach(({p,turnos,URGLV,URG,URGF,AL,ALRU,ALT,INT,RHB,ORT,RXINT,aus})=>{
-    const expected = laborablesFor(p) * (p.pct||100)/100;
+    // «Esperado» debe reflejar el MISMO objetivo que usó el generador para ese mes:
+    // jornadas del periodo × % contrato, ajustado por el saldo arrastrado (máx ±25%),
+    // igual que en generateMonth. Así Turnos y Esperado son comparables y no aparece
+    // un falso "exceso" cuando en realidad se está recuperando un déficit anterior.
+    const baseExpected = laborablesFor(p) * (p.pct||100)/100;
+    let expected = baseExpected;
+    if(ui.scope==="month"){
+      const prev = carryBalance(p, ui.month);      // saldo de meses anteriores ya generados
+      const lim = baseExpected*0.25;
+      const aj = Math.max(-lim, Math.min(lim, -prev));
+      expected = Math.max(0, baseExpected + aj);
+    }
     const dev = turnos-expected;
     // Saldo anual acumulado: trabajado - objetivo, en el rango [enero .. mes visible] (o todo el año)
     const upto = ui.scope==="month" ? ui.month+1 : (ui.scope==="range" ? statsTo+1 : 12);
