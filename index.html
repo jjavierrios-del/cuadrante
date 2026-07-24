@@ -1666,11 +1666,11 @@ function generateMonth(mode){
         let cand = state.physicians.filter(pp=>
           !blockedOn(pp,d) && notAbsent(pp,d.key) && freeT(pp,d.key) && !yaTieneTardeEsaSemana(pp.id,wk) && !weekFull(pp,d.key,1)
         );
-        // Preferimos a quien no se pase de su objetivo de contrato; si ninguno cumple, se permite
-        // (para no desperdiciar cobertura), pero SIEMPRE respetando el tope de 1 tarde/semana.
+        // Preferimos a quien no se pase de su objetivo de contrato.
         const within = cand.filter(pp=>!wouldExceed(pp,1));
         if(within.length) cand = within;
-        // Si NADIE puede sin superar su tope semanal, la tarde se queda sin cubrir (es opcional).
+        else if(strictMode) return;   // en modo estricto: antes hueco que pasarse del contrato
+        // Si NADIE puede, la tarde se queda sin cubrir (las tardes son opcionales).
         if(!cand.length) return;
         // Entre válidos: menos tardes en el mes, luego mayor déficit de jornadas, luego azar.
         cand.sort((x,y)=>{
