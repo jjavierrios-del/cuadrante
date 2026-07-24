@@ -210,7 +210,7 @@ const DEFAULT_HOLIDAYS = [
 ];
 const POOL_DEFAULT = {AL1:1,AL2:1,AL3:1,AL4:1,AL5:1,AL6:1,RHB1:1,RHB2:1,ALINTER:1};
 const DEFAULT_REQUIRED = Object.fromEntries(CONSULTAS.map(c=>[c.code, !!POOL_DEFAULT[c.code]]));
-const DEFAULT_SETTINGS = ()=>({autoLibranza:true, urgRequired:true, minMorning:8, alruPerWeek:2, alinterDaily:true, ortMonthly:1, strictQuota:true, v:3, reqEmail:"", reqPhone:"", required:Object.assign({},DEFAULT_REQUIRED)});
+const DEFAULT_SETTINGS = ()=>({autoLibranza:true, urgRequired:true, minMorning:8, alruPerWeek:2, alinterDaily:true, ortMonthly:1, strictQuota:true, computeFrom:0, v:3, reqEmail:"", reqPhone:"", required:Object.assign({},DEFAULT_REQUIRED)});
 
 // ------------------ Estado ------------------
 const KEY = "cuadrante-gestor-html-v1";
@@ -305,6 +305,7 @@ function loadState(){
         if(state.settings.strictQuota===undefined) state.settings.strictQuota = true;
         if(!state.settings.strictQuotaMigrated){ state.settings.strictQuota = true; state.settings.strictQuotaMigrated = true; }
         if(state.settings.ortMonthly===undefined) state.settings.ortMonthly = 1;
+        if(state.settings.computeFrom===undefined) state.settings.computeFrom = 0;
         state.settings.v = 3;
       }
       else{ state.settings.required = Object.assign({}, DEFAULT_REQUIRED, d.settings.required||{}); }
@@ -929,7 +930,7 @@ function viewStats(){
     const baseExpected = laborablesFor(p) * (p.pct||100)/100;
     let expected = baseExpected;
     if(ui.scope==="month"){
-      const prev = carryBalance(p, ui.month);      // saldo de meses anteriores ya generados
+      const prev = carryBalance(p, ui.month, state.settings.computeFrom||0);   // saldo desde el inicio del cómputo
       const lim = baseExpected*0.25;
       const aj = Math.max(-lim, Math.min(lim, -prev));
       expected = Math.max(0, baseExpected + aj);
@@ -937,7 +938,7 @@ function viewStats(){
     const dev = turnos-expected;
     // Saldo anual acumulado: trabajado - objetivo, en el rango [enero .. mes visible] (o todo el año)
     const upto = ui.scope==="month" ? ui.month+1 : (ui.scope==="range" ? statsTo+1 : 12);
-    const saldo = ui.scope==="range" ? carryBalance(p, upto, statsFrom) : carryBalance(p, upto);
+    const saldo = ui.scope==="range" ? carryBalance(p, upto, statsFrom) : carryBalance(p, upto, state.settings.computeFrom||0);
     html += '<tr style="border-bottom:1px solid var(--slate-100)"><td>'+esc(p.name)+(p.pct<100?' <span class="muted">('+p.pct+'%)</span>':'')+(p.noUrg?' <span class="muted" style="font-size:11px">[sin URG]</span>':'')+(p.noRhb?' <span class="muted" style="font-size:11px">[sin RHB]</span>':'')+(p.noAlru?' <span class="muted" style="font-size:11px">[sin ALRU]</span>':'')+(p.noInt?' <span class="muted" style="font-size:11px">[sin ALINTER]</span>':'')+'</td>'+
       '<td><div style="display:flex;align-items:center;gap:6px"><span class="bar" style="width:'+Math.round((turnos/maxT)*90)+'px;min-width:'+(turnos?6:0)+'px;flex:none"></span><b style="font-size:12px">'+turnos+'</b></div></td>'+
       '<td class="'+(Math.abs(dev)>=3?"dev-bad":"muted")+'" style="font-size:12px">'+expected.toFixed(1)+' ('+(dev>=0?"+":"")+dev.toFixed(1)+')</td>'+
@@ -973,6 +974,11 @@ function viewAjustes(){
     '<label class="row" style="margin-top:10px;font-size:14px">Consultas de ALRU por semana:'+
     '<input type="number" min="0" max="10" value="'+(state.settings.alruPerWeek!==undefined?state.settings.alruPerWeek:2)+'" data-field="alruweek" style="width:64px;text-align:center"></label>'+
     '<label class="row" style="margin-top:10px;font-size:14px;cursor:pointer"><input type="checkbox" data-field="alinterdaily" '+(state.settings.alinterDaily!==false?"checked":"")+' style="accent-color:var(--teal-700)"> Asignar una consulta de ALINTER cada día laborable</label>'+
+    '<label class="row between" style="margin-top:12px;font-size:14px">El cómputo anual empieza en'+
+    '<select data-field="computefrom" style="padding:6px;border:1px solid var(--slate-300);border-radius:8px">'+
+      MONTHS.map((m,i)=>'<option value="'+i+'"'+(((state.settings.computeFrom||0)===i)?" selected":"")+'>'+m+'</option>').join("")+
+    '</select></label>'+
+    '<p class="muted" style="font-size:12px;margin-top:4px">Los meses anteriores a este no cuentan para el saldo ni se compensan. Ponlo en el mes en que empezaste a usar la herramienta para que cuadrantes antiguos o de prueba no alteren los objetivos.</p>'+
     '<label class="row between" style="margin-top:12px;font-size:14px">Consultas de ORT al mes'+
     '<input type="number" min="0" max="10" value="'+(state.settings.ortMonthly!==undefined?state.settings.ortMonthly:1)+'" data-field="ortmonthly" style="width:64px;text-align:center"></label>'+
     '<p class="muted" style="font-size:12px;margin-top:2px">El generador colocará ese número de ALRU cada semana natural, repartidas entre quienes la realizan (interruptor ALRU en Equipo).</p>'+
@@ -1252,6 +1258,7 @@ function importBackup(file){
         if(state.settings.strictQuota===undefined) state.settings.strictQuota = true;
         if(!state.settings.strictQuotaMigrated){ state.settings.strictQuota = true; state.settings.strictQuotaMigrated = true; }
         if(state.settings.ortMonthly===undefined) state.settings.ortMonthly = 1;
+        if(state.settings.computeFrom===undefined) state.settings.computeFrom = 0;
         state.settings.v = 3;
       }
       else{ state.settings.required = Object.assign({}, DEFAULT_REQUIRED, d.settings.required||{}); }
@@ -1315,7 +1322,7 @@ function generateMonth(mode){
       state.physicians.forEach(p=>{
         const k=p.id+"|"+d.key; const a=state.assignments[k];
         if(!a) return;
-        if(a.f==="URG" || a.f==="URGF" || (a.f==="L"&&a.auto) || !a.f){ delete state.assignments[k]; cleared++; }
+        if(a.f==="URG" || a.f==="URGLV" || a.f==="URGF" || (a.f==="L"&&a.auto) || !a.f){ delete state.assignments[k]; cleared++; }
       });
     });
   }
@@ -1330,7 +1337,7 @@ function generateMonth(mode){
   const target = {}, baseTarget = {}, carry = {};
   state.physicians.forEach(p=>{
     baseTarget[p.id] = labDays.length * (p.pct||100)/100;   // objetivo propio del mes
-    carry[p.id] = carryBalance(p, ui.month);                 // saldo de meses previos del año
+    carry[p.id] = carryBalance(p, ui.month, state.settings.computeFrom||0);  // saldo desde el mes de inicio del cómputo
     // Ajuste por saldo, SUAVE: como mucho se compensa un 25% del objetivo mensual.
     // Así un desfase grande se reparte entre varios meses en lugar de descargarse de golpe
     // (evita que alguien acabe con +7 turnos en un mes por compensar meses anteriores).
@@ -1782,7 +1789,7 @@ function resetMonth(all){
     const date = k.slice(k.indexOf("|")+1);
     if(date.indexOf(prefix)!==0) return;
     const a = state.assignments[k];
-    if(all || a.f==="URG" || a.f==="URGF" || (a.f==="L"&&a.auto) || !a.f){ delete state.assignments[k]; n++; }
+    if(all || a.f==="URG" || a.f==="URGLV" || a.f==="URGF" || (a.f==="L"&&a.auto) || !a.f){ delete state.assignments[k]; n++; }
   });
   save(); return n;
 }
@@ -2097,6 +2104,7 @@ document.addEventListener("change", e=>{
   else if(field==="alruweek"){ state.settings.alruPerWeek = Math.min(10,Math.max(0,Number(el.value)||0)); save(); }
   else if(field==="alinterdaily"){ state.settings.alinterDaily = el.checked; save(); }
   else if(field==="strictquota"){ state.settings.strictQuota = el.checked; save(); }
+  else if(field==="computefrom"){ state.settings.computeFrom = Number(el.value)||0; save(); }
   else if(field==="ortmonthly"){ state.settings.ortMonthly = Math.min(10,Math.max(0,Number(el.value)||0)); save(); }
   else if(field==="stats-from"){ ui.statsFrom = Number(el.value); render(); }
   else if(field==="stats-to"){ ui.statsTo = Number(el.value); render(); }
