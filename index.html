@@ -224,6 +224,40 @@ let SYNC = {owner:"", repo:"", branch:"main", token:"", auto:false};
 try{ const _sy = localStorage.getItem(KEY_SYNC); if(_sy) SYNC = Object.assign(SYNC, JSON.parse(_sy)); }catch(e){}
 function saveSync(){ try{ localStorage.setItem(KEY_SYNC, JSON.stringify(SYNC)); }catch(e){} }
 
+// ---- Lectura RÁPIDA de la publicación ----
+// GitHub Pages tarda en reconstruir el sitio tras cada publicación (segundos o minutos).
+// El fichero del repositorio, en cambio, está disponible al instante. Leemos de ahí primero
+// y dejamos Pages como respaldo, así el equipo ve los cambios enseguida.
+function repoRawUrl(){
+  let owner = SYNC.owner, repo = SYNC.repo;
+  if(!owner || !repo){
+    // Deducirlo de la dirección: usuario.github.io/repositorio/
+    try{
+      const h = location.hostname.split(".");
+      if(h.length>2 && h[1]==="github" && h[2]==="io"){
+        owner = h[0];
+        const seg = location.pathname.split("/").filter(Boolean);
+        if(seg.length) repo = seg[0];
+      }
+    }catch(e){}
+  }
+  if(!owner || !repo) return null;
+  return "https://raw.githubusercontent.com/"+owner+"/"+repo+"/"+(SYNC.branch||"main")+"/data.json";
+}
+async function fetchPublished(){
+  const t = Date.now();
+  const raw = repoRawUrl();
+  if(raw){
+    try{
+      const r = await fetch(raw+"?t="+t, {cache:"no-store"});
+      if(r.ok) return await r.json();
+    }catch(e){ /* sin conexión o repositorio privado: probamos con Pages */ }
+  }
+  const r2 = await fetch("data.json?t="+t, {cache:"no-store"});
+  if(r2.ok) return await r2.json();
+  return null;
+}
+
 let pubT = null, pubBusy = false, pubAgain = false;
 function b64utf8(str){ return btoa(unescape(encodeURIComponent(str))); }
 async function ghPublish(manual){
@@ -405,7 +439,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v38";
+const APP_VERSION = "v40";
 const KEY_REQNAME = "cuadrante-reqname-v1";
 const KEY_REQLOG = "cuadrante-reqlog-v1";
 const KEY_APPLIEDLOG = "cuadrante-appliedlog-v1";
@@ -900,7 +934,10 @@ function viewStats(){
         if(dow===0||dow===6) continue;
         const key = keyOf(state.year, mo, day);
         if(hmapStats[key]) continue;
-        n++;  // los días bloqueados NO reducen el objetivo de contrato
+        // Vacaciones, baja, permiso o libranza: no son jornadas exigibles, se descuentan.
+        const a = state.assignments[p.id+"|"+key];
+        if(a && a.f && ABSENCES[a.f]) continue;
+        n++;  // los días bloqueados NO reducen el objetivo (se compensan trabajando de tarde)
       }
     });
     return n;
@@ -1295,11 +1332,14 @@ function carryBalance(p, beforeMonth, fromMonth){
       if(dow===0||dow===6) continue;
       const key=keyOf(state.year, mo, day);
       if(hmap[key]) continue;
-      lab++;
       const a=state.assignments[p.id+"|"+key];
+      // Vacaciones, baja, permiso o libranza: ese día no se debe trabajar, así que
+      // no cuenta como jornada exigible (si no, el saldo quedaría negativo sin motivo).
+      if(a && a.f && ABSENCES[a.f]) continue;
+      lab++;
       if(a) done += turnosOf(a);   // URG=2, URGF=0
     }
-    due += lab * (p.pct||100)/100;  // objetivo del mes (todos los laborables, sin restar bloqueos)
+    due += lab * (p.pct||100)/100;  // objetivo del mes (laborables menos ausencias)
   }
   return done - due;   // + = de más ; - = de menos
 }
@@ -1338,9 +1378,13 @@ function generateMonth(mode){
   const blockedOn = (p,d)=> (p.blocked||[]).includes(d.dow);
 
   // ===== OBJETIVO de contrato = TODOS los días laborables del mes × % (los bloqueos NO reducen) =====
-  const target = {}, baseTarget = {}, carry = {};
+  const target = {}, baseTarget = {}, carry = {}, ausDias = {};
   state.physicians.forEach(p=>{
-    baseTarget[p.id] = labDays.length * (p.pct||100)/100;   // objetivo propio del mes
+    // Días de ausencia (vacaciones, baja, permiso, libranza) en días laborables: no son exigibles
+    let aus = 0;
+    labDays.forEach(d=>{ const a=getA(p.id,d.key); if(a && a.f && ABSENCES[a.f]) aus++; });
+    ausDias[p.id] = aus;
+    baseTarget[p.id] = (labDays.length - aus) * (p.pct||100)/100;   // objetivo del mes, sin los días de ausencia
     carry[p.id] = carryBalance(p, ui.month, state.settings.computeFrom||0);  // saldo desde el mes de inicio del cómputo
     // Ajuste por saldo, SUAVE: como mucho se compensa un 25% del objetivo mensual.
     // Así un desfase grande se reparte entre varios meses en lugar de descargarse de golpe
@@ -1827,8 +1871,8 @@ document.addEventListener("click", e=>{
     case "viewer-refresh":
       (async()=>{
         try{
-          const r = await fetch("data.json",{cache:"no-store"});
-          if(r.ok){ applyPublished(await r.json()); render(); setSave("✓ Actualizado"); }
+          const d = await fetchPublished();
+          if(d){ applyPublished(d); render(); setSave("✓ Actualizado"); }
           else setSave("Sin datos publicados");
         }catch(e){ setSave("Sin conexión"); }
       })();
@@ -1878,9 +1922,9 @@ document.addEventListener("click", e=>{
     case "pull-published":
       (async()=>{
         try{
-          const r = await fetch("data.json",{cache:"no-store"});
-          if(r.ok){
-            applyPublished(await r.json());
+          const d = await fetchPublished();
+          if(d){
+            applyPublished(d);
             NEWER = false;
             state.updatedAt = PUBLISHED_AT || new Date().toISOString();
             try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){}
@@ -1896,7 +1940,7 @@ document.addEventListener("click", e=>{
         try{ localStorage.removeItem(KEY); }catch(e){}
         MODE="viewer"; NEWER=false;
         (async()=>{
-          try{ const r=await fetch("data.json",{cache:"no-store"}); if(r.ok) applyPublished(await r.json()); }catch(e){}
+          try{ const d=await fetchPublished(); if(d) applyPublished(d); }catch(e){}
           render(); setSave("Solo consulta");
         })();
       }
@@ -2135,8 +2179,7 @@ async function boot(){
   let published=null, hasLocal=false;
   try{ hasLocal = !!localStorage.getItem(KEY); }catch(e){}
   try{
-    const r = await fetch("data.json",{cache:"no-store"});
-    if(r.ok) published = await r.json();
+    published = await fetchPublished();
   }catch(e){ /* sin publicación o sin conexión */ }
   if(published && !hasLocal){ MODE="viewer"; applyPublished(published); }
   else if(published && hasLocal && published.publishedAt && (!state.updatedAt || published.publishedAt > state.updatedAt)){
