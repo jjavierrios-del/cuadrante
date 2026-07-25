@@ -439,7 +439,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v42";
+const APP_VERSION = "v43";
 const KEY_REQNAME = "cuadrante-reqname-v1";
 const KEY_REQLOG = "cuadrante-reqlog-v1";
 const KEY_APPLIEDLOG = "cuadrante-appliedlog-v1";
@@ -1520,16 +1520,26 @@ function generateMonth(mode){
   // FASE 1 · URGF (festivos/findes) por rondas equitativas. No cuenta como jornada.
   // =========================================================
   if(urgReq){
-    allDays.filter(d=>(d.dow===0||d.dow===6||d.holiday)).forEach(d=>{
+    const urgfDias = allDays.filter(d=>(d.dow===0||d.dow===6||d.holiday));
+    // URGF que cada facultativo tiene YA en ESTE mes (incluidas las puestas a mano),
+    // para que nadie repita dentro del mes salvo que no haya alternativa.
+    const urgfMes = {}; state.physicians.forEach(p=>urgfMes[p.id]=0);
+    urgfDias.forEach(d=>state.physicians.forEach(p=>{ const a=getA(p.id,d.key); if(a&&a.f==="URGF") urgfMes[p.id]++; }));
+
+    urgfDias.forEach(d=>{
       const has = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&(a.f==="URG"||a.f==="URGF");});
-      if(has) return;
-      const cand = state.physicians.filter(p=> !p.noUrg && notAbsent(p,d.key) && freeM(p,d.key) && freeT(p,d.key));
-      if(!cand.length){ missing_push(unfilled,d.key,"URGF"); return; }
-      const minR = Math.min.apply(null, cand.map(p=>urgfLoad[p.id]));
+      if(has) return;   // ya asignado (por el generador o a mano): se respeta
+      const libres = state.physicians.filter(p=> !p.noUrg && notAbsent(p,d.key) && freeM(p,d.key) && freeT(p,d.key));
+      if(!libres.length){ missing_push(unfilled,d.key,"URGF"); return; }
+      // Preferencia ABSOLUTA por quien aún no tiene ninguna URGF este mes.
+      // Solo si no queda nadie sin URGF se permite repetir (más festivos que adjuntos disponibles).
+      const sinRepetir = libres.filter(p=>urgfMes[p.id]===0);
+      const cand = sinRepetir.length ? sinRepetir : libres;
+      const minR = Math.min.apply(null, cand.map(p=>urgfLoad[p.id]));   // equilibrio a lo largo del año
       const ronda = cand.filter(p=>urgfLoad[p.id]===minR);
-      ronda.sort((x,y)=> (load[x.id]/weight(x)-load[y.id]/weight(y)) || (Math.random()-0.5));
+      ronda.sort((x,y)=> (urgfMes[x.id]-urgfMes[y.id]) || (load[x.id]/weight(x)-load[y.id]/weight(y)) || (Math.random()-0.5));
       const p=ronda[0];
-      state.assignments[p.id+"|"+d.key]={f:"URGF"}; urgfLoad[p.id]++; assigned++;
+      state.assignments[p.id+"|"+d.key]={f:"URGF"}; urgfLoad[p.id]++; urgfMes[p.id]++; assigned++;
     });
   }
 
