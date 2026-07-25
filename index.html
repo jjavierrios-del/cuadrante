@@ -439,7 +439,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v40";
+const APP_VERSION = "v42";
 const KEY_REQNAME = "cuadrante-reqname-v1";
 const KEY_REQLOG = "cuadrante-reqlog-v1";
 const KEY_APPLIEDLOG = "cuadrante-appliedlog-v1";
@@ -1789,7 +1789,10 @@ function generateMonth(mode){
     let progress=true, safety=0;
     while(progress && safety++<3000){
       progress=false;
-      const needing = state.physicians.filter(p=> deficit(p) >= 1-1e-9).sort((x,y)=>deficit(y)-deficit(x));
+      // Se completa hasta el turno MÁS PRÓXIMO: si falta 0,5 o más de jornada, se añade un turno.
+      // Con jornadas fraccionadas (80% de 21 días = 16,8) es imposible cuadrar exacto; redondeando
+      // así la desviación nunca pasa de medio turno, en vez de acumular -0,8 cada mes.
+      const needing = state.physicians.filter(p=> deficit(p) >= 0.5-1e-9).sort((x,y)=>deficit(y)-deficit(x));
       for(const p of needing){
         let done=false;
         // 1ª vuelta: intentar SOLO mañanas (no añade tardes)
@@ -1811,6 +1814,21 @@ function generateMonth(mode){
           const a=getA(p.id,d.key);
           if(a&&a.f) continue;
           if(freeT(p,d.key) && tardesSemanaDe(p.id,d.key)===0 && !weekFull(p,d.key,1)){
+            const c = freeCode(allT, d.key);
+            state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{t:c});
+            load[p.id]++; assigned++; progress=true; done=true; break;
+          }
+        }
+        if(done) break;
+        // 3ª vuelta (ÚLTIMO RECURSO): una SEGUNDA tarde en la misma semana, solo cuando
+        // sin ella el facultativo no llegaría a su contrato. Sigue respetando el tope
+        // semanal de turnos, sus días de no trabajo y la norma de no poner tardes en viernes.
+        for(const d of labDays){
+          if(d.dow===5) continue;
+          if(blockedOn(p,d)) continue;
+          const a2=getA(p.id,d.key);
+          if(a2&&a2.f) continue;
+          if(freeT(p,d.key) && !weekFull(p,d.key,1)){
             const c = freeCode(allT, d.key);
             state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{t:c});
             load[p.id]++; assigned++; progress=true; done=true; break;
