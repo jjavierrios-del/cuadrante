@@ -319,7 +319,45 @@ let state = {
   physicians: [], assignments: {}, holidays: DEFAULT_HOLIDAYS.slice(),
   settings: DEFAULT_SETTINGS(),
   year: 2026,
+  // Cuadrante OFICIAL: foto del mes tal y como se generó, más tus ediciones como jefe de servicio.
+  // Los cambios que autorizas a petición de un compañero NO lo modifican, de modo que los
+  // intercambios entre ellos no alteran el cómputo de urgencias ni el saldo de nadie.
+  baseline: {},
+  // Meses CERRADOS como cuadrante oficial: a partir del cierre, ningún cambio
+  // (ni tuyo ni de los compañeros) altera ya las cifras oficiales de ese mes.
+  official: {},
 };
+
+// Asignación OFICIAL de un facultativo en una fecha.
+// Si el mes tiene foto oficial se usa esa; si no (cuadrantes antiguos), lo realmente asignado.
+function officialAt(pid, dateKey){
+  const mk = dateKey.slice(0,7);
+  const b = state.baseline && state.baseline[mk];
+  if(b) return b[pid+"|"+dateKey];
+  return state.assignments[pid+"|"+dateKey];
+}
+function baselineMonthKey(mo){ return state.year+"-"+pad(mo+1); }
+function isOfficialMonthKey(mk){ return !!(state.official && state.official[mk]); }
+function isOfficial(mo){ return isOfficialMonthKey(baselineMonthKey(mo)); }
+// Cierra (o reabre) el mes como cuadrante oficial
+function setOfficial(mo, cerrar){
+  const mk = baselineMonthKey(mo);
+  state.official = state.official || {};
+  if(cerrar){ snapshotBaseline(mo, true); state.official[mk] = true; }
+  else { delete state.official[mk]; }
+  save();
+}
+// Guarda la foto oficial del mes recién generado
+function snapshotBaseline(mo, forzar){
+  const mk = baselineMonthKey(mo), snap = {};
+  if(!forzar && isOfficialMonthKey(mk)) return;   // mes cerrado: la foto oficial no se toca
+  Object.entries(state.assignments).forEach(([k,a])=>{
+    const dk = k.slice(k.indexOf("|")+1);
+    if(dk.slice(0,7)===mk) snap[k] = JSON.parse(JSON.stringify(a));
+  });
+  state.baseline = state.baseline || {};
+  state.baseline[mk] = snap;
+}
 let ui = {tab:"cuadrante", month:0, brush:null, scope:"year", editCell:null, dayDetail:null, confirmReset:false};
 
 function loadState(){
@@ -329,6 +367,8 @@ function loadState(){
       const d = JSON.parse(raw);
       state.physicians = (d.physicians||[]).map(p=>Object.assign({blocked:[]},p));
       state.assignments = d.assignments||{};
+      state.baseline = d.baseline||{};
+      state.official = d.official||{};
       state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
       state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
       if(!d.settings || (d.settings.v||0) < 3){
@@ -434,12 +474,19 @@ function applyCode(pid, dateKey, code){
     else next = {f:null, m:a.f?null:a.m, t:a.t===code?null:code};
   }
   if(isEmptyA(next)) delete state.assignments[k]; else state.assignments[k]=next;
+  // Tus ediciones como jefe de servicio SÍ son oficiales: actualizan también el cuadrante oficial.
+  // (Los cambios autorizados a petición de un compañero pasan por applyRequest y NO lo tocan.)
+  const mk = dateKey.slice(0,7);
+  if(state.baseline && state.baseline[mk] && !isOfficialMonthKey(mk)){
+    if(isEmptyA(next)) delete state.baseline[mk][k];
+    else state.baseline[mk][k] = JSON.parse(JSON.stringify(next));
+  }
   // La URG ya no genera libranza automática (se retribuye como 2 jornadas laborales).
   save();
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v43";
+const APP_VERSION = "v45";
 const KEY_REQNAME = "cuadrante-reqname-v1";
 const KEY_REQLOG = "cuadrante-reqlog-v1";
 const KEY_APPLIEDLOG = "cuadrante-appliedlog-v1";
@@ -759,10 +806,14 @@ function viewCuadrante(){
     '<div class="row" style="background:#fff;border:1px solid var(--slate-200);border-radius:8px;padding:2px 4px;gap:2px">'+
       '<button class="btn" style="border:none;padding:6px 8px" data-action="prev-month">‹</button>'+
       '<b style="width:130px;text-align:center;font-size:14px">'+MONTHS[ui.month]+' '+state.year+'</b>'+
-      '<button class="btn" style="border:none;padding:6px 8px" data-action="next-month">›</button></div>'+
+      '<button class="btn" style="border:none;padding:6px 8px" data-action="next-month">›</button>'+
+      (isOfficial(ui.month)?'<span class="tiny" style="margin-left:8px;background:#065f46;color:#fff;padding:3px 8px;border-radius:999px">OFICIAL</span>':'')+'</div>'+
     '<div class="row">'+(MODE==="viewer"?'':'<button class="btn primary" data-action="gen-open">Generar mes</button>'+
     '<button class="btn danger" data-action="month-reset">Resetear mes</button>'+
-    '<button class="btn" data-action="review-open">Revisar solicitud</button>')+
+    '<button class="btn" data-action="review-open">Revisar solicitud</button>'+
+    (isOfficial(ui.month)
+      ? '<button class="btn" data-action="official-off" title="Reabrir el mes para que los cambios vuelvan a contar" style="background:#065f46;color:#fff;border-color:#065f46">🔒 Cuadrante oficial</button>'
+      : '<button class="btn" data-action="official-on" title="Cerrar el mes: a partir de ahora los cambios no contarán en las estadísticas">Marcar como oficial</button>'))+
     '<button class="btn" data-action="print">Imprimir</button>'+
     '<button class="btn" data-action="export-csv">Exportar '+state.year+' (CSV)</button></div></div>';
 
@@ -892,13 +943,15 @@ function viewStats(){
   const statsTo = Math.max(ui.statsFrom, ui.statsTo);
   const res = state.physicians.map(p=>({p,turnos:0,URGLV:0,URG:0,URGF:0,AL:0,ALRU:0,ALT:0,INT:0,RHB:0,ORT:0,RXINT:0,aus:0}));
   const byId = Object.fromEntries(res.map(r=>[r.p.id,r]));
-  Object.entries(state.assignments).forEach(([k,a])=>{
+  Object.entries(state.assignments).forEach(([k,a0])=>{
     const i=k.indexOf("|"); const pid=k.slice(0,i), date=k.slice(i+1);
     const r = byId[pid]; if(!r) return;
     const [y,m] = date.split("-").map(Number);
     if(y!==state.year) return;
     if(ui.scope==="month" && m-1!==ui.month) return;
     if(ui.scope==="range"){ const mo=m-1; if(mo<statsFrom || mo>statsTo) return; }
+    // Cómputo OFICIAL: los cambios pactados entre compañeros no alteran estas cifras
+    const a = officialAt(pid, date); if(!a) return;
     r.turnos += turnosOf(a);
     if(a.f==="URG") r.URG++;
     else if(a.f==="URGLV") r.URGLV++;
@@ -935,7 +988,7 @@ function viewStats(){
         const key = keyOf(state.year, mo, day);
         if(hmapStats[key]) continue;
         // Vacaciones, baja, permiso o libranza: no son jornadas exigibles, se descuentan.
-        const a = state.assignments[p.id+"|"+key];
+        const a = officialAt(p.id, key);
         if(a && a.f && ABSENCES[a.f]) continue;
         n++;  // los días bloqueados NO reducen el objetivo (se compensan trabajando de tarde)
       }
@@ -957,7 +1010,7 @@ function viewStats(){
       '<span class="tiny">de '+state.year+'</span></div>';
   }
   if(!state.physicians.length){ return html+'<p class="muted" style="margin-top:12px">Añade facultativos en la pestaña Equipo.</p></div>'; }
-  html += '<p class="muted" style="margin-top:6px">Turnos totales: <b>'+totalT+'</b> (URG computa 2; URGF se retribuye como extra, se cuenta aparte y no suma turnos). «Esperado» = jornadas laborables del periodo × % de contrato (en vista de mes, ajustado para compensar el saldo previo). «Saldo» = jornadas trabajadas menos las debidas en el periodo elegido (+ de más, − de menos); el generador lo compensa en el mes siguiente. Usa <b>Rango</b> para computar solo los meses que ya gestionas (p.ej. octubre a diciembre).</p>';
+  html += '<p class="muted" style="margin-top:6px">Turnos totales: <b>'+totalT+'</b> (URG computa 2; URGF se retribuye como extra, se cuenta aparte y no suma turnos). «Esperado» = jornadas laborables del periodo × % de contrato (en vista de mes, ajustado para compensar el saldo previo). Las cifras corresponden al <b>cuadrante oficial</b>: los cambios pactados entre compañeros y autorizados no alteran el cómputo de nadie. «Saldo» = jornadas trabajadas menos las debidas en el periodo elegido (+ de más, − de menos); el generador lo compensa en el mes siguiente. Usa <b>Rango</b> para computar solo los meses que ya gestionas (p.ej. octubre a diciembre).</p>';
   html += '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:10px"><table class="stats">'+
     '<thead><tr><th>Facultativo</th><th>Turnos</th><th>Esperado</th><th>Saldo</th><th>URGLV</th><th>URG</th><th>URGF</th><th>AL</th><th>ALRU</th><th>ALT</th><th>INT</th><th>RHB</th><th>ORT</th><th>RXI</th><th>Aus.</th></tr></thead><tbody>';
   res.forEach(({p,turnos,URGLV,URG,URGF,AL,ALRU,ALT,INT,RHB,ORT,RXINT,aus})=>{
@@ -1289,6 +1342,8 @@ function importBackup(file){
       if(!d || typeof d!=="object" || !("assignments" in d) || !("physicians" in d)) throw 0;
       state.physicians = (d.physicians||[]).map(p=>Object.assign({blocked:[]},p));
       state.assignments = d.assignments||{};
+      state.baseline = d.baseline||{};
+      state.official = d.official||{};
       state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
       state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
       if(!d.settings || (d.settings.v||0) < 3){
@@ -1315,7 +1370,9 @@ function importBackup(file){
 // Saldo anual acumulado de un facultativo en los meses ANTERIORES a `beforeMonth` del año en curso.
 // saldo = (jornadas trabajadas) - (objetivo de esos meses). Positivo = trabajó de más.
 function monthHasSchedule(mo){
-  const pre = state.year+"-"+pad(mo+1)+"-";
+  const mk = state.year+"-"+pad(mo+1);
+  if(state.baseline && state.baseline[mk] && Object.keys(state.baseline[mk]).length) return true;
+  const pre = mk+"-";
   for(const k in state.assignments){ if(k.slice(k.indexOf("|")+1).indexOf(pre)===0) return true; }
   return false;
 }
@@ -1332,7 +1389,7 @@ function carryBalance(p, beforeMonth, fromMonth){
       if(dow===0||dow===6) continue;
       const key=keyOf(state.year, mo, day);
       if(hmap[key]) continue;
-      const a=state.assignments[p.id+"|"+key];
+      const a=officialAt(p.id, key);   // cómputo OFICIAL (ignora cambios entre compañeros)
       // Vacaciones, baja, permiso o libranza: ese día no se debe trabajar, así que
       // no cuenta como jornada exigible (si no, el saldo quedaría negativo sin motivo).
       if(a && a.f && ABSENCES[a.f]) continue;
@@ -1361,6 +1418,7 @@ function generateMonth(mode){
     first.setUTCDate(first.getUTCDate()-fday+3);
     return dt.getUTCFullYear()+"-W"+String(1+Math.round((dt-first)/(7*864e5))).padStart(2,"0"); };
 
+  if(state.baseline && !isOfficial(ui.month)) delete state.baseline[baselineMonthKey(ui.month)];  // se rehará al final
   if(mode==="regen"){
     allDays.forEach(d=>{
       state.physicians.forEach(p=>{
@@ -1404,8 +1462,10 @@ function generateMonth(mode){
   const intvLoad = {}; state.physicians.forEach(p=>intvLoad[p.id]=0);
   {
     const yPref = state.year+"-";
-    Object.entries(state.assignments).forEach(([k,a])=>{ const i=k.indexOf("|"); const pid=k.slice(0,i), dk=k.slice(i+1);
-      if(dk.indexOf(yPref)===0 && a && (a.m==="ALINTER"||a.m==="RXINT") && intvLoad[pid]!==undefined) intvLoad[pid]++; });
+    Object.entries(state.assignments).forEach(([k,a0])=>{ const i=k.indexOf("|"); const pid=k.slice(0,i), dk=k.slice(i+1);
+      if(dk.indexOf(yPref)!==0 || intvLoad[pid]===undefined) return;
+      const a = officialAt(pid, dk) || a0;
+      if(a && (a.m==="ALINTER"||a.m==="RXINT")) intvLoad[pid]++; });
   }
   const monthPrefix = state.year+"-"+pad(ui.month+1);
   Object.entries(state.assignments).forEach(([k,a])=>{
@@ -1419,9 +1479,10 @@ function generateMonth(mode){
   // URGLV por reiniciar el contador cada mes.
   {
     const yPref = state.year+"-";
-    Object.entries(state.assignments).forEach(([k,a])=>{
+    Object.entries(state.assignments).forEach(([k,a0])=>{
       const i=k.indexOf("|"); const pid=k.slice(0,i), dk=k.slice(i+1);
       if(dk.indexOf(yPref)!==0 || urgLoad[pid]===undefined) return;
+      const a = officialAt(pid, dk) || a0;   // cómputo OFICIAL
       if(a.f==="URG") urgLoad[pid]++;
       else if(a.f==="URGLV") urglvLoad[pid]++;
       else if(a.f==="URGF") urgfLoad[pid]++;
@@ -1431,9 +1492,11 @@ function generateMonth(mode){
   const alruLoad = {}; state.physicians.forEach(p=>alruLoad[p.id]=0);
   {
     const yPref = state.year+"-";
-    Object.entries(state.assignments).forEach(([k,a])=>{
+    Object.entries(state.assignments).forEach(([k,a0])=>{
       const i=k.indexOf("|"); const pid=k.slice(0,i), dk=k.slice(i+1);
-      if(dk.indexOf(yPref)===0 && a && a.m==="ALRU" && alruLoad[pid]!==undefined) alruLoad[pid]++;
+      if(dk.indexOf(yPref)!==0 || alruLoad[pid]===undefined) return;
+      const a = officialAt(pid, dk) || a0;
+      if(a && a.m==="ALRU") alruLoad[pid]++;
     });
   }
 
@@ -1611,8 +1674,10 @@ function generateMonth(mode){
       // para que de octubre a diciembre roten y no recaiga siempre en el mismo.
       const ortYear={}; state.physicians.forEach(p=>ortYear[p.id]=0);
       const yPref = state.year+"-";
-      Object.entries(state.assignments).forEach(([k,a])=>{ const i=k.indexOf("|"); const pid=k.slice(0,i), dk=k.slice(i+1);
-        if(dk.indexOf(yPref)===0 && a && a.m==="ORT" && ortYear[pid]!==undefined) ortYear[pid]++; });
+      Object.entries(state.assignments).forEach(([k,a0])=>{ const i=k.indexOf("|"); const pid=k.slice(0,i), dk=k.slice(i+1);
+        if(dk.indexOf(yPref)!==0 || ortYear[pid]===undefined) return;
+        const a = officialAt(pid, dk) || a0;
+        if(a && a.m==="ORT") ortYear[pid]++; });
       // ORT ya colocadas ESTE mes
       let have = 0;
       labDays.forEach(d=>state.physicians.forEach(p=>{ const a=getA(p.id,d.key); if(a&&a.m==="ORT") have++; }));
@@ -1849,6 +1914,7 @@ function generateMonth(mode){
     }
   }
 
+  snapshotBaseline(ui.month);   // foto del cuadrante OFICIAL de este mes
   save();
   return {assigned, cleared, unfilled};
 }
@@ -1876,7 +1942,7 @@ document.addEventListener("click", e=>{
   const el = e.target.closest("[data-action]");
   if(!el){ return; }
   const act = el.dataset.action;
-  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-required","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-required","official-on","official-off","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
       ui.reqDraft = {}; ui.reqNote = "";
@@ -1974,6 +2040,22 @@ document.addEventListener("click", e=>{
       }
       break;
     case "review-open": ui.tab = "solicitudes"; render(); break;
+    case "official-on": {
+      if(window.confirm("Marcar "+MONTHS[ui.month]+" "+state.year+" como CUADRANTE OFICIAL.\n\n"+
+        "Se congelan las cifras de este mes: a partir de ahora, los cambios que se hagan "+
+        "(intercambios entre compañeros o ediciones tuyas) seguirán viéndose en el cuadrante, "+
+        "pero NO contarán en las estadísticas ni en el reparto de los meses siguientes.\n\n¿Continuar?")){
+        setOfficial(ui.month, true); setSave("🔒 "+MONTHS[ui.month]+" marcado como oficial"); render();
+      }
+      break;
+    }
+    case "official-off": {
+      if(window.confirm("Reabrir "+MONTHS[ui.month]+" "+state.year+".\n\n"+
+        "Las cifras oficiales volverán a actualizarse con tus ediciones y al regenerar el mes.\n\n¿Continuar?")){
+        setOfficial(ui.month, false); setSave("Mes reabierto"); render();
+      }
+      break;
+    }
     case "review-back": ui.reviewModal = {}; renderModal(); break;
     case "reviewt-parse": {
       const txt = (document.getElementById("rvt-in")||{value:""}).value;
@@ -2196,6 +2278,8 @@ document.addEventListener("keydown", e=>{
 function applyPublished(d){
   state.physicians = (d.physicians||[]).map(p=>Object.assign({blocked:[]},p));
   state.assignments = d.assignments||{};
+  state.baseline = d.baseline||{};
+  state.official = d.official||{};
   state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
   state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
   state.settings.required = Object.assign({}, DEFAULT_REQUIRED, (d.settings&&d.settings.required)||{});
