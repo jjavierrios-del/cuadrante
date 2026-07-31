@@ -495,7 +495,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v48";
+const APP_VERSION = "v49";
 const KEY_REQNAME = "cuadrante-reqname-v1";
 const KEY_REQLOG = "cuadrante-reqlog-v1";
 const KEY_APPLIEDLOG = "cuadrante-appliedlog-v1";
@@ -1058,7 +1058,7 @@ function viewStats(){
 function viewAjustes(){
   if(MODE==="viewer"){
     return '<div class="card"><h2>Datos publicados</h2>'+
-      '<p class="muted" style="margin-top:2px">Estás viendo la versión publicada por el servicio'+(PUBLISHED_AT?(' el '+new Date(PUBLISHED_AT).toLocaleString('es-ES')):'')+'.</p>'+
+      '<p class="muted" style="margin-top:2px">Estás viendo la versión publicada por el servicio'+(PUBLISHED_AT?(' el '+new Date(PUBLISHED_AT).toLocaleString('es-ES')):'')+'. Se actualiza sola al abrir la aplicación y mientras la tengas abierta.</p>'+
       '<div class="row" style="margin-top:10px"><button class="btn primary" data-action="viewer-refresh">Actualizar datos</button>'+
       '<button class="btn" data-action="viewer-edit">Pasar a modo edición (copia local)</button></div>'+
       '<p class="muted" style="font-size:12px;margin-top:8px">El modo edición crea una copia en este dispositivo; los cambios no se publican al resto del equipo.</p></div>';
@@ -2324,6 +2324,40 @@ function applyPublished(d){
   state.year = d.year||2026;
   PUBLISHED_AT = d.publishedAt||null;
 }
+// ---- Actualización automática de la versión publicada ----
+// El equipo no tiene que pulsar nada: la app comprueba si hay una publicación más reciente
+// al volver a primer plano y cada minuto mientras esté abierta.
+let AUTO_T = null;
+function ocupadoEditando(){
+  // No interrumpir si hay un formulario o una ventana abierta encima
+  if(ui.tab === "solicitudes") return true;
+  try{ if(document.querySelector(".overlay")) return true; }catch(e){}
+  return false;
+}
+async function autoRefresh(){
+  try{
+    const d = await fetchPublished();
+    if(!d || !d.publishedAt) return;
+    if(PUBLISHED_AT && d.publishedAt <= PUBLISHED_AT) return;   // nada nuevo
+    if(MODE === "viewer"){
+      if(ocupadoEditando()) return;            // se aplicará en la siguiente comprobación
+      applyPublished(d);
+      render();
+      setSave("✓ Actualizado");
+    }else{
+      // En un dispositivo de edición no se sobrescribe nada: solo se avisa
+      if(!state.updatedAt || d.publishedAt > state.updatedAt){ NEWER = true; PUBLISHED_AT = d.publishedAt; render(); }
+    }
+  }catch(e){ /* sin conexión: se reintenta más adelante */ }
+}
+function startAutoRefresh(){
+  if(AUTO_T) clearInterval(AUTO_T);
+  AUTO_T = setInterval(()=>{ if(document.visibilityState === "visible") autoRefresh(); }, 60000);
+  document.addEventListener("visibilitychange", ()=>{ if(document.visibilityState === "visible") autoRefresh(); });
+  window.addEventListener("focus", autoRefresh);
+  window.addEventListener("online", autoRefresh);
+}
+
 async function boot(){
   loadState();
   let published=null, hasLocal=false;
@@ -2337,6 +2371,7 @@ async function boot(){
   }
   setSave(MODE==="viewer" ? "Solo consulta" : "✓ Guardado");
   render();
+  startAutoRefresh();
 }
 boot();
 if("serviceWorker" in navigator){
