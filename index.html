@@ -500,7 +500,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v53";
+const APP_VERSION = "v54";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -571,20 +571,22 @@ function buildRequestText(){
       (note?("Motivo: "+note+"\n"):"")+
       "\n[SOLICITUD]"+JSON.stringify(payload);
   }
+  // MOVER una consulta de un día a otro
   const p = state.physicians.find(x=>x.id===rq.pid);
-  const cur = state.assignments[(rq.pid||"")+"|"+rq.date];
   const d2 = ui.reqDraft||{};
-  const prop = proposeCell(cur, d2.fromPart, d2.toCode);
-  const payload = {v:2, by:name, pid:rq.pid, phys:p?p.name:"", date:rq.date,
-                   from:cur||{}, fromPart:d2.fromPart||"", toCode:d2.toCode||"",
-                   to:(prop?prop:{clear:true}), note:note};
-  return "Solicitud de cambio de cuadrante\n"+
+  const part = d2.movePart||"";
+  const slot = d2.moveSlot || (part ? part.split(":")[0] : "m");
+  const code = part ? part.slice(part.indexOf(":")+1) : "";
+  const payload = {v:3, type:"move", by:name, note:note,
+                   pid:rq.pid, phys:p?p.name:"",
+                   dateFrom:rq.date, part:part, code:code,
+                   dateTo:rq.dateB||rq.date, slot:slot};
+  return "Solicitud para MOVER una consulta de día\n"+
     "Solicitante: "+(name||"(sin nombre)")+"\n"+
     "Facultativo: "+(p?p.name:"")+"\n"+
-    "Fecha: "+fmtDate(rq.date)+"\n"+
-    "Consulta inicial: "+partLabel(d2.fromPart)+"\n"+
-    "Nueva consulta: "+codeLabel(d2.toCode)+"\n"+
-    "El día quedaría: "+cellToText(prop)+"\n"+
+    "Mueve: "+partLabel(part)+"\n"+
+    "Del día: "+fmtDate(rq.date)+"\n"+
+    "Al día:  "+fmtDate(rq.dateB||rq.date)+" ("+(slot==="m"?"mañana":"tarde")+")\n"+
     (note?("Motivo: "+note+"\n"):"")+
     "\n[SOLICITUD]"+JSON.stringify(payload);
 }
@@ -599,6 +601,10 @@ function parseRequest(txt){
   try{ r = JSON.parse(chunk); }
   catch(e){ try{ r = JSON.parse(chunk.replace(/[\r\n]+/g," ")); }catch(e2){ return null; } }
   if(!r) return null;
+  if(r.type==="move"){
+    if(!r.dateFrom || !r.dateTo || (!r.pid && !r.phys)) return null;
+    return r;
+  }
   if(r.type==="swap"){
     if(!r.dateA || !r.dateB || (!r.pidA && !r.physA) || (!r.pidB && !r.physB)) return null;
     return r;
@@ -607,6 +613,35 @@ function parseRequest(txt){
   return r;
 }
 function applyRequest(r){
+  if(r.type==="move"){
+    let p = state.physicians.find(x=>x.id===r.pid) || state.physicians.find(x=>x.name===r.phys);
+    if(!p) return "No se encuentra al facultativo «"+(r.phys||"")+"» en el equipo.";
+    const kFrom = p.id+"|"+r.dateFrom, kTo = p.id+"|"+r.dateTo;
+    const orig = state.assignments[kFrom];
+    if(!orig) return "En el día de origen no hay nada asignado.";
+    const slotOrig = (r.part||"").split(":")[0] || "m";
+    const code = r.code || (slotOrig==="f" ? orig.f : (slotOrig==="m" ? orig.m : orig.t));
+    if(!code) return "No se encuentra la consulta que se quiere mover.";
+    const slotDest = r.slot || "m";
+    // Comprobar el destino ANTES de tocar el origen
+    const dest = Object.assign({}, state.assignments[kTo]||{});
+    if(kFrom!==kTo){
+      if(dest.f) return "El día de destino está ocupado por «"+cellToText(dest)+"».";
+      if(dest[slotDest]) return "El turno de "+(slotDest==="m"?"mañana":"tarde")+" del día de destino ya está ocupado por "+dest[slotDest]+".";
+    }
+    // Quitar del origen
+    if(slotOrig==="f"){ delete state.assignments[kFrom]; }
+    else{
+      const c = Object.assign({}, orig); c[slotOrig] = null;
+      if(!c.m && !c.t && !c.f) delete state.assignments[kFrom]; else state.assignments[kFrom] = c;
+    }
+    // Colocar en el destino
+    const dest2 = Object.assign({}, state.assignments[kTo]||{});
+    dest2[slotDest] = code;
+    state.assignments[kTo] = {m:dest2.m||null, t:dest2.t||null, f:null};
+    save();
+    return null;
+  }
   if(r.type==="swap"){
     let pa = state.physicians.find(x=>x.id===r.pidA) || state.physicians.find(x=>x.name===r.physA);
     let pb = state.physicians.find(x=>x.id===r.pidB) || state.physicians.find(x=>x.name===r.physB);
@@ -663,7 +698,7 @@ function solicitudFormHTML(){
   const physSel = (field, val)=>'<select data-field="'+field+'" style="flex:1;padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
       phys.map(x=>'<option value="'+x.id+'"'+(val===x.id?" selected":"")+'>'+esc(x.name)+'</option>').join("")+'</select>';
   const hasContact = !!(state.settings.reqEmail||state.settings.reqPhone);
-  rq.type = rq.type || "cambio";
+  rq.type = rq.type || "mover";
   let core;
   if(rq.type==="intercambio"){
     if(!rq.pidB || !phys.find(x=>x.id===rq.pidB)){
@@ -681,34 +716,40 @@ function solicitudFormHTML(){
       '<p class="muted" style="margin-top:4px;font-size:13px">B cede: <b>'+cellToText(curB)+'</b></p>'+
       '<p class="muted" style="font-size:12px;margin-top:6px">Al autorizarse, B asumirá lo de A en el día de A, y A asumirá lo de B en el día de B.</p>';
   }else{
-    if(d.fromPart===undefined){
-      d.fromPart = cur ? (cur.f ? "f:"+cur.f : (cur.m ? "m:"+cur.m : (cur.t ? "t:"+cur.t : ""))) : "";
-      d.toCode = d.toCode || "";
+    // MOVER una consulta de un día a otro (mismo facultativo)
+    rq.dateB = rq.dateB || rq.date;
+    const destino = state.assignments[(rq.pid||"")+"|"+rq.dateB];
+    // Consultas que tiene ese día en el origen
+    if(d.movePart===undefined){
+      d.movePart = cur ? (cur.m ? "m:"+cur.m : (cur.t ? "t:"+cur.t : (cur.f ? "f:"+cur.f : ""))) : "";
     }
-    let fromOpts = '';
-    if(cur && cur.f) fromOpts += '<option value="f:'+cur.f+'"'+(d.fromPart==="f:"+cur.f?" selected":"")+'>'+partLabel("f:"+cur.f)+'</option>';
-    if(cur && cur.m) fromOpts += '<option value="m:'+cur.m+'"'+(d.fromPart==="m:"+cur.m?" selected":"")+'>'+partLabel("m:"+cur.m)+'</option>';
-    if(cur && cur.t) fromOpts += '<option value="t:'+cur.t+'"'+(d.fromPart==="t:"+cur.t?" selected":"")+'>'+partLabel("t:"+cur.t)+'</option>';
-    fromOpts += '<option value=""'+(d.fromPart===""?" selected":"")+'>'+((cur&&(cur.m||cur.t||cur.f))?"— (no quitar nada, solo añadir)":"— (día vacío)")+'</option>';
-    const toOpts = '<option value=""'+(d.toCode?"":" selected")+'>Ninguna (liberar)</option>'+
-      '<optgroup label="Mañana">'+MORNING.map(c=>'<option value="'+c.code+'"'+(d.toCode===c.code?" selected":"")+'>'+c.code+'</option>').join("")+'</optgroup>'+
-      '<optgroup label="Tarde">'+AFTERNOON.map(c=>'<option value="'+c.code+'"'+(d.toCode===c.code?" selected":"")+'>'+c.code+'</option>').join("")+'</optgroup>'+
-      '<optgroup label="Día completo">'+['URG','URGF'].map(c=>'<option value="'+c+'"'+(d.toCode===c?" selected":"")+'>'+c+'</option>').join("")+
-        Object.entries(ABSENCES).map(([c,x])=>'<option value="'+c+'"'+(d.toCode===c?" selected":"")+'>'+x.label+'</option>').join("")+'</optgroup>';
-    const prop = proposeCell(cur, d.fromPart, d.toCode);
-    core = '<p class="tiny" style="margin-top:10px">Facultativo y fecha</p>'+
-      '<div class="row" style="margin-top:4px">'+physSel("rq-phys", p?p.id:"")+
-      '<input type="date" value="'+rq.date+'" data-field="rq-date" style="padding:7px"></div>'+
-      '<p class="muted" style="margin-top:6px;font-size:13px">Asignación actual del día: <b>'+cellToText(cur)+'</b></p>'+
-      '<p class="tiny" style="margin-top:10px">Consulta inicial (la que quieres cambiar)</p>'+
-      '<select data-field="rq-from" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+fromOpts+'</select>'+
-      '<p class="tiny" style="margin-top:10px">Nueva consulta (por la que la cambias)</p>'+
-      '<select data-field="rq-to" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+toOpts+'</select>'+
-      '<p class="muted" style="font-size:12px;margin-top:6px">El día quedaría: <b>'+cellToText(prop)+'</b></p>';
+    let origenOpts = '';
+    if(cur && cur.m) origenOpts += '<option value="m:'+cur.m+'"'+(d.movePart==="m:"+cur.m?" selected":"")+'>'+partLabel("m:"+cur.m)+'</option>';
+    if(cur && cur.t) origenOpts += '<option value="t:'+cur.t+'"'+(d.movePart==="t:"+cur.t?" selected":"")+'>'+partLabel("t:"+cur.t)+'</option>';
+    if(cur && cur.f) origenOpts += '<option value="f:'+cur.f+'"'+(d.movePart==="f:"+cur.f?" selected":"")+'>'+partLabel("f:"+cur.f)+'</option>';
+    if(!origenOpts) origenOpts = '<option value="">— (ese día no tienes nada asignado)</option>';
+    // Turno de destino: mañana o tarde del día elegido
+    const slot = d.moveSlot || (d.movePart ? d.movePart.split(":")[0] : "m");
+    const libreDestino = !destino ? "libre" : (slot==="m" ? (destino.m?("ocupado: "+destino.m):"libre") : (destino.t?("ocupado: "+destino.t):"libre"));
+    core = '<p class="tiny" style="margin-top:10px">Facultativo</p>'+
+      '<div class="row" style="margin-top:4px">'+physSel("rq-phys", p?p.id:"")+'</div>'+
+      '<p class="tiny" style="margin-top:10px">Día de origen (de donde sale la consulta)</p>'+
+      '<input type="date" value="'+rq.date+'" data-field="rq-date" style="padding:7px;width:100%;margin-top:4px">'+
+      '<p class="muted" style="margin-top:4px;font-size:13px">Ese día tienes: <b>'+cellToText(cur)+'</b></p>'+
+      '<p class="tiny" style="margin-top:8px">Consulta que quieres mover</p>'+
+      '<select data-field="rq-movepart" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+origenOpts+'</select>'+
+      '<p class="tiny" style="margin-top:12px">Día de destino (a donde la llevas)</p>'+
+      '<input type="date" value="'+rq.dateB+'" data-field="rq-dateb" style="padding:7px;width:100%;margin-top:4px">'+
+      '<p class="tiny" style="margin-top:8px">Turno en el día de destino</p>'+
+      '<select data-field="rq-moveslot" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+
+        '<option value="m"'+(slot==="m"?" selected":"")+'>Mañana</option>'+
+        '<option value="t"'+(slot==="t"?" selected":"")+'>Tarde</option>'+
+      '</select>'+
+      '<p class="muted" style="margin-top:6px;font-size:13px">Ese día tienes: <b>'+cellToText(destino)+'</b> · el turno de '+(slot==="m"?"mañana":"tarde")+' está <b>'+libreDestino+'</b></p>';
   }
   return '<p class="tiny" style="margin-top:10px">Tipo de solicitud</p>'+
     '<select data-field="rq-type" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+
-      '<option value="cambio"'+(rq.type==="cambio"?" selected":"")+'>Cambio de asignación</option>'+
+      '<option value="mover"'+(rq.type==="mover"?" selected":"")+'>Mover una consulta de día</option>'+
       '<option value="intercambio"'+(rq.type==="intercambio"?" selected":"")+'>Intercambio de días entre facultativos</option>'+
     '</select>'+
     core+
@@ -762,11 +803,24 @@ function viewSolicitudes(){
         (r.note?'<p style="font-size:14px;margin-top:4px"><b>Motivo:</b> '+esc(r.note)+'</p>':'')+
         warns.map(w=>'<p style="font-size:12px;color:#92400e;margin-top:4px">⚠ '+w+'</p>').join("");
     }else{
+      if(r.type==="move"){
+        const pm = state.physicians.find(x=>x.id===r.pid) || state.physicians.find(x=>x.name===r.phys);
+        const destino = pm ? state.assignments[pm.id+"|"+r.dateTo] : null;
+        const slotTxt = (r.slot==="t") ? "tarde" : "mañana";
+        const ocupado = destino && (destino.f || destino[r.slot||"m"]);
+        ficha = '<p style="font-size:14px"><b>Solicitante:</b> '+esc(r.by||"(sin nombre)")+' · <b>MOVER CONSULTA</b></p>'+
+          '<p style="font-size:14px;margin-top:4px"><b>Facultativo:</b> '+esc(r.phys||"")+'</p>'+
+          '<p style="font-size:14px;margin-top:4px"><b>Mueve:</b> '+esc(partLabel(r.part||""))+'</p>'+
+          '<p style="font-size:14px;margin-top:4px">'+fmtDate(r.dateFrom)+'  →  '+fmtDate(r.dateTo)+' ('+slotTxt+')</p>'+
+          (r.note?'<p style="font-size:14px;margin-top:4px"><b>Motivo:</b> '+esc(r.note)+'</p>':'')+
+          (ocupado?'<p style="font-size:12px;color:#92400e;margin-top:4px">⚠ El destino ya tiene '+cellToText(destino)+'</p>':'');
+      }else{
       ficha = '<p style="font-size:14px"><b>Solicitante:</b> '+esc(r.by||"(sin nombre)")+'</p>'+
         '<p style="font-size:14px;margin-top:4px"><b>Facultativo:</b> '+esc(r.phys||"")+' · <b>Fecha:</b> '+fmtDate(r.date)+'</p>'+
         ((r.fromPart!==undefined && r.toCode!==undefined)?'<p style="font-size:14px;margin-top:4px"><b>Cambia:</b> '+esc(partLabel(r.fromPart||""))+' → <b>'+esc(codeLabel(r.toCode||""))+'</b></p>':'')+
         '<p style="font-size:14px;margin-top:4px"><b>Día actual:</b> '+cellToText(r.from)+' → <b>Quedaría:</b> '+cellToText(r.to&&r.to.clear?null:r.to)+'</p>'+
         (r.note?'<p style="font-size:14px;margin-top:4px"><b>Motivo:</b> '+esc(r.note)+'</p>':'');
+      }
     }
     h += '<div class="card" style="margin-top:10px;background:var(--slate-50)">'+ficha+'</div>'+
       (rv.err?'<p style="color:var(--rose-700);font-size:13px;margin-top:8px">'+esc(rv.err)+'</p>':'')+
@@ -2108,8 +2162,9 @@ document.addEventListener("click", e=>{
           entry = {at:new Date().toISOString(), phys:(pa?pa.name:"")+" ⇄ "+(pb?pb.name:""), date:ui.reqModal.date, prop:"Intercambio con "+fmtDate(ui.reqModal.dateB||ui.reqModal.date)};
         }else{
           const pp = state.physicians.find(x=>x.id===(ui.reqModal||{}).pid);
+          const dd = ui.reqDraft||{};
           entry = {at:new Date().toISOString(), phys:pp?pp.name:"", date:(ui.reqModal||{}).date,
-                   prop:partLabel((ui.reqDraft||{}).fromPart||"")+" → "+codeLabel((ui.reqDraft||{}).toCode||"")};
+                   prop:"Mueve "+partLabel(dd.movePart||"")+" a "+fmtDate((ui.reqModal||{}).dateB||(ui.reqModal||{}).date)};
         }
         lg.unshift(entry);
         localStorage.setItem(KEY_REQLOG, JSON.stringify(lg.slice(0,30)));
@@ -2178,11 +2233,13 @@ document.addEventListener("click", e=>{
             const lg = JSON.parse(localStorage.getItem(KEY_APPLIEDLOG)||"[]");
             const entry = rq0.type==="swap"
               ? {at:new Date().toISOString(), by:rq0.by||"", phys:(rq0.physA||"")+" ⇄ "+(rq0.physB||""), date:rq0.dateA, prop:"Intercambio "+fmtDate(rq0.dateA)+" / "+fmtDate(rq0.dateB)}
-              : {at:new Date().toISOString(), by:rq0.by||"", phys:rq0.phys||"", date:rq0.date, prop:cellToText(rq0.to&&rq0.to.clear?null:rq0.to)};
+              : (rq0.type==="move"
+                 ? {at:new Date().toISOString(), by:rq0.by||"", phys:rq0.phys||"", date:rq0.dateFrom, prop:"Mueve "+partLabel(rq0.part||"")+" a "+fmtDate(rq0.dateTo)}
+                 : {at:new Date().toISOString(), by:rq0.by||"", phys:rq0.phys||"", date:rq0.date, prop:cellToText(rq0.to&&rq0.to.clear?null:rq0.to)});
             lg.unshift(entry);
             localStorage.setItem(KEY_APPLIEDLOG, JSON.stringify(lg.slice(0,50)));
           }catch(e){}
-          const dref = rq0.type==="swap" ? rq0.dateA : rq0.date;
+          const dref = rq0.type==="swap" ? rq0.dateA : (rq0.type==="move" ? rq0.dateTo : rq0.date);
           const pr = dref.split("-").map(Number);
           state.year = pr[0]; ui.month = pr[1]-1; save();
           ui.reviewTab = {}; ui.tab = "cuadrante";
@@ -2345,14 +2402,14 @@ document.addEventListener("change", e=>{
   if(fld.indexOf("rq-")===0){
     const nt = document.getElementById("rq-note"); if(nt) ui.reqNote = nt.value;
     const rqRefresh = ()=>{ (ui.reqModal && ui.reqModal.tab) ? render() : renderModal(); };
-    if(fld==="rq-phys"){ if(ui.reqModal){ ui.reqModal.pid = el.value; if(ui.reqDraft) ui.reqDraft.fromPart = undefined; rqRefresh(); } }
-    else if(fld==="rq-date"){ if(ui.reqModal && el.value){ ui.reqModal.date = el.value; if(ui.reqDraft) ui.reqDraft.fromPart = undefined; rqRefresh(); } }
+    if(fld==="rq-phys"){ if(ui.reqModal){ ui.reqModal.pid = el.value; if(ui.reqDraft){ ui.reqDraft.fromPart = undefined; ui.reqDraft.movePart = undefined; } rqRefresh(); } }
+    else if(fld==="rq-date"){ if(ui.reqModal && el.value){ ui.reqModal.date = el.value; if(ui.reqDraft){ ui.reqDraft.fromPart = undefined; ui.reqDraft.movePart = undefined; } rqRefresh(); } }
     else if(fld==="rq-f"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.f = el.value; if(el.value){ ui.reqDraft.m=""; ui.reqDraft.t=""; } rqRefresh(); }
     else if(fld==="rq-m"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.m = el.value; ui.reqDraft.f=""; rqRefresh(); }
     else if(fld==="rq-t"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.t = el.value; ui.reqDraft.f=""; rqRefresh(); }
     else if(fld==="rq-type"){ if(ui.reqModal){ ui.reqModal.type = el.value; rqRefresh(); } }
-    else if(fld==="rq-from"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.fromPart = el.value; rqRefresh(); }
-    else if(fld==="rq-to"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.toCode = el.value; rqRefresh(); }
+    else if(fld==="rq-movepart"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.movePart = el.value; ui.reqDraft.moveSlot = el.value ? el.value.split(":")[0] : "m"; rqRefresh(); }
+    else if(fld==="rq-moveslot"){ ui.reqDraft = ui.reqDraft||{}; ui.reqDraft.moveSlot = el.value; rqRefresh(); }
     else if(fld==="rq-physb"){ if(ui.reqModal){ ui.reqModal.pidB = el.value; rqRefresh(); } }
     else if(fld==="rq-dateb"){ if(ui.reqModal && el.value){ ui.reqModal.dateB = el.value; rqRefresh(); } }
     else if(fld==="rq-name"){ ui.reqName = el.value; try{ localStorage.setItem(KEY_REQNAME, el.value.trim()); }catch(e2){} }
