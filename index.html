@@ -212,7 +212,7 @@ const DEFAULT_HOLIDAYS = [
 ];
 const POOL_DEFAULT = {AL1:1,AL2:1,AL3:1,AL4:1,AL5:1,AL6:1,RHB1:1,RHB2:1,ALINTER:1};
 const DEFAULT_REQUIRED = Object.fromEntries(CONSULTAS.map(c=>[c.code, !!POOL_DEFAULT[c.code]]));
-const DEFAULT_SETTINGS = ()=>({autoLibranza:true, urgRequired:true, minMorning:8, alruPerWeek:2, alinterDaily:true, ortMonthly:1, strictQuota:true, computeFrom:0, v:3, reqEmail:"", reqPhone:"", required:Object.assign({},DEFAULT_REQUIRED)});
+const DEFAULT_SETTINGS = ()=>({autoLibranza:true, urgRequired:true, minMorning:8, maxMorning:8, alruPerWeek:2, alinterDaily:true, ortMonthly:1, strictQuota:true, computeFrom:0, v:3, reqEmail:"", reqPhone:"", required:Object.assign({},DEFAULT_REQUIRED)});
 
 // ------------------ Estado ------------------
 const KEY = "cuadrante-gestor-html-v1";
@@ -393,6 +393,7 @@ function loadState(){
         if(!state.settings.strictQuotaMigrated){ state.settings.strictQuota = true; state.settings.strictQuotaMigrated = true; }
         if(state.settings.ortMonthly===undefined) state.settings.ortMonthly = 1;
         if(state.settings.computeFrom===undefined) state.settings.computeFrom = 0;
+        if(state.settings.maxMorning===undefined) state.settings.maxMorning = 8;
         state.settings.v = 3;
       }
       else{ state.settings.required = Object.assign({}, DEFAULT_REQUIRED, d.settings.required||{}); }
@@ -499,7 +500,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v50";
+const APP_VERSION = "v51";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1090,8 +1091,11 @@ function viewAjustes(){
     '<label class="row" style="margin-top:10px;font-size:14px;cursor:pointer">'+
     '<input type="checkbox" data-field="urgreq" '+(state.settings.urgRequired!==false?"checked":"")+' style="width:16px;height:16px;accent-color:var(--teal-700)"> '+
     'Urgencias todos los días (URG en laborables · URGF en sábados, domingos y festivos)</label>'+
+    '<label class="row" style="margin-top:10px;font-size:14px">Consultas físicas de mañana (máximo simultáneo):'+
+    '<input type="number" min="1" max="20" value="'+(state.settings.maxMorning||8)+'" data-field="maxmorning" style="width:64px;text-align:center"></label>'+
+    '<p class="muted" style="font-size:12px;margin-top:4px">Despachos disponibles a la vez por la mañana. Se ocupan por orden de prioridad: RHB1, RHB2, ALINTER, ALRU y ORT primero; los AL cubren lo que sobre. Cuando se llenan, el resto de facultativos pasan a la tarde. RXINT no ocupa consulta física.</p>'+
     '<label class="row" style="margin-top:10px;font-size:14px">Mínimo de consultas de mañana a cubrir:'+
-    '<input type="number" min="0" max="10" value="'+(state.settings.minMorning||8)+'" data-field="minmorning" style="width:64px;text-align:center"></label>'+
+    '<input type="number" min="0" max="20" value="'+(state.settings.minMorning||8)+'" data-field="minmorning" style="width:64px;text-align:center"></label>'+
     '<label class="row" style="margin-top:10px;font-size:14px">Consultas de ALRU por semana:'+
     '<input type="number" min="0" max="10" value="'+(state.settings.alruPerWeek!==undefined?state.settings.alruPerWeek:2)+'" data-field="alruweek" style="width:64px;text-align:center"></label>'+
     '<label class="row" style="margin-top:10px;font-size:14px;cursor:pointer"><input type="checkbox" data-field="alinterdaily" '+(state.settings.alinterDaily!==false?"checked":"")+' style="accent-color:var(--teal-700)"> Asignar una consulta de ALINTER cada día laborable</label>'+
@@ -1382,6 +1386,7 @@ function importBackup(file){
         if(!state.settings.strictQuotaMigrated){ state.settings.strictQuota = true; state.settings.strictQuotaMigrated = true; }
         if(state.settings.ortMonthly===undefined) state.settings.ortMonthly = 1;
         if(state.settings.computeFrom===undefined) state.settings.computeFrom = 0;
+        if(state.settings.maxMorning===undefined) state.settings.maxMorning = 8;
         state.settings.v = 3;
       }
       else{ state.settings.required = Object.assign({}, DEFAULT_REQUIRED, d.settings.required||{}); }
@@ -1439,6 +1444,18 @@ function generateMonth(mode){
   const alruTarget = (state.settings.alruPerWeek!==undefined ? state.settings.alruPerWeek : 2);
   let cleared=0, assigned=0; const unfilled=[];
   const labDays = allDays.filter(d=> d.dow!==0 && d.dow!==6 && !d.holiday);
+  // TOPE FÍSICO de consultas de mañana: solo hay N despachos disponibles a la vez.
+  // Cuenta TODAS las de mañana (AL, RHB, ALINTER, ALRU, ORT, RXINT). Al llenarse,
+  // los facultativos que queden pasan a la tarde.
+  const maxM = state.settings.maxMorning || 8;
+  // RXINT no ocupa una de las consultas físicas (se hace en otro espacio), así que no cuenta.
+  const OCUPA_CONSULTA = (code)=> !!code && code!=="RXINT";
+  const mananasOcupadas = (dkey)=>{
+    let n=0;
+    state.physicians.forEach(p=>{ const a=getA(p.id,dkey); if(a && OCUPA_CONSULTA(a.m)) n++; });
+    return n;
+  };
+  const hayHuecoMañana = (dkey)=> mananasOcupadas(dkey) < maxM;
   const isoWeek = (k)=>{ const pr=k.split("-").map(Number); const dt=new Date(Date.UTC(pr[0],pr[1]-1,pr[2]));
     const day=(dt.getUTCDay()+6)%7; dt.setUTCDate(dt.getUTCDate()-day+3);
     const first=new Date(Date.UTC(dt.getUTCFullYear(),0,4)); const fday=(first.getUTCDay()+6)%7;
@@ -1684,6 +1701,7 @@ function generateMonth(mode){
     labDays.forEach(d=>{
       const ya = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&a.m==="ALINTER";});
       if(ya) return;
+      if(!hayHuecoMañana(d.key)){ missing_push(unfilled,d.key,"ALINTER (sin consulta libre)"); return; }
       const cand = state.physicians.filter(p=> !p.noInt && !blockedOn(p,d) && freeM(p,d.key));
       // ALINTER: al de MENOS intervencionismo total (RXINT+ALINTER) en el año.
       // Quien ya acumuló RXINT recibirá menos ALINTER, igualando la suma para todos.
@@ -1724,6 +1742,7 @@ function generateMonth(mode){
           const dias = labDays.slice().sort(()=>Math.random()-0.5);   // aleatorio para variar el día
           for(const d of dias){
             if(blockedOn(p,d)) continue;
+            if(!hayHuecoMañana(d.key)) continue;
             const a=getA(p.id,d.key); if(a&&(a.f||a.m)) continue;
             if(strictMode && wouldExceed(p,1)) continue;
             if(weekFull(p,d.key,1)) continue;
@@ -1768,6 +1787,7 @@ function generateMonth(mode){
           // ¿tiene algún día válido esta semana?
           return wdays.some(d=>{
             if(blockedOn(p,d)) return false;
+            if(!hayHuecoMañana(d.key)) return false;
             const a=getA(p.id,d.key); if(a&&(a.f||a.m)) return false;
             if(state.physicians.some(q=>{const aa=getA(q.id,d.key); return aa&&aa.m==="ALRU";})) return false;
             if(strictMode && wouldExceed(p,1)) return false;
@@ -1782,6 +1802,7 @@ function generateMonth(mode){
         // buscar su primer día válido de la semana
         const d = wdays.find(dd=>{
           if(blockedOn(p,dd)) return false;
+          if(!hayHuecoMañana(dd.key)) return false;
           const a=getA(p.id,dd.key); if(a&&(a.f||a.m)) return false;
           if(state.physicians.some(q=>{const aa=getA(q.id,dd.key); return aa&&aa.m==="ALRU";})) return false;
           if(strictMode && wouldExceed(p,1)) return false;
@@ -1809,6 +1830,7 @@ function generateMonth(mode){
     pool.forEach(c=>{
       if(c==="ALINTER") return; // ya gestionado en fase 3
       if(covered>=minM || cmapDay[c]) return;
+      if(!hayHuecoMañana(d.key)) return;   // no quedan consultas físicas libres
       const cand = state.physicians.filter(pp=>pp.pref===c && canDo(pp,c) && !blockedOn(pp,d) && notAbsent(pp,d.key) && freeM(pp,d.key) && !wouldExceed(pp,1) && !weekFull(pp,d.key,1));
       if(cand.length){ const p=byDeficit(cand)[0]; state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:c}); load[p.id]++; assigned++; cmapDay[c]=true; covered++; }
     });
@@ -1816,6 +1838,7 @@ function generateMonth(mode){
     pool.forEach(c=>{
       if(c==="ALINTER") return;
       if(covered>=minM || cmapDay[c]) return;
+      if(!hayHuecoMañana(d.key)) return;   // no quedan consultas físicas libres
       const cand = state.physicians.filter(pp=>canDo(pp,c) && !blockedOn(pp,d) && notAbsent(pp,d.key) && freeM(pp,d.key));
       const p = pick(cand, d.key);
       if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:c}); load[p.id]++; assigned++; cmapDay[c]=true; covered++; }
@@ -1920,7 +1943,7 @@ function generateMonth(mode){
           if(blockedOn(p,d)) continue;
           const a=getA(p.id,d.key);
           if(a&&a.f) continue;
-          if(freeM(p,d.key) && !weekFull(p,d.key,1)){
+          if(freeM(p,d.key) && !weekFull(p,d.key,1) && hayHuecoMañana(d.key)){
             const c = freeCode(allM, d.key);
             state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:c});
             load[p.id]++; assigned++; progress=true; done=true; break;
@@ -2308,7 +2331,8 @@ document.addEventListener("change", e=>{
   else if(field==="phys-pref"){ const p=state.physicians.find(x=>x.id===el.dataset.pid); if(p){p.pref=el.value||null; save();} }
   else if(field==="autolib"){ state.settings.autoLibranza = el.checked; save(); }
   else if(field==="urgreq"){ state.settings.urgRequired = el.checked; save(); }
-  else if(field==="minmorning"){ state.settings.minMorning = Math.min(10,Math.max(0,Number(el.value)||0)); save(); }
+  else if(field==="minmorning"){ state.settings.minMorning = Math.min(20,Math.max(0,Number(el.value)||0)); save(); }
+  else if(field==="maxmorning"){ state.settings.maxMorning = Math.min(20,Math.max(1,Number(el.value)||8)); save(); }
   else if(field==="alruweek"){ state.settings.alruPerWeek = Math.min(10,Math.max(0,Number(el.value)||0)); save(); }
   else if(field==="alinterdaily"){ state.settings.alinterDaily = el.checked; save(); }
   else if(field==="strictquota"){ state.settings.strictQuota = el.checked; save(); }
