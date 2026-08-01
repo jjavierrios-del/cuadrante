@@ -500,7 +500,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v52";
+const APP_VERSION = "v53";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1484,6 +1484,13 @@ function generateMonth(mode){
   // El generador nunca pone dos urgencias en la misma semana ni en días seguidos.
   // (Tú sí puedes hacerlo a mano: las asignaciones manuales se respetan.)
   const puedeUrgencia = (p, dkey)=> urgEnSemana(p.id, dkey)===0 && !urgDiaContiguo(p.id, dkey);
+  // Víspera de festivo: el día siguiente es festivo. Funciona como un viernes → cuenta como URGLV.
+  const esPrefestivo = (dkey)=>{
+    const pr = dkey.split("-").map(Number);
+    const d = new Date(pr[0], pr[1]-1, pr[2]);
+    d.setDate(d.getDate()+1);
+    return hsetGlobal.has(keyOf(d.getFullYear(), d.getMonth(), d.getDate()));
+  };
   const isoWeek = (k)=>{ const pr=k.split("-").map(Number); const dt=new Date(Date.UTC(pr[0],pr[1]-1,pr[2]));
     const day=(dt.getUTCDay()+6)%7; dt.setUTCDate(dt.getUTCDate()-day+3);
     const first=new Date(Date.UTC(dt.getUTCFullYear(),0,4)); const fday=(first.getUTCDay()+6)%7;
@@ -1692,7 +1699,8 @@ function generateMonth(mode){
     labDays.forEach(d=>{
       const has = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&(a.f==="URG"||a.f==="URGLV"||a.f==="URGF");});
       if(has) return;
-      const esLV = (d.dow===1 || d.dow===5);
+      // URGLV: lunes, viernes y vísperas de festivo (p. ej. el jueves 24 si el viernes 25 es festivo)
+      const esLV = (d.dow===1 || d.dow===5 || esPrefestivo(d.key));
       const cand = state.physicians.filter(p=>
         !p.noUrg && puedeUrgencia(p,d.key) && !blockedOn(p,d) && notAbsent(p,d.key) && freeM(p,d.key) && freeT(p,d.key)
       );
