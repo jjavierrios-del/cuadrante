@@ -512,7 +512,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v55";
+const APP_VERSION = "v56";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -820,24 +820,17 @@ function viewRotantes(){
       '<span class="muted" style="font-size:13px">'+(admin?'Toca una consulta para asignarle un residente':'Consulta de residentes rotantes')+'</span>'+
     '</div></div>';
 
-  // Leyenda de residentes
-  html += '<div class="card" style="margin-bottom:10px"><h2>Residentes del mes</h2>';
+  // Leyenda: SOLO visible para el administrador (los nombres se editan en Ajustes)
   if(admin){
-    html += '<p class="muted" style="margin-top:2px;font-size:13px">Escribe el nombre de cada residente. Los huecos vacíos no aparecerán como opción.</p><div style="margin-top:8px">';
-    ROT_CODES.forEach(rc=>{
-      html += '<div class="row" style="align-items:center;gap:8px;margin-top:6px">'+
-        '<span class="rotbadge" style="position:static;padding:3px 6px;font-size:11px">'+rc+'</span>'+
-        '<input type="text" value="'+esc((state.rotantesLeyenda||{})[rc]||"")+'" data-field="rot-name" data-rot="'+rc+'" placeholder="Nombre del residente" style="flex:1;padding:7px;border:1px solid var(--slate-300);border-radius:8px">'+
-      '</div>';
-    });
-    html += '</div>';
-  }else{
     const hay = ROT_CODES.filter(rc=>((state.rotantesLeyenda||{})[rc]||"").trim());
-    html += hay.length
-      ? '<div style="margin-top:6px">'+hay.map(rc=>'<div style="padding:4px 0;font-size:14px"><span class="rotbadge" style="position:static;padding:2px 5px;font-size:11px">'+rc+'</span> '+esc(state.rotantesLeyenda[rc])+'</div>').join("")+'</div>'
-      : '<p class="muted" style="margin-top:6px;font-size:13px">Aún no se han asignado nombres a los residentes.</p>';
+    html += '<div class="card" style="margin-bottom:10px"><div class="row between" style="align-items:center">'+
+      '<h2>Residentes del mes</h2>'+
+      '<button class="btn" data-action="go-ajustes" style="padding:5px 10px;font-size:13px">Editar nombres</button></div>'+
+      (hay.length
+        ? '<div style="margin-top:6px">'+hay.map(rc=>'<div style="padding:4px 0;font-size:14px"><span class="rotbadge" style="position:static;padding:2px 5px;font-size:11px">'+rc+'</span> '+esc(state.rotantesLeyenda[rc])+'</div>').join("")+'</div>'
+        : '<p class="muted" style="margin-top:6px;font-size:13px">Aún no hay nombres. Añádelos en Ajustes → Residentes rotantes.</p>')+
+      '</div>';
   }
-  html += '</div>';
 
   // Rejilla: mismo formato que el cuadrante, con distintivo del residente
   html += '<div class="gridbox"><table><thead><tr><th class="namecol">Facultativo</th>';
@@ -1259,6 +1252,15 @@ function viewAjustes(){
       (adminPassHash()?'<button class="btn" data-action="admin-pass-clear">Quitar</button>':'')+
     '</div>'+
     '<p class="muted" style="font-size:12px;margin-top:6px">Se guarda solo en este dispositivo y no viaja en la publicación ni en las copias de seguridad. Tendrás que definirla en cada dispositivo desde el que administres.</p></div>'+
+    '<div class="card"><h2>Residentes rotantes</h2>'+
+    '<p class="muted" style="margin-top:2px;font-size:13px">Nombres de los residentes del periodo. Solo se ven aquí y en la leyenda de la pestaña Rotantes, ambas de acceso exclusivo del administrador. Los huecos vacíos no aparecen como opción al asignar.</p>'+
+    '<div style="margin-top:8px">'+
+      ROT_CODES.map(rc=>
+        '<div class="row" style="align-items:center;gap:8px;margin-top:6px">'+
+          '<span class="rotbadge" style="position:static;padding:3px 7px;font-size:11px">'+rc+'</span>'+
+          '<input type="text" value="'+esc((state.rotantesLeyenda||{})[rc]||"")+'" data-field="rot-name" data-rot="'+rc+'" placeholder="Nombre del residente" style="flex:1;padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
+        '</div>').join("")+
+    '</div></div>'+
     '<div class="card" style="padding:8px 12px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center">'+
     '<span class="muted" style="font-size:13px">Versión de la aplicación</span>'+
     '<b style="font-size:15px;color:var(--teal-700)">'+APP_VERSION+'</b></div>'+
@@ -1373,7 +1375,7 @@ function renderModal(){
       return '<p class="tiny" style="margin-top:12px">'+etiqueta+' · '+code+'</p>'+
         '<div class="rotpick" style="margin-top:6px">'+
           disponibles.map(rc=>{
-            const nom = ((state.rotantesLeyenda||{})[rc]||"").trim();
+            const nom = (MODE!=="viewer") ? ((state.rotantesLeyenda||{})[rc]||"").trim() : "";
             return '<button class="chip'+(actual===rc?" on":"")+'" data-action="rot-set" data-pid="'+pid+'" data-date="'+date+'" data-slot="'+slot+'" data-code="'+rc+'" title="'+esc(nom||rc)+'">'+rc+(nom?' · '+esc(nom.split(" ")[0]):'')+'</button>';
           }).join("")+
           '<button class="chip plain" data-action="rot-set" data-pid="'+pid+'" data-date="'+date+'" data-slot="'+slot+'" data-code="">⌫ Sin residente</button>'+
@@ -2288,6 +2290,7 @@ document.addEventListener("click", e=>{
         }catch(e){ setSave("Sin conexión"); }
       })();
       break;
+    case "go-ajustes": ui.tab = "ajustes"; render(); break;
     case "rot-cell": {
       ui.rotCell = {pid: el.dataset.pid, date: el.dataset.date};
       renderModal(); break;
@@ -2617,8 +2620,8 @@ document.addEventListener("change", e=>{
   else if(field==="maxmorning"){ state.settings.maxMorning = Math.min(20,Math.max(1,Number(el.value)||8)); save(); }
   else if(field==="rot-name"){
     state.rotantesLeyenda = state.rotantesLeyenda || {R1:"",R2:"",R3:"",R4:"",R5:""};
-    state.rotantesLeyenda[el.dataset.rot] = el.value;
-    save();
+    state.rotantesLeyenda[el.dataset.rot] = el.value.trim();
+    save();   // no redibuja: se puede seguir escribiendo o pasar al siguiente campo
   }
   else if(field==="alruweek"){ state.settings.alruPerWeek = Math.min(10,Math.max(0,Number(el.value)||0)); save(); }
   else if(field==="alinterdaily"){ state.settings.alinterDaily = el.checked; save(); }
