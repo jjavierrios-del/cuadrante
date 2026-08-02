@@ -513,7 +513,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v59";
+const APP_VERSION = "v60";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -550,6 +550,20 @@ function setAdminPass(txt){
 function checkAdminPass(txt){
   const h = adminPassHash();
   return !!h && passHash(txt)===h;
+}
+const KEY_STATSVIEW = "cuadrante-statsview-v1";
+function saveStatsView(){
+  try{ localStorage.setItem(KEY_STATSVIEW, JSON.stringify({scope:ui.scope, from:ui.statsFrom, to:ui.statsTo})); }catch(e){}
+}
+function loadStatsView(){
+  try{
+    const v = JSON.parse(localStorage.getItem(KEY_STATSVIEW)||"null");
+    if(v){
+      if(v.scope) ui.scope = v.scope;
+      if(v.from!==undefined) ui.statsFrom = v.from;
+      if(v.to!==undefined) ui.statsTo = v.to;
+    }
+  }catch(e){}
 }
 const KEY_REQNAME = "cuadrante-reqname-v1";
 const KEY_REQLOG = "cuadrante-reqlog-v1";
@@ -2666,9 +2680,9 @@ document.addEventListener("click", e=>{
       p.noRes = !p.noRes;
       save(); render(); break;
     }
-    case "scope-month": ui.scope="month"; render(); break;
-    case "scope-year": ui.scope="year"; render(); break;
-    case "scope-range": ui.scope="range"; render(); break;
+    case "scope-month": ui.scope="month"; saveStatsView(); render(); break;
+    case "scope-year": ui.scope="year"; saveStatsView(); render(); break;
+    case "scope-range": ui.scope="range"; saveStatsView(); render(); break;
     case "toggle-required": {
       const c = el.dataset.code;
       state.settings.required[c] = !state.settings.required[c];
@@ -2713,6 +2727,11 @@ document.addEventListener("change", e=>{
     else if(fld==="rq-name"){ ui.reqName = el.value; try{ localStorage.setItem(KEY_REQNAME, el.value.trim()); }catch(e2){} }
     return;
   }
+  // Los campos que solo afectan a la VISTA (rango de meses de Estadísticas) funcionan
+  // también en modo consulta: no modifican el cuadrante ni se guardan.
+  const fieldVista = el.dataset ? (el.dataset.field||"") : "";
+  if(fieldVista==="stats-from"){ ui.statsFrom = Number(el.value); saveStatsView(); render(); return; }
+  if(fieldVista==="stats-to"){ ui.statsTo = Number(el.value); saveStatsView(); render(); return; }
   if(MODE==="viewer") return;
   const field = el.dataset.field;
   if(el.id==="import-file"){ if(el.files&&el.files[0]) importBackup(el.files[0]); el.value=""; return; }
@@ -2807,6 +2826,7 @@ async function boot(){
           (!state.updatedAt || published.publishedAt > state.updatedAt)){
     NEWER = true; PUBLISHED_AT = published.publishedAt;
   }else if(published && published.publishedAt){ PUBLISHED_AT = published.publishedAt; }
+  loadStatsView();
   setSave(MODE==="viewer" ? "Solo consulta" : "✓ Guardado");
   render();
   startAutoRefresh();
