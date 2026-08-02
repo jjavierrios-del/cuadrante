@@ -223,6 +223,7 @@ const KEY = "cuadrante-gestor-html-v1";
 let MODE = "editor";          // "editor" | "viewer"
 let PUBLISHED_AT = null;      // fecha de publicación de data.json
 let NEWER = false;            // hay publicación más nueva que la copia local de este dispositivo
+let PUB_TIENE_PASS = null;    // ¿la versión publicada ya lleva la contraseña? (null = sin comprobar)
 
 // Sincronización automática con GitHub (config local: NUNCA viaja en data.json ni en copias)
 const KEY_SYNC = "cuadrante-sync-v1";
@@ -303,6 +304,7 @@ async function ghPublish(manual){
         // La copia local queda al día con lo recién publicado: así este dispositivo
         // no se avisa a sí mismo de su propia publicación.
         state.updatedAt = body.publishedAt;
+        PUB_TIENE_PASS = !!body.adminPass;
         try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){}
         setSave("✓ Publicado "+new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}));
       }else if(r.status===409 || r.status===422){
@@ -513,7 +515,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v61";
+const APP_VERSION = "v62";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1333,13 +1335,18 @@ function viewAjustes(){
     '<p class="muted" style="margin-top:4px;font-size:13px">'+
       (adminPassHash()
         ? 'Hay una contraseña definida. Viaja con el cuadrante publicado, así que se pedirá para pasar de consulta a edición en <b>cualquier dispositivo</b>.'+
-          (PUBLISHED_AT ? '' : ' <b style="color:#b45309">Publica los cambios para que llegue al resto de dispositivos.</b>')
+          (PUB_TIENE_PASS===true
+            ? ' <b style="color:#065f46">✓ Comprobado: la versión publicada ya la lleva.</b>'
+            : (PUB_TIENE_PASS===false
+               ? ' <b style="color:#b45309">⚠ La versión publicada TODAVÍA NO la lleva: pulsa «Publicar ahora».</b>'
+               : ''))
         : '⚠ No hay contraseña definida: cualquiera que abra el enlace puede entrar en modo edición.')+
     '</p>'+
     '<div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap">'+
       '<input type="password" id="admin-pass" placeholder="'+(adminPassHash()?"Nueva contraseña":"Contraseña")+'" style="flex:1;min-width:160px;padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
       '<button class="btn primary" data-action="admin-pass-set">'+(adminPassHash()?"Cambiar":"Definir")+'</button>'+
       (adminPassHash()?'<button class="btn" data-action="admin-pass-clear">Quitar</button>':'')+
+      (adminPassHash()?'<button class="btn primary" data-action="admin-pass-publish">Publicar ahora</button>':'')+
     '</div>'+
     '<p class="muted" style="font-size:12px;margin-top:6px">Se guarda cifrada (nunca en claro) y se publica junto al cuadrante, de modo que basta definirla una vez. Protege frente a ediciones accidentales o curiosidad; no es una barrera frente a alguien con conocimientos técnicos, porque la aplicación funciona por completo en el navegador.</p></div>'+
     '<div class="card"><h2>Residentes rotantes</h2>'+
@@ -2352,7 +2359,7 @@ document.addEventListener("click", e=>{
   const el = e.target.closest("[data-action]");
   if(!el){ return; }
   const act = el.dataset.action;
-  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-required","official-on","official-off","rot-cell","rot-set","rot-gen","rot-clear","admin-pass-set","admin-pass-clear","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-required","official-on","official-off","rot-cell","rot-set","rot-gen","rot-clear","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
       ui.reqDraft = {}; ui.reqNote = "";
@@ -2427,6 +2434,20 @@ document.addEventListener("click", e=>{
       const v = el2 ? el2.value.trim() : "";
       if(v.length < 4){ window.alert("La contraseña debe tener al menos 4 caracteres."); break; }
       setAdminPass(v); marcarAutenticado(); setSave("✓ Contraseña guardada"); render();
+      break;
+    }
+    case "admin-pass-publish": {
+      setSave("Publicando…");
+      ghPublish(true)
+        .then(()=> fetchPublished())
+        .then(d=>{
+          PUB_TIENE_PASS = !!(d && d.adminPass);
+          render();
+          window.alert(PUB_TIENE_PASS
+            ? "Comprobado: la contraseña ya viaja en la versión publicada.\n\nAl abrir el enlace en otro dispositivo o en una ventana privada, se pedirá para entrar en modo edición."
+            : "Se ha publicado, pero el archivo aún no incluye la contraseña.\n\nRevisa que el token de GitHub esté configurado en Ajustes y que el indicador superior muestre «✓ Publicado».");
+        })
+        .catch(()=> window.alert("No se ha podido comprobar la publicación. Revisa la conexión y la configuración de GitHub."));
       break;
     }
     case "admin-pass-clear": {
@@ -2833,6 +2854,7 @@ async function boot(){
   // aunque no se haya podido descargar la publicación.
   if(!hasLocal) MODE = "viewer";
   // Adoptar la contraseña publicada aunque este dispositivo tenga datos antiguos sin ella
+  if(published) PUB_TIENE_PASS = !!published.adminPass;
   if(published && published.adminPass && !state.adminPass) state.adminPass = published.adminPass;
   if(published && !hasLocal){ MODE="viewer"; applyPublished(published); }
   else if(published && hasLocal && published.publishedAt &&
