@@ -513,7 +513,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v60";
+const APP_VERSION = "v61";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -546,6 +546,13 @@ function setAdminPass(txt){
   if(!txt) delete state.adminPass;
   try{ localStorage.removeItem(KEY_ADMINPASS); }catch(e){}   // ya no se usa el almacén local
   save();
+}
+const KEY_AUTH = "cuadrante-auth-v1";
+function marcarAutenticado(){ try{ sessionStorage.setItem(KEY_AUTH, adminPassHash()); }catch(e){} }
+function estaAutenticado(){
+  const h = adminPassHash();
+  if(!h) return true;                       // sin contraseña configurada
+  try{ return sessionStorage.getItem(KEY_AUTH)===h; }catch(e){ return false; }
 }
 function checkAdminPass(txt){
   const h = adminPassHash();
@@ -1325,7 +1332,8 @@ function viewAjustes(){
   let html = '<div class="card"><h2>Acceso de administración</h2>'+
     '<p class="muted" style="margin-top:4px;font-size:13px">'+
       (adminPassHash()
-        ? 'Hay una contraseña definida. Viaja con el cuadrante publicado, así que se pedirá para pasar de consulta a edición en <b>cualquier dispositivo</b>.'
+        ? 'Hay una contraseña definida. Viaja con el cuadrante publicado, así que se pedirá para pasar de consulta a edición en <b>cualquier dispositivo</b>.'+
+          (PUBLISHED_AT ? '' : ' <b style="color:#b45309">Publica los cambios para que llegue al resto de dispositivos.</b>')
         : '⚠ No hay contraseña definida: cualquiera que abra el enlace puede entrar en modo edición.')+
     '</p>'+
     '<div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap">'+
@@ -2418,7 +2426,7 @@ document.addEventListener("click", e=>{
       const el2 = document.getElementById("admin-pass");
       const v = el2 ? el2.value.trim() : "";
       if(v.length < 4){ window.alert("La contraseña debe tener al menos 4 caracteres."); break; }
-      setAdminPass(v); setSave("✓ Contraseña guardada"); render();
+      setAdminPass(v); marcarAutenticado(); setSave("✓ Contraseña guardada"); render();
       break;
     }
     case "admin-pass-clear": {
@@ -2433,7 +2441,8 @@ document.addEventListener("click", e=>{
         const intento = window.prompt("Contraseña de administración:");
         if(intento===null) break;                       // ha cancelado
         if(!checkAdminPass(intento)){ window.alert("Contraseña incorrecta."); break; }
-        MODE="editor"; save(); render(); break;
+        marcarAutenticado();
+        MODE="editor"; render(); break;
       }
       // Sin contraseña configurada todavía: se permite y se recomienda ponerla
       if(window.confirm("Modo edición (solo administración).\n\nAún no has definido una contraseña: cualquiera con el enlace podría entrar aquí. Puedes ponerla en Ajustes.\n\n¿Continuar?")){
@@ -2820,12 +2829,19 @@ async function boot(){
   try{
     published = await fetchPublished();
   }catch(e){ /* sin publicación o sin conexión */ }
+  // Un dispositivo sin datos propios (o en ventana privada) SIEMPRE empieza en modo consulta,
+  // aunque no se haya podido descargar la publicación.
+  if(!hasLocal) MODE = "viewer";
+  // Adoptar la contraseña publicada aunque este dispositivo tenga datos antiguos sin ella
+  if(published && published.adminPass && !state.adminPass) state.adminPass = published.adminPass;
   if(published && !hasLocal){ MODE="viewer"; applyPublished(published); }
   else if(published && hasLocal && published.publishedAt &&
           !(published.publishedBy && published.publishedBy===DEVICE_ID) &&
           (!state.updatedAt || published.publishedAt > state.updatedAt)){
     NEWER = true; PUBLISHED_AT = published.publishedAt;
   }else if(published && published.publishedAt){ PUBLISHED_AT = published.publishedAt; }
+  // Si hay contraseña configurada, no se entra en edición sin haberla introducido en esta sesión
+  if(adminPassHash() && !estaAutenticado()) MODE = "viewer";
   loadStatsView();
   setSave(MODE==="viewer" ? "Solo consulta" : "✓ Guardado");
   render();
