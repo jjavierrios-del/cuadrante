@@ -393,6 +393,7 @@ function loadState(){
       state.baseline = d.baseline||{};
       state.official = d.official||{};
       state.rotantes = d.rotantes||{};
+      if(d.adminPass) state.adminPass = d.adminPass;
       state.rotantesLeyenda = Object.assign({R1:"",R2:"",R3:"",R4:"",R5:""}, d.rotantesLeyenda||{});
       state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
       state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
@@ -512,7 +513,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v58";
+const APP_VERSION = "v59";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -533,12 +534,22 @@ function passHash(txt){
   }
   return h1.toString(36)+"-"+h2.toString(36);
 }
-function adminPassHash(){ try{ return localStorage.getItem(KEY_ADMINPASS)||""; }catch(e){ return ""; } }
+// La contraseña viaja con el cuadrante (copia de seguridad y publicación), de modo que
+// se exige en CUALQUIER dispositivo para pasar de consulta a edición.
+// Se guarda solo su huella, nunca el texto.
+function adminPassHash(){
+  if(state && state.adminPass) return state.adminPass;
+  try{ return localStorage.getItem(KEY_ADMINPASS)||""; }catch(e){ return ""; }   // versiones anteriores
+}
 function setAdminPass(txt){
-  try{
-    if(txt) localStorage.setItem(KEY_ADMINPASS, passHash(txt));
-    else localStorage.removeItem(KEY_ADMINPASS);
-  }catch(e){}
+  state.adminPass = txt ? passHash(txt) : "";
+  if(!txt) delete state.adminPass;
+  try{ localStorage.removeItem(KEY_ADMINPASS); }catch(e){}   // ya no se usa el almacén local
+  save();
+}
+function checkAdminPass(txt){
+  const h = adminPassHash();
+  return !!h && passHash(txt)===h;
 }
 const KEY_REQNAME = "cuadrante-reqname-v1";
 const KEY_REQLOG = "cuadrante-reqlog-v1";
@@ -1300,7 +1311,7 @@ function viewAjustes(){
   let html = '<div class="card"><h2>Acceso de administración</h2>'+
     '<p class="muted" style="margin-top:4px;font-size:13px">'+
       (adminPassHash()
-        ? 'Hay una contraseña definida. Se pedirá al entrar en modo edición desde cualquier dispositivo.'
+        ? 'Hay una contraseña definida. Viaja con el cuadrante publicado, así que se pedirá para pasar de consulta a edición en <b>cualquier dispositivo</b>.'
         : '⚠ No hay contraseña definida: cualquiera que abra el enlace puede entrar en modo edición.')+
     '</p>'+
     '<div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap">'+
@@ -1308,7 +1319,7 @@ function viewAjustes(){
       '<button class="btn primary" data-action="admin-pass-set">'+(adminPassHash()?"Cambiar":"Definir")+'</button>'+
       (adminPassHash()?'<button class="btn" data-action="admin-pass-clear">Quitar</button>':'')+
     '</div>'+
-    '<p class="muted" style="font-size:12px;margin-top:6px">Se guarda solo en este dispositivo y no viaja en la publicación ni en las copias de seguridad. Tendrás que definirla en cada dispositivo desde el que administres.</p></div>'+
+    '<p class="muted" style="font-size:12px;margin-top:6px">Se guarda cifrada (nunca en claro) y se publica junto al cuadrante, de modo que basta definirla una vez. Protege frente a ediciones accidentales o curiosidad; no es una barrera frente a alguien con conocimientos técnicos, porque la aplicación funciona por completo en el navegador.</p></div>'+
     '<div class="card"><h2>Residentes rotantes</h2>'+
     '<p class="muted" style="margin-top:2px;font-size:13px">Nombres de los residentes del periodo. Solo se ven aquí y en la leyenda de la pestaña Rotantes, ambas de acceso exclusivo del administrador. Los huecos vacíos no aparecen como opción al asignar.</p>'+
     '<div style="margin-top:8px">'+
@@ -1646,6 +1657,7 @@ function importBackup(file){
       state.baseline = d.baseline||{};
       state.official = d.official||{};
       state.rotantes = d.rotantes||{};
+      if(d.adminPass) state.adminPass = d.adminPass;
       state.rotantesLeyenda = Object.assign({R1:"",R2:"",R3:"",R4:"",R5:""}, d.rotantesLeyenda||{});
       state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
       state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
@@ -2406,7 +2418,7 @@ document.addEventListener("click", e=>{
       if(hash){
         const intento = window.prompt("Contraseña de administración:");
         if(intento===null) break;                       // ha cancelado
-        if(passHash(intento)!==hash){ window.alert("Contraseña incorrecta."); break; }
+        if(!checkAdminPass(intento)){ window.alert("Contraseña incorrecta."); break; }
         MODE="editor"; save(); render(); break;
       }
       // Sin contraseña configurada todavía: se permite y se recomienda ponerla
@@ -2740,6 +2752,7 @@ function applyPublished(d){
   state.official = d.official||{};
   state.rotantes = d.rotantes||{};
   state.rotantesLeyenda = Object.assign({R1:"",R2:"",R3:"",R4:"",R5:""}, d.rotantesLeyenda||{});
+  if(d.adminPass) state.adminPass = d.adminPass;   // la contraseña llega con la publicación
   state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
   state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
   state.settings.required = Object.assign({}, DEFAULT_REQUIRED, (d.settings&&d.settings.required)||{});
