@@ -512,7 +512,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v56";
+const APP_VERSION = "v57";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2269,7 +2269,7 @@ document.addEventListener("click", e=>{
     }
     return;
   }
-  if(act==="close-modal"){ if(stop && !el.closest(".modal")) return; ui.editCell=null; ui.dayDetail=null; ui.genModal=false; ui.genReport=null; ui.resetMonthModal=false; ui.reqModal=null; ui.reviewModal=null; renderModal(); return; }
+  if(act==="close-modal"){ if(stop && !el.closest(".modal")) return; ui.editCell=null; ui.dayDetail=null; ui.genModal=false; ui.genReport=null; ui.resetMonthModal=false; ui.reqModal=null; ui.reviewModal=null; ui.rotCell=null; renderModal(); return; }
   switch(act){
     case "tab": ui.tab = el.dataset.tab; ui.confirmReset=false; render(); break;
     case "prev-month": if(ui.month===0){ui.month=11; state.year--;} else ui.month--; save(); render(); break;
@@ -2296,8 +2296,16 @@ document.addEventListener("click", e=>{
       renderModal(); break;
     }
     case "rot-set": {
-      rotSet(el.dataset.pid, el.dataset.date, el.dataset.slot, el.dataset.code||"");
-      renderModal(); render(); break;
+      const pidR = el.dataset.pid, dateR = el.dataset.date;
+      rotSet(pidR, dateR, el.dataset.slot, el.dataset.code||"");
+      const aR = state.assignments[pidR+"|"+dateR]||{};
+      // Si el día solo tiene un turno, ya está: se cierra. Si tiene mañana y tarde,
+      // el diálogo sigue abierto para poder asignar también el otro.
+      const dosTurnos = !!(aR.m && aR.t);
+      if(!dosTurnos){ ui.rotCell = null; }
+      render();
+      renderModal();
+      break;
     }
     case "admin-pass-set": {
       const el2 = document.getElementById("admin-pass");
