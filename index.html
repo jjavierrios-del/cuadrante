@@ -512,7 +512,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v57";
+const APP_VERSION = "v58";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -804,6 +804,57 @@ function rotSet(pid,date,slot,code){
   save();
 }
 
+// Consultas donde puede haber residente: AL1..AL7 por la mañana y ALT1..ALT3 por la tarde
+const RES_MANANA = (c)=> !!c && /^AL[1-7]$/.test(c);
+const RES_TARDE  = (c)=> !!c && /^ALT[1-3]$/.test(c);
+
+function generateRotantes(){
+  const residentes = ROT_CODES.filter(rc=>((state.rotantesLeyenda||{})[rc]||"").trim());
+  if(!residentes.length) return {error:"Primero añade los nombres de los residentes en Ajustes → Residentes rotantes."};
+  const adjuntos = state.physicians.filter(p=>!p.noRes);
+  if(!adjuntos.length) return {error:"Ningún facultativo tiene residente activado en la pestaña Equipo."};
+
+  const days = monthDays();
+  const mk = state.year+"-"+pad(ui.month+1);
+  state.rotantes = state.rotantes || {};
+  // Limpiar solo el mes visible
+  let borradas = 0;
+  Object.keys(state.rotantes).forEach(k=>{
+    const partes = k.split("|");
+    if(partes[1] && partes[1].slice(0,7)===mk){ delete state.rotantes[k]; borradas++; }
+  });
+
+  const carga = {}; residentes.forEach(r=>carga[r]=0);
+  let asignadas = 0, sinCubrir = 0;
+
+  days.forEach(d=>{
+    if(d.dow===0 || d.dow===6 || d.holiday) return;
+    ["m","t"].forEach(slot=>{
+      // Consultas de ese turno donde cabe un residente
+      const plazas = adjuntos.filter(p=>{
+        const a = state.assignments[p.id+"|"+d.key];
+        if(!a || a.f) return false;
+        return slot==="m" ? RES_MANANA(a[slot]) : RES_TARDE(a[slot]);
+      });
+      if(!plazas.length) return;
+      // Cada residente solo puede estar en un sitio a la vez
+      const usados = new Set();
+      plazas.forEach(p=>{
+        const libres = residentes.filter(r=>!usados.has(r));
+        if(!libres.length){ sinCubrir++; return; }
+        libres.sort((a,b)=> (carga[a]-carga[b]) || (Math.random()-0.5));
+        const r = libres[0];
+        usados.add(r);
+        state.rotantes[rotKey(p.id, d.key, slot)] = r;
+        carga[r]++; asignadas++;
+      });
+    });
+  });
+
+  save();
+  return {asignadas, borradas, sinCubrir, carga, residentes};
+}
+
 function viewRotantes(){
   const days = monthDays();
   const admin = (MODE!=="viewer");
@@ -817,7 +868,10 @@ function viewRotantes(){
         '<b style="min-width:132px;text-align:center">'+MONTHS[ui.month]+' '+state.year+'</b>'+
         '<button class="btn" style="border:none;padding:6px 8px" data-action="next-month">›</button>'+
       '</div>'+
-      '<span class="muted" style="font-size:13px">'+(admin?'Toca una consulta para asignarle un residente':'Consulta de residentes rotantes')+'</span>'+
+      (admin
+        ? '<span class="row" style="gap:6px"><button class="btn primary" data-action="rot-gen">Asignar residentes</button>'+
+          '<button class="btn danger" data-action="rot-clear">Vaciar mes</button></span>'
+        : '<span class="muted" style="font-size:13px">Consulta de residentes rotantes</span>')+
     '</div></div>';
 
   // Leyenda: SOLO visible para el administrador (los nombres se editan en Ajustes)
@@ -1078,6 +1132,7 @@ function viewEquipo(){
         (p.noRhb?' · sin RHB':'')+
         (p.noAlru?' · sin ALRU':'')+
         (p.noInt?' · sin ALINTER':'')+
+        (p.noRes?' · sin residente':'')+
         (((p.blocked||[]).length)?' · no trabaja: '+(p.blocked||[]).map(d=>WD[d]).join(" "):'')+
         (p.pref?' · habitual: '+p.pref:'')+'</span></div>';
     });
@@ -1116,6 +1171,8 @@ function viewEquipo(){
       '<button class="dowbtn'+(p.noOrt?"":" on")+'" style="width:auto;padding:0 8px'+(p.noOrt?"":";background:var(--teal-700);border-color:var(--teal-700)")+'" data-action="toggle-ort" data-pid="'+p.id+'">'+(p.noOrt?"No":"Sí")+'</button>'+
       '<span class="tiny" style="margin-left:10px;margin-right:2px">RXINT:</span>'+
       '<button class="dowbtn'+(p.noRxint?"":" on")+'" style="width:auto;padding:0 8px'+(p.noRxint?"":";background:var(--teal-700);border-color:var(--teal-700)")+'" data-action="toggle-rxint" data-pid="'+p.id+'">'+(p.noRxint?"No":"Sí")+'</button>'+
+      '<span class="tiny" style="margin-left:10px;margin-right:2px">Residente:</span>'+
+      '<button class="dowbtn'+(p.noRes?"":" on")+'" style="width:auto;padding:0 8px'+(p.noRes?"":";background:var(--teal-700);border-color:var(--teal-700)")+'" data-action="toggle-res" data-pid="'+p.id+'">'+(p.noRes?"No":"Sí")+'</button>'+
       '<span class="tiny" style="margin-left:10px;margin-right:2px">Habitual:</span>'+
       '<select data-field="phys-pref" data-pid="'+p.id+'" style="padding:4px 6px;border:1px solid var(--slate-300);border-radius:6px;font-size:12px;background:#fff">'+
       '<option value="">— Ninguna</option>'+
@@ -2261,7 +2318,7 @@ document.addEventListener("click", e=>{
   const el = e.target.closest("[data-action]");
   if(!el){ return; }
   const act = el.dataset.action;
-  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-required","official-on","official-off","rot-cell","rot-set","admin-pass-set","admin-pass-clear","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-required","official-on","official-off","rot-cell","rot-set","rot-gen","rot-clear","admin-pass-set","admin-pass-clear","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
       ui.reqDraft = {}; ui.reqNote = "";
@@ -2291,6 +2348,30 @@ document.addEventListener("click", e=>{
       })();
       break;
     case "go-ajustes": ui.tab = "ajustes"; render(); break;
+    case "rot-gen": {
+      if(!window.confirm("Asignar residentes automáticamente en "+MONTHS[ui.month]+" "+state.year+".\n\n"+
+        "Se reparten entre las consultas AL1–AL7 (mañana) y ALT1–ALT3 (tarde) de los facultativos con «Residente: Sí».\n"+
+        "Se sustituyen las asignaciones de residentes que ya hubiera este mes.\n\n¿Continuar?")) break;
+      const r = generateRotantes();
+      if(r.error){ window.alert(r.error); break; }
+      const detalle = r.residentes.map(rc=>rc+": "+r.carga[rc]).join("   ");
+      setSave("✓ Residentes asignados");
+      render();
+      window.alert("Listo.\n\nAsignaciones creadas: "+r.asignadas+"\nReparto → "+detalle+
+        (r.sinCubrir?("\n\nConsultas sin residente por falta de disponibles: "+r.sinCubrir):""));
+      break;
+    }
+    case "rot-clear": {
+      if(!window.confirm("Vaciar las asignaciones de residentes de "+MONTHS[ui.month]+" "+state.year+"?")) break;
+      const mk = state.year+"-"+pad(ui.month+1);
+      let n=0;
+      Object.keys(state.rotantes||{}).forEach(k=>{
+        const partes = k.split("|");
+        if(partes[1] && partes[1].slice(0,7)===mk){ delete state.rotantes[k]; n++; }
+      });
+      save(); setSave("Se han quitado "+n+" asignaciones"); render();
+      break;
+    }
     case "rot-cell": {
       ui.rotCell = {pid: el.dataset.pid, date: el.dataset.date};
       renderModal(); break;
@@ -2566,6 +2647,11 @@ document.addEventListener("click", e=>{
     case "toggle-rxint": {
       const p = state.physicians.find(x=>x.id===el.dataset.pid); if(!p) break;
       p.noRxint = !p.noRxint;
+      save(); render(); break;
+    }
+    case "toggle-res": {
+      const p = state.physicians.find(x=>x.id===el.dataset.pid); if(!p) break;
+      p.noRes = !p.noRes;
       save(); render(); break;
     }
     case "scope-month": ui.scope="month"; render(); break;
