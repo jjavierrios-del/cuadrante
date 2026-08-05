@@ -515,7 +515,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v62";
+const APP_VERSION = "v63";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1826,6 +1826,8 @@ function generateMonth(mode){
   const freeT = (p,date)=>{ const a=getA(p.id,date); return !(a&&(a.f||a.t)); };   // tarde libre
   const notAbsent = (p,date)=>{ const a=getA(p.id,date); return !(a&&a.f); };
   const blockedOn = (p,d)=> (p.blocked||[]).includes(d.dow);
+  // Una tarde solo se asigna a quien YA tiene consulta esa mañana: nunca una tarde suelta.
+  const tieneManana = (p, dkey)=>{ const a = getA(p.id, dkey); return !!(a && a.m); };
   // RHBT (rehabilitación de tarde): solo para quien tenga RHB1 o RHB2 como consulta habitual
   const esRHB = p=> p.pref==="RHB1" || p.pref==="RHB2";
   const puedeTarde = (p,c)=> c!=="RHBT" || esRHB(p);
@@ -2226,7 +2228,7 @@ function generateMonth(mode){
         if(taken) return;
         // Candidatos: libres esa tarde, no bloqueados, no ausentes, SIN tarde aún esa semana.
         let cand = state.physicians.filter(pp=>
-          puedeTarde(pp,c) && !blockedOn(pp,d) && notAbsent(pp,d.key) && freeT(pp,d.key) && !yaTieneTardeEsaSemana(pp.id,wk) && !weekFull(pp,d.key,1)
+          puedeTarde(pp,c) && tieneManana(pp,d.key) && !blockedOn(pp,d) && notAbsent(pp,d.key) && freeT(pp,d.key) && !yaTieneTardeEsaSemana(pp.id,wk) && !weekFull(pp,d.key,1)
         );
         // Preferimos a quien no se pase de su objetivo de contrato.
         const within = cand.filter(pp=>!wouldExceed(pp,1));
@@ -2305,7 +2307,7 @@ function generateMonth(mode){
           if(blockedOn(p,d)) continue;
           const a=getA(p.id,d.key);
           if(a&&a.f) continue;
-          if(freeT(p,d.key) && tardesSemanaDe(p.id,d.key)===0 && !weekFull(p,d.key,1)){
+          if(freeT(p,d.key) && tieneManana(p,d.key) && tardesSemanaDe(p.id,d.key)===0 && !weekFull(p,d.key,1)){
             const c = freeCode(allTFor(p), d.key);
             state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{t:c});
             load[p.id]++; assigned++; progress=true; done=true; break;
@@ -2320,7 +2322,7 @@ function generateMonth(mode){
           if(blockedOn(p,d)) continue;
           const a2=getA(p.id,d.key);
           if(a2&&a2.f) continue;
-          if(freeT(p,d.key) && !weekFull(p,d.key,1)){
+          if(freeT(p,d.key) && tieneManana(p,d.key) && !weekFull(p,d.key,1)){
             const c = freeCode(allTFor(p), d.key);
             state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{t:c});
             load[p.id]++; assigned++; progress=true; done=true; break;
