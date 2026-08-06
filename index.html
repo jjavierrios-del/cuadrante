@@ -528,7 +528,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v65";
+const APP_VERSION = "v66";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1835,26 +1835,27 @@ function generateMonth(mode){
   };
   // El generador nunca pone dos urgencias en la misma semana ni en días seguidos.
   // (Tú sí puedes hacerlo a mano: las asignaciones manuales se respetan.)
-  // Máximo 2 guardias en CUALQUIER tramo de 14 días seguidos.
-  // Se comprueban las 14 ventanas de dos semanas que contienen ese día, y cuenta
-  // todo lo que ya haya en el cuadrante, incluidas las guardias puestas a mano.
-  const excedeVentana14 = (pid, dkey)=>{
+  // Máximo 2 guardias en CUALQUIER tramo de 6 días seguidos.
+  // Se comprueban las 6 ventanas que contienen ese día y cuenta todo lo que haya
+  // en el cuadrante, incluidas las guardias puestas a mano.
+  const VENTANA_DIAS = 6, VENTANA_MAX = 2;
+  const excedeVentana = (pid, dkey)=>{
     const pr = dkey.split("-").map(Number);
     const base = new Date(pr[0], pr[1]-1, pr[2]);
-    for(let k=0; k<14; k++){
+    for(let k=0; k<VENTANA_DIAS; k++){
       const ini = new Date(base); ini.setDate(base.getDate()-k);
       let n = 1;                                  // la guardia que se quiere colocar
-      for(let i=0; i<14; i++){
+      for(let i=0; i<VENTANA_DIAS; i++){
         const d = new Date(ini); d.setDate(ini.getDate()+i);
         const key = keyOf(d.getFullYear(), d.getMonth(), d.getDate());
         if(key===dkey) continue;                  // ya contada
         if(esUrgencia(state.assignments[pid+"|"+key])) n++;
       }
-      if(n > 2) return true;
+      if(n > VENTANA_MAX) return true;
     }
     return false;
   };
-  const puedeUrgencia = (p, dkey)=> urgEnSemana(p.id, dkey)===0 && !urgDiaContiguo(p.id, dkey) && !excedeVentana14(p.id, dkey);
+  const puedeUrgencia = (p, dkey)=> urgEnSemana(p.id, dkey)===0 && !urgDiaContiguo(p.id, dkey) && !excedeVentana(p.id, dkey);
   // Víspera de festivo: el día siguiente es festivo. Funciona como un viernes → cuenta como URGLV.
   const esPrefestivo = (dkey)=>{
     const pr = dkey.split("-").map(Number);
