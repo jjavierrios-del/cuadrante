@@ -528,7 +528,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v64";
+const APP_VERSION = "v65";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1128,6 +1128,7 @@ function viewCuadrante(){
     (isOfficial(ui.month)
       ? '<button class="btn" data-action="official-off" title="'+(officialStamp(ui.month)?'Marcado como oficial el '+officialStamp(ui.month)+'. ':'')+'Pulsa para reabrirlo y que los cambios vuelvan a contar" style="background:#065f46;color:#fff;border-color:#065f46">🔒 Cuadrante oficial</button>'
       : '<button class="btn" data-action="official-on" title="Cerrar el mes: a partir de ahora los cambios no contarán en las estadísticas">Marcar como oficial</button>'))+
+    '<button class="btn" data-action="editor-refresh" title="Comprobar si hay una versión publicada más reciente" style="padding:6px 9px">⟳</button>'+
     '<button class="btn" data-action="print">Imprimir</button>'+
     '<button class="btn" data-action="export-csv">Exportar '+state.year+' (CSV)</button></div></div>';
 
@@ -2436,6 +2437,30 @@ document.addEventListener("click", e=>{
       const d = JSON.parse(JSON.stringify(state));
       d.publishedAt = new Date().toISOString();
       download("data.json", JSON.stringify(d), "application/json");
+      break;
+    }
+    case "editor-refresh": {
+      setSave("Comprobando…");
+      fetchPublished().then(d=>{
+        if(!d || !d.publishedAt){ setSave("Sin datos publicados"); return; }
+        PUBLISHED_AT = d.publishedAt;
+        const propia = d.publishedBy && d.publishedBy===DEVICE_ID;
+        const masNueva = !state.updatedAt || d.publishedAt > state.updatedAt;
+        if(propia || !masNueva){
+          NEWER = false; render();
+          setSave("✓ Ya estás al día");
+          return;
+        }
+        // Hay algo más reciente publicado desde otro dispositivo: se pregunta antes de tocar nada
+        if(window.confirm("Hay una versión publicada más reciente ("+new Date(d.publishedAt).toLocaleString("es-ES")+").\n\n"+
+           "Cargarla sustituirá los datos de este dispositivo por los publicados.\n\n¿Cargarla ahora?")){
+          applyPublished(d); NEWER = false;
+          try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){}
+          render(); setSave("✓ Actualizado");
+        }else{
+          NEWER = true; render(); setSave("Se mantiene la copia de este dispositivo");
+        }
+      }).catch(()=> setSave("⚠ No se pudo comprobar"));
       break;
     }
     case "viewer-refresh":
