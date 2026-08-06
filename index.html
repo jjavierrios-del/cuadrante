@@ -69,6 +69,8 @@
             padding:1px 2px; border-radius:3px; background:#111827; color:#fff}
   .rotcell{position:relative}
   .rotpick{display:inline-flex; gap:4px; flex-wrap:wrap}
+  .rotblock{background:repeating-linear-gradient(45deg,#e2e8f0,#e2e8f0 4px,#cbd5e1 4px,#cbd5e1 8px)!important; color:#475569!important}
+  .dayhead.rotoff{background:#475569; color:#fff}
   .k-urg{background:#fbbf24; color:#451a03; font-weight:600}
   .k-urgf{background:#fb923c; color:#431407; font-weight:600}
   .k-alru{background:#c4b5fd; color:#2e1065}
@@ -102,6 +104,8 @@
     .cell{width:34px; min-width:34px; height:34px} .cell .half{font-size:8px} .cell .full{font-size:9px}
     .dayhead b{font-size:10px} .dayhead small{font-size:8px}
     .sumrow td{min-width:34px}
+    /* Estadísticas: la columna de nombres también queda fija al desplazar */
+    .stats th:first-child,.stats td:first-child{width:118px; min-width:118px; max-width:118px; font-size:12px}
   }
   .cell:hover{filter:brightness(.96)}
   .cell .half{height:50%; width:100%; display:flex; align-items:center; justify-content:center; font-size:9px; line-height:1}
@@ -132,7 +136,10 @@
   .stats{min-width:900px; border-collapse:collapse}
   .stats td,.stats th{white-space:nowrap; box-sizing:border-box}
   .stats th{text-align:center; font-size:11px; color:var(--slate-500); padding:6px 8px}
-  .stats th:first-child,.stats td:first-child{text-align:left; width:150px; min-width:150px; max-width:150px; overflow:hidden; text-overflow:ellipsis}
+  .stats th:first-child,.stats td:first-child{text-align:left; width:150px; min-width:150px; max-width:150px; overflow:hidden; text-overflow:ellipsis;
+    position:sticky; left:0; z-index:5; background:#fff}
+  .stats thead th:first-child{z-index:6; background:var(--slate-50)}
+  .stats tbody tr:nth-child(even) td:first-child{background:#fff}
   .stats th:nth-child(2),.stats td:nth-child(2){width:170px; min-width:170px}
   .stats th:nth-child(3),.stats td:nth-child(3){width:110px; min-width:110px}
   .stats td{padding:8px 8px; text-align:center; white-space:nowrap}
@@ -159,6 +166,9 @@
     @page{size:A4 landscape; margin:8mm}
     *{-webkit-print-color-adjust:exact!important; print-color-adjust:exact!important}
     header nav,.palette,.controls,footer,.savebar,.no-print,main > p{display:none!important}
+    /* Al imprimir: la leyenda de residentes se ve entera y la rejilla no se corta */
+    .gridbox{overflow:visible!important}
+    .rotbadge{background:#111!important; color:#fff!important; -webkit-print-color-adjust:exact!important}
     body{background:#fff}
     .gridbox{border:1px solid var(--slate-300); border-radius:0}
     .cell:hover{filter:none}
@@ -343,6 +353,8 @@ let state = {
   rotantes: {},
   // Leyenda editable: a quién corresponde cada Rn
   rotantesLeyenda: {R1:"",R2:"",R3:"",R4:"",R5:""},
+  // Días en los que NO se asignan residentes (sesiones, congresos, docencia…)
+  rotBloqueados: {},
 };
 const ROT_CODES = ["R1","R2","R3","R4","R5"];
 
@@ -396,6 +408,7 @@ function loadState(){
       state.official = d.official||{};
       state.rotantes = d.rotantes||{};
       if(d.adminPass) state.adminPass = d.adminPass;
+      state.rotBloqueados = d.rotBloqueados||{};
       state.rotantesLeyenda = Object.assign({R1:"",R2:"",R3:"",R4:"",R5:""}, d.rotantesLeyenda||{});
       state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
       state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
@@ -515,7 +528,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v63";
+const APP_VERSION = "v64";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -830,6 +843,17 @@ function solicitudFormHTML(){
 }
 
 function rotKey(pid,date,slot){ return pid+"|"+date+"|"+slot; }
+function rotDiaBloqueado(dkey){ return !!(state.rotBloqueados||{})[dkey]; }
+function rotToggleDia(dkey){
+  state.rotBloqueados = state.rotBloqueados||{};
+  if(state.rotBloqueados[dkey]) delete state.rotBloqueados[dkey];
+  else{
+    state.rotBloqueados[dkey] = true;
+    // Al bloquear, se retiran los residentes que hubiera ese día
+    Object.keys(state.rotantes||{}).forEach(k=>{ if(k.split("|")[1]===dkey) delete state.rotantes[k]; });
+  }
+  save();
+}
 function rotGet(pid,date,slot){ return (state.rotantes||{})[rotKey(pid,date,slot)]||""; }
 function rotSet(pid,date,slot,code){
   state.rotantes = state.rotantes||{};
@@ -863,6 +887,7 @@ function generateRotantes(){
 
   days.forEach(d=>{
     if(d.dow===0 || d.dow===6 || d.holiday) return;
+    if(rotDiaBloqueado(d.key)) return;      // día bloqueado: sin residentes
     ["m","t"].forEach(slot=>{
       // Consultas de ese turno donde cabe un residente
       const plazas = adjuntos.filter(p=>{
@@ -903,11 +928,19 @@ function viewRotantes(){
         '<button class="btn" style="border:none;padding:6px 8px" data-action="next-month">›</button>'+
       '</div>'+
       (admin
-        ? '<span class="row" style="gap:6px"><button class="btn primary" data-action="rot-gen">Asignar residentes</button>'+
+        ? '<span class="row" style="gap:6px;flex-wrap:wrap">'+
+          '<button class="btn'+(ui.rotBlockMode?" primary":"")+'" data-action="rot-blockmode">'+(ui.rotBlockMode?"✓ Bloqueando días":"Bloquear días")+'</button>'+
+          '<button class="btn primary" data-action="rot-gen">Asignar residentes</button>'+
+          '<button class="btn" data-action="rot-print">Imprimir</button>'+
           '<button class="btn danger" data-action="rot-clear">Vaciar mes</button></span>'
-        : '<span class="muted" style="font-size:13px">Consulta de residentes rotantes</span>')+
+        : '<span class="row" style="gap:6px"><button class="btn" data-action="rot-print">Imprimir</button></span>')+
     '</div></div>';
 
+  if(admin && ui.rotBlockMode){
+    html += '<div class="card no-print" style="padding:8px 12px;margin-bottom:10px;background:#fffbeb;border-color:#fcd34d">'+
+      '<b style="font-size:14px">Modo bloqueo activo</b>'+
+      '<p class="muted" style="font-size:13px;margin-top:2px">Toca la cabecera de un día para bloquearlo o desbloquearlo. En los días bloqueados no se asignarán residentes al generar. Vuelve a pulsar «Bloqueando días» para salir.</p></div>';
+  }
   // Leyenda: SOLO visible para el administrador (los nombres se editan en Ajustes)
   if(admin){
     const hay = ROT_CODES.filter(rc=>((state.rotantesLeyenda||{})[rc]||"").trim());
@@ -923,8 +956,10 @@ function viewRotantes(){
   // Rejilla: mismo formato que el cuadrante, con distintivo del residente
   html += '<div class="gridbox"><table><thead><tr><th class="namecol">Facultativo</th>';
   days.forEach(d=>{
-    const cls = d.holiday?"fest":(d.dow===0||d.dow===6?"wknd":"");
-    html += '<th class="dayhead '+cls+'"><b>'+d.n+'</b><small>'+WD[d.dow]+'</small></th>';
+    const bloq = rotDiaBloqueado(d.key);
+    const cls = bloq ? "rotoff" : (d.holiday?"fest":(d.dow===0||d.dow===6?"wknd":""));
+    const attr = (admin && ui.rotBlockMode) ? ' data-action="rot-toggleday" data-date="'+d.key+'" style="cursor:pointer"' : '';
+    html += '<th class="dayhead '+cls+'"'+attr+'><b>'+d.n+'</b><small>'+(bloq?"✕":WD[d.dow])+'</small></th>';
   });
   html += '</tr></thead><tbody>';
 
@@ -948,7 +983,9 @@ function viewRotantes(){
         };
         inner = half(a.m,"m")+half(a.t,"t");
       }
-      const clickable = admin && a;
+      const bloqDia = rotDiaBloqueado(d.key);
+      if(bloqDia && a) inner = '<span class="full rotblock">—</span>';
+      const clickable = admin && a && !bloqDia && !ui.rotBlockMode;
       html += '<td>'+(clickable
         ? '<button class="cell" data-action="rot-cell" data-pid="'+p.id+'" data-date="'+d.key+'">'+inner+'</button>'
         : '<span class="cell" style="display:block">'+inner+'</span>')+'</td>';
@@ -1687,6 +1724,7 @@ function importBackup(file){
       state.official = d.official||{};
       state.rotantes = d.rotantes||{};
       if(d.adminPass) state.adminPass = d.adminPass;
+      state.rotBloqueados = d.rotBloqueados||{};
       state.rotantesLeyenda = Object.assign({R1:"",R2:"",R3:"",R4:"",R5:""}, d.rotantesLeyenda||{});
       state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
       state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
@@ -1796,7 +1834,26 @@ function generateMonth(mode){
   };
   // El generador nunca pone dos urgencias en la misma semana ni en días seguidos.
   // (Tú sí puedes hacerlo a mano: las asignaciones manuales se respetan.)
-  const puedeUrgencia = (p, dkey)=> urgEnSemana(p.id, dkey)===0 && !urgDiaContiguo(p.id, dkey);
+  // Máximo 2 guardias en CUALQUIER tramo de 14 días seguidos.
+  // Se comprueban las 14 ventanas de dos semanas que contienen ese día, y cuenta
+  // todo lo que ya haya en el cuadrante, incluidas las guardias puestas a mano.
+  const excedeVentana14 = (pid, dkey)=>{
+    const pr = dkey.split("-").map(Number);
+    const base = new Date(pr[0], pr[1]-1, pr[2]);
+    for(let k=0; k<14; k++){
+      const ini = new Date(base); ini.setDate(base.getDate()-k);
+      let n = 1;                                  // la guardia que se quiere colocar
+      for(let i=0; i<14; i++){
+        const d = new Date(ini); d.setDate(ini.getDate()+i);
+        const key = keyOf(d.getFullYear(), d.getMonth(), d.getDate());
+        if(key===dkey) continue;                  // ya contada
+        if(esUrgencia(state.assignments[pid+"|"+key])) n++;
+      }
+      if(n > 2) return true;
+    }
+    return false;
+  };
+  const puedeUrgencia = (p, dkey)=> urgEnSemana(p.id, dkey)===0 && !urgDiaContiguo(p.id, dkey) && !excedeVentana14(p.id, dkey);
   // Víspera de festivo: el día siguiente es festivo. Funciona como un viernes → cuenta como URGLV.
   const esPrefestivo = (dkey)=>{
     const pr = dkey.split("-").map(Number);
@@ -2361,7 +2418,7 @@ document.addEventListener("click", e=>{
   const el = e.target.closest("[data-action]");
   if(!el){ return; }
   const act = el.dataset.action;
-  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-required","official-on","official-off","rot-cell","rot-set","rot-gen","rot-clear","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-required","official-on","official-off","rot-cell","rot-set","rot-gen","rot-clear","rot-blockmode","rot-toggleday","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
       ui.reqDraft = {}; ui.reqNote = "";
@@ -2391,6 +2448,9 @@ document.addEventListener("click", e=>{
       })();
       break;
     case "go-ajustes": ui.tab = "ajustes"; render(); break;
+    case "rot-blockmode": ui.rotBlockMode = !ui.rotBlockMode; render(); break;
+    case "rot-toggleday": { rotToggleDia(el.dataset.date); render(); break; }
+    case "rot-print": window.print(); break;
     case "rot-gen": {
       if(!window.confirm("Asignar residentes automáticamente en "+MONTHS[ui.month]+" "+state.year+".\n\n"+
         "Se reparten entre las consultas AL1–AL7 (mañana) y ALT1–ALT3 (tarde) de los facultativos con «Residente: Sí».\n"+
@@ -2804,6 +2864,7 @@ function applyPublished(d){
   state.rotantes = d.rotantes||{};
   state.rotantesLeyenda = Object.assign({R1:"",R2:"",R3:"",R4:"",R5:""}, d.rotantesLeyenda||{});
   if(d.adminPass) state.adminPass = d.adminPass;   // la contraseña llega con la publicación
+  state.rotBloqueados = d.rotBloqueados||{};
   state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
   state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
   state.settings.required = Object.assign({}, DEFAULT_REQUIRED, (d.settings&&d.settings.required)||{});
