@@ -531,7 +531,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v67";
+const APP_VERSION = "v68";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -634,7 +634,7 @@ function proposeCell(cur, fromPart, toCode){
 }
 function buildRequestText(){
   const rq = ui.reqModal; if(!rq) return "";
-  if(rq.type!=="intercambio" && rq.type!=="doble" && ui.reqBloqueo){
+  if(ui.reqBloqueo){
     window.alert("No se puede enviar la solicitud:\n\n"+ui.reqBloqueo);
     return "";
   }
@@ -858,7 +858,18 @@ function solicitudFormHTML(){
         '</div>'+
         '<p class="muted" style="font-size:12px;margin-top:4px">'+cellToText(cA2)+'  ⇄  '+cellToText(cB2)+'</p>'+
       '</div>'+
-      '<p class="muted" style="font-size:12px;margin-top:8px">Para cuando un cambio de urgencias obliga además a intercambiar otra consulta. Los dos intercambios se autorizan y se aplican juntos.</p>';
+      '<p class="muted" style="font-size:12px;margin-top:8px">Para cuando un cambio de urgencias obliga además a intercambiar otra consulta. Los dos intercambios se autorizan y se aplican juntos.</p>'+
+      (function(){
+        const m1 = validarIntercambio(rq.pid, rq.date, rq.pidB, rq.dateB);
+        const m2 = validarIntercambio(rq.pid, rq.date2, rq.pidB, rq.dateB2);
+        const problemas = [];
+        if(m1) problemas.push("1) "+m1);
+        if(m2) problemas.push("2) "+m2);
+        ui.reqBloqueo = problemas.length ? problemas.join("  ") : null;
+        return problemas.length
+          ? '<div class="warnbox" style="margin-top:10px">⚠ <b>Este cambio doble no se puede hacer:</b><br>'+problemas.map(esc).join("<br>")+'</div>'
+          : '<p style="margin-top:10px;font-size:13px;color:var(--emerald-700)"><b>✓ Los dos intercambios son posibles.</b></p>';
+      })();
   }else if(rq.type==="intercambio"){
     if(!rq.pidB || !phys.find(x=>x.id===rq.pidB)){
       const alt = phys.find(x=>!p || x.id!==p.id) || p;
@@ -873,7 +884,14 @@ function solicitudFormHTML(){
       '<p class="tiny" style="margin-top:10px">Facultativo con quien intercambia y su día</p>'+
       '<div class="row" style="margin-top:4px">'+physSel("rq-physb", pb?pb.id:"")+'<input type="date" value="'+rq.dateB+'" data-field="rq-dateb" style="padding:7px"></div>'+
       '<p class="muted" style="margin-top:4px;font-size:13px">B cede: <b>'+cellToText(curB)+'</b></p>'+
-      '<p class="muted" style="font-size:12px;margin-top:6px">Al autorizarse, B asumirá lo de A en el día de A, y A asumirá lo de B en el día de B.</p>';
+      '<p class="muted" style="font-size:12px;margin-top:6px">Al autorizarse, B asumirá lo de A en el día de A, y A asumirá lo de B en el día de B.</p>'+
+      (function(){
+        const motivo = validarIntercambio(rq.pid, rq.date, rq.pidB, rq.dateB);
+        ui.reqBloqueo = motivo;
+        return motivo
+          ? '<div class="warnbox" style="margin-top:10px">⚠ <b>Este intercambio no se puede hacer:</b><br>'+esc(motivo)+'</div>'
+          : '<p style="margin-top:10px;font-size:13px;color:var(--emerald-700)"><b>✓ El intercambio es posible.</b></p>';
+      })();
   }else{
     // MOVER una consulta de un día a otro (mismo facultativo)
     rq.dateB = rq.dateB || rq.date;
@@ -944,15 +962,31 @@ function consultasLibresDia(dkey){
 }
 
 function rotKey(pid,date,slot){ return pid+"|"+date+"|"+slot; }
-function rotDiaBloqueado(dkey){ return !!(state.rotBloqueados||{})[dkey]; }
-function rotToggleDia(dkey){
+// Bloqueo POR RESIDENTE: rotBloqueados[fecha] = {R1:true, R3:true}
+// (formato antiguo: true = todos bloqueados ese día; se convierte al vuelo)
+function rotBloqDia(dkey){
+  const v = (state.rotBloqueados||{})[dkey];
+  if(!v) return {};
+  if(v===true){ const o={}; ROT_CODES.forEach(r=>o[r]=true); return o; }
+  return v;
+}
+function rotResBloqueado(dkey, rc){ return !!rotBloqDia(dkey)[rc]; }
+function rotDiaConBloqueos(dkey){ return Object.keys(rotBloqDia(dkey)).length>0; }
+function rotResBloqueadosDe(dkey){ return ROT_CODES.filter(rc=>rotResBloqueado(dkey,rc)); }
+function rotToggleRes(dkey, rc){
   state.rotBloqueados = state.rotBloqueados||{};
-  if(state.rotBloqueados[dkey]) delete state.rotBloqueados[dkey];
+  const actual = rotBloqDia(dkey);
+  if(actual[rc]) delete actual[rc];
   else{
-    state.rotBloqueados[dkey] = true;
-    // Al bloquear, se retiran los residentes que hubiera ese día
-    Object.keys(state.rotantes||{}).forEach(k=>{ if(k.split("|")[1]===dkey) delete state.rotantes[k]; });
+    actual[rc] = true;
+    // Al bloquear, se retira ese residente de ese día
+    Object.keys(state.rotantes||{}).forEach(k=>{
+      const partes = k.split("|");
+      if(partes[1]===dkey && state.rotantes[k]===rc) delete state.rotantes[k];
+    });
   }
+  if(Object.keys(actual).length) state.rotBloqueados[dkey] = actual;
+  else delete state.rotBloqueados[dkey];
   save();
 }
 function rotGet(pid,date,slot){ return (state.rotantes||{})[rotKey(pid,date,slot)]||""; }
@@ -988,7 +1022,7 @@ function generateRotantes(){
 
   days.forEach(d=>{
     if(d.dow===0 || d.dow===6 || d.holiday) return;
-    if(rotDiaBloqueado(d.key)) return;      // día bloqueado: sin residentes
+    // (los residentes bloqueados ese día se filtran más abajo)
     ["m","t"].forEach(slot=>{
       // Consultas de ese turno donde cabe un residente
       const plazas = adjuntos.filter(p=>{
@@ -1000,7 +1034,7 @@ function generateRotantes(){
       // Cada residente solo puede estar en un sitio a la vez
       const usados = new Set();
       plazas.forEach(p=>{
-        const libres = residentes.filter(r=>!usados.has(r));
+        const libres = residentes.filter(r=>!usados.has(r) && !rotResBloqueado(d.key, r));
         if(!libres.length){ sinCubrir++; return; }
         libres.sort((a,b)=> (carga[a]-carga[b]) || (Math.random()-0.5));
         const r = libres[0];
@@ -1059,6 +1093,109 @@ function validarMovimiento(pid, dateFrom, part, dateTo, slot){
   return null;
 }
 
+// Comprueba un intercambio A(dateA) ⇄ B(dateB). Devuelve null si es viable, o el motivo.
+function validarIntercambio(pidA, dateA, pidB, dateB){
+  const pa = state.physicians.find(x=>x.id===pidA);
+  const pb = state.physicians.find(x=>x.id===pidB);
+  if(!pa || !pb) return "Falta indicar los dos facultativos.";
+  if(pa.id===pb.id) return "Elige dos facultativos distintos.";
+  const cA = state.assignments[pa.id+"|"+dateA];
+  const cB = state.assignments[pb.id+"|"+dateB];
+  if(!cA && !cB) return "Ninguno de los dos días tiene nada asignado.";
+  const hmap = holidayMap();
+  const avisos = [];
+
+  // Lo que hay en el día que cada uno RECIBE (se perdería al sobrescribirlo)
+  const enAdestino = state.assignments[pa.id+"|"+dateB];   // A recibirá lo de B en dateB
+  const enBdestino = state.assignments[pb.id+"|"+dateA];   // B recibirá lo de A en dateA
+  if(dateA!==dateB){
+    if(enBdestino) avisos.push(esc(pb.name)+" ya tiene "+cellToText(enBdestino)+" el "+fmtDate(dateA)+": se perdería.");
+    if(enAdestino) avisos.push(esc(pa.name)+" ya tiene "+cellToText(enAdestino)+" el "+fmtDate(dateB)+": se perdería.");
+  }
+
+  // Comprobaciones para cada receptor
+  // ¿Quien recibe puede hacer esa consulta?
+  const noPuedeHacer = (quien, cod)=>{
+    if(!cod) return null;
+    if((cod==="RHB1"||cod==="RHB2") && quien.noRhb) return "no hace RHB";
+    if(cod==="ALRU" && quien.noAlru) return "no hace ALRU";
+    if(cod==="ALINTER" && quien.noInt) return "no hace ALINTER";
+    if(cod==="ORT" && quien.noOrt) return "no hace ORT";
+    if(cod==="RXINT" && quien.noRxint) return "no hace RXINT";
+    if(cod==="RHBT" && !(quien.pref==="RHB1"||quien.pref==="RHB2")) return "no tiene RHB como consulta habitual (RHBT)";
+    if((cod==="URG"||cod==="URGLV") && quien.noUrg) return "no hace urgencias entre semana";
+    if(cod==="URGF" && quien.noUrgf) return "no hace urgencias de festivo";
+    return null;
+  };
+
+  const chequear = (quien, celda, fecha)=>{
+    if(!celda) return;
+    const dt = new Date(fecha), dow = dt.getDay();
+    // Capacidad: ¿puede asumir esa consulta o guardia?
+    [celda.m, celda.t, celda.f].forEach(cod=>{
+      const motivo = noPuedeHacer(quien, cod);
+      if(motivo) avisos.push(esc(quien.name)+" "+motivo+" ("+cod+").");
+    });
+    // Hueco físico de mañana en el día que recibe
+    if(celda.m && celda.m!=="RXINT"){
+      let ocupadas = 0;
+      state.physicians.forEach(q=>{
+        if(q.id===quien.id) return;
+        if(q.id===pa.id && fecha===dateA) return;   // esa celda se vacía
+        if(q.id===pb.id && fecha===dateB) return;
+        const x = state.assignments[q.id+"|"+fecha];
+        if(x && x.m && x.m!=="RXINT") ocupadas++;
+      });
+      if(ocupadas >= (state.settings.maxMorning||8))
+        avisos.push("El "+fmtDate(fecha)+" ya están ocupadas las "+(state.settings.maxMorning||8)+" consultas físicas de mañana.");
+    }
+    if((quien.blocked||[]).includes(dow))
+      avisos.push(esc(quien.name)+" no trabaja los "+["domingos","lunes","martes","miércoles","jueves","viernes","sábados"][dow]+" ("+fmtDate(fecha)+").");
+    if(celda.t && dow===5) avisos.push("No puede haber consulta de tarde en viernes ("+fmtDate(fecha)+").");
+    if(celda.t && !celda.m) avisos.push(esc(quien.name)+" tendría tarde sin mañana el "+fmtDate(fecha)+".");
+    // Consulta duplicada ese día
+    ["m","t"].forEach(sl=>{
+      const cod = celda[sl]; if(!cod) return;
+      const otro = state.physicians.some(q=>{
+        if(q.id===quien.id) return false;
+        if(q.id===pa.id && fecha===dateA) return false;   // esa celda se vacía en el intercambio
+        if(q.id===pb.id && fecha===dateB) return false;
+        const x = state.assignments[q.id+"|"+fecha];
+        return x && x[sl]===cod;
+      });
+      if(otro) avisos.push("La consulta "+cod+" ya la pasa otro compañero el "+fmtDate(fecha)+".");
+    });
+    // Urgencias: una por semana y máximo dos en seis días
+    if(celda.f==="URG"||celda.f==="URGLV"||celda.f==="URGF"){
+      const esU = a=>!!a&&(a.f==="URG"||a.f==="URGLV"||a.f==="URGF");
+      const base = new Date(fecha);
+      const lun = new Date(base); lun.setDate(base.getDate()-((base.getDay()+6)%7));
+      let enSem = 0;
+      for(let i=0;i<7;i++){
+        const d2=new Date(lun); d2.setDate(lun.getDate()+i);
+        const k = keyOf(d2.getFullYear(),d2.getMonth(),d2.getDate());
+        if(k===dateA && quien.id===pa.id) continue;
+        if(k===dateB && quien.id===pb.id) continue;
+        if(esU(state.assignments[quien.id+"|"+k])) enSem++;
+      }
+      if(enSem>0) avisos.push(esc(quien.name)+" ya tiene otra guardia esa semana ("+fmtDate(fecha)+").");
+      for(const off of [-1,1]){
+        const d2=new Date(base); d2.setDate(base.getDate()+off);
+        const k = keyOf(d2.getFullYear(),d2.getMonth(),d2.getDate());
+        if(esU(state.assignments[quien.id+"|"+k])) avisos.push(esc(quien.name)+" tendría guardias en días seguidos ("+fmtDate(fecha)+").");
+      }
+    }
+  };
+  chequear(pb, cA, dateA);   // B recibe lo de A
+  chequear(pa, cB, dateB);   // A recibe lo de B
+
+  // ¿Alguien se queda sin consulta ese día? (el caso del 4 y 5 de febrero)
+  if(cA && !cB) avisos.push(esc(pa.name)+" se quedaría sin nada el "+fmtDate(dateA)+" (el "+fmtDate(dateB)+" de "+esc(pb.name)+" está vacío).");
+  if(cB && !cA) avisos.push(esc(pb.name)+" se quedaría sin nada el "+fmtDate(dateB)+" (el "+fmtDate(dateA)+" de "+esc(pa.name)+" está vacío).");
+
+  return avisos.length ? avisos.join(" · ") : null;
+}
+
 function viewRotantes(){
   const days = monthDays();
   const admin = (MODE!=="viewer");
@@ -1074,7 +1211,7 @@ function viewRotantes(){
       '</div>'+
       (admin
         ? '<span class="row" style="gap:6px;flex-wrap:wrap">'+
-          '<button class="btn'+(ui.rotBlockMode?" primary":"")+'" data-action="rot-blockmode">'+(ui.rotBlockMode?"✓ Bloqueando días":"Bloquear días")+'</button>'+
+          '<button class="btn'+(ui.rotBlockMode?" primary":"")+'" data-action="rot-blockmode">'+(ui.rotBlockMode?"✓ Marcando ausencias":"Ausencias de residentes")+'</button>'+
           '<button class="btn primary" data-action="rot-gen">Asignar residentes</button>'+
           '<button class="btn" data-action="rot-print">Imprimir</button>'+
           '<button class="btn danger" data-action="rot-clear">Vaciar mes</button></span>'
@@ -1084,7 +1221,7 @@ function viewRotantes(){
   if(admin && ui.rotBlockMode){
     html += '<div class="card no-print" style="padding:8px 12px;margin-bottom:10px;background:#fffbeb;border-color:#fcd34d">'+
       '<b style="font-size:14px">Modo bloqueo activo</b>'+
-      '<p class="muted" style="font-size:13px;margin-top:2px">Toca la cabecera de un día para bloquearlo o desbloquearlo. En los días bloqueados no se asignarán residentes al generar. Vuelve a pulsar «Bloqueando días» para salir.</p></div>';
+      '<p class="muted" style="font-size:13px;margin-top:2px">Toca la cabecera de un día y marca qué residentes NO vienen ese día. Al generar no se les asignará consulta. Vuelve a pulsar «Bloqueando días» para salir.</p></div>';
   }
   html += '<div class="printhead">Residentes rotantes · '+MONTHS[ui.month]+' '+state.year+'</div>';
   // Leyenda: SOLO visible para el administrador (los nombres se editan en Ajustes)
@@ -1102,10 +1239,11 @@ function viewRotantes(){
   // Rejilla: mismo formato que el cuadrante, con distintivo del residente
   html += '<div class="gridbox"><table><thead><tr><th class="namecol">Facultativo</th>';
   days.forEach(d=>{
-    const bloq = rotDiaBloqueado(d.key);
-    const cls = bloq ? "rotoff" : (d.holiday?"fest":(d.dow===0||d.dow===6?"wknd":""));
-    const attr = (admin && ui.rotBlockMode) ? ' data-action="rot-toggleday" data-date="'+d.key+'" style="cursor:pointer"' : '';
-    html += '<th class="dayhead '+cls+'"'+attr+'><b>'+d.n+'</b><small>'+(bloq?"✕":WD[d.dow])+'</small></th>';
+    const bloqs = rotResBloqueadosDe(d.key);
+    const cls = bloqs.length ? "rotoff" : (d.holiday?"fest":(d.dow===0||d.dow===6?"wknd":""));
+    const attr = (admin && ui.rotBlockMode) ? ' data-action="rot-blockday" data-date="'+d.key+'" style="cursor:pointer"' : '';
+    const abajo = bloqs.length ? bloqs.map(r=>r.slice(1)).join("·") : WD[d.dow];
+    html += '<th class="dayhead '+cls+'"'+attr+' title="'+(bloqs.length?"Sin residente: "+bloqs.join(", "):"")+'"><b>'+d.n+'</b><small>'+abajo+'</small></th>';
   });
   html += '</tr></thead><tbody>';
 
@@ -1129,9 +1267,7 @@ function viewRotantes(){
         };
         inner = half(a.m,"m")+half(a.t,"t");
       }
-      const bloqDia = rotDiaBloqueado(d.key);
-      if(bloqDia && a) inner = '<span class="full rotblock">—</span>';
-      const clickable = admin && a && !bloqDia && !ui.rotBlockMode;
+      const clickable = admin && a && !ui.rotBlockMode;
       html += '<td>'+(clickable
         ? '<button class="cell" data-action="rot-cell" data-pid="'+p.id+'" data-date="'+d.key+'">'+inner+'</button>'
         : '<span class="cell" style="display:block">'+inner+'</span>')+'</td>';
@@ -1663,6 +1799,28 @@ function viewAjustes(){
 // ------------------ Modales ------------------
 function renderModal(){
   const root = document.getElementById("modal-root");
+  if(ui.rotBlockDay){
+    const dkey = ui.rotBlockDay;
+    const conNombre = ROT_CODES.filter(rc=>((state.rotantesLeyenda||{})[rc]||"").trim());
+    const lista = conNombre.length ? conNombre : ROT_CODES;
+    root.innerHTML = '<div class="overlay" data-action="close-modal"><div class="modal" data-stop="1">'+
+      '<div class="row between"><b>Residentes que NO vienen · '+fmtDate(dkey)+'</b>'+
+      '<button class="icon" data-action="close-modal" style="font-size:16px">✕</button></div>'+
+      '<p class="muted" style="margin-top:6px;font-size:13px">Marca los que no estén disponibles ese día (guardia saliente, docencia, vacaciones…). Al generar no se les asignará consulta.</p>'+
+      '<div style="margin-top:10px">'+
+        lista.map(rc=>{
+          const nom = ((state.rotantesLeyenda||{})[rc]||"").trim();
+          const bl = rotResBloqueado(dkey, rc);
+          return '<button class="btn" style="width:100%;margin-top:6px;justify-content:flex-start;'+
+            (bl?'background:#475569;color:#fff;border-color:#475569':'')+'" '+
+            'data-action="rot-toggleres" data-date="'+dkey+'" data-code="'+rc+'">'+
+            (bl?"✕ ":"○ ")+rc+(nom?" · "+esc(nom):"")+(bl?"  (no viene)":"")+'</button>';
+        }).join("")+
+      '</div>'+
+      '<div class="row" style="margin-top:14px"><button class="btn" style="flex:1" data-action="close-modal">Hecho</button></div>'+
+      '</div></div>';
+    return;
+  }
   if(ui.rotCell){
     const {pid,date} = ui.rotCell;
     const p = state.physicians.find(x=>x.id===pid)||{name:""};
@@ -2596,7 +2754,7 @@ document.addEventListener("click", e=>{
   const el = e.target.closest("[data-action]");
   if(!el){ return; }
   const act = el.dataset.action;
-  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-required","official-on","official-off","rot-cell","rot-set","rot-gen","rot-clear","rot-blockmode","rot-toggleday","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-required","official-on","official-off","rot-cell","rot-set","rot-gen","rot-clear","rot-blockmode","rot-blockday","rot-toggleres","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
       ui.reqDraft = {}; ui.reqNote = "";
@@ -2604,7 +2762,7 @@ document.addEventListener("click", e=>{
     }
     return;
   }
-  if(act==="close-modal"){ if(stop && !el.closest(".modal")) return; ui.editCell=null; ui.dayDetail=null; ui.genModal=false; ui.genReport=null; ui.resetMonthModal=false; ui.reqModal=null; ui.reviewModal=null; ui.rotCell=null; renderModal(); return; }
+  if(act==="close-modal"){ if(stop && !el.closest(".modal")) return; ui.editCell=null; ui.dayDetail=null; ui.genModal=false; ui.genReport=null; ui.resetMonthModal=false; ui.reqModal=null; ui.reviewModal=null; ui.rotCell=null; ui.rotBlockDay=null; renderModal(); return; }
   switch(act){
     case "tab": ui.tab = el.dataset.tab; ui.confirmReset=false; render(); break;
     case "prev-month": if(ui.month===0){ui.month=11; state.year--;} else ui.month--; save(); render(); break;
@@ -2651,7 +2809,8 @@ document.addEventListener("click", e=>{
       break;
     case "go-ajustes": ui.tab = "ajustes"; render(); break;
     case "rot-blockmode": ui.rotBlockMode = !ui.rotBlockMode; render(); break;
-    case "rot-toggleday": { rotToggleDia(el.dataset.date); render(); break; }
+    case "rot-blockday": { ui.rotBlockDay = el.dataset.date; renderModal(); break; }
+    case "rot-toggleres": { rotToggleRes(el.dataset.date, el.dataset.code); renderModal(); render(); break; }
     case "rot-print": window.print(); break;
     case "rot-gen": {
       if(!window.confirm("Asignar residentes automáticamente en "+MONTHS[ui.month]+" "+state.year+".\n\n"+
