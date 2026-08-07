@@ -205,15 +205,18 @@ const CONSULTAS = [
   {code:"RHB1",short:"RH1",group:"M",cls:"k-rhb"},{code:"RHB2",short:"RH2",group:"M",cls:"k-rhb"},
   {code:"ALRU",short:"ALRU",group:"M",cls:"k-alru"},
   {code:"ORT",short:"ORT",group:"M",cls:"k-ort"},
-  {code:"ALT1",short:"AT1",group:"T",cls:"k-alt"},{code:"ALT2",short:"AT2",group:"T",cls:"k-alt"},
-  {code:"ALT3",short:"AT3",group:"T",cls:"k-alt"},
+  {code:"ALT1",short:"ALT1",group:"T",cls:"k-alt"},{code:"ALT2",short:"ALT2",group:"T",cls:"k-alt"},
+  {code:"ALT3",short:"ALT3",group:"T",cls:"k-alt"},
   {code:"RHBT",short:"RHT",group:"T",cls:"k-rhbt"},
   {code:"RXINT",short:"RXI",group:"M",cls:"k-rxint"},
   {code:"URG",short:"URG",group:"F",cls:"k-urg"},
   {code:"URGLV",short:"URGLV",group:"F",cls:"k-urglv"},
   {code:"URGF",short:"URGF",group:"F",cls:"k-urgf"},
 ];
-const ABSENCES = {L:{label:"Libranza",cls:"k-L"},V:{label:"Vacaciones",cls:"k-V"},B:{label:"Baja / IT",cls:"k-B"},P:{label:"Permiso",cls:"k-P"}};
+const ABSENCES = {V:{label:"Vacaciones",cls:"k-V"},B:{label:"Baja / IT",cls:"k-B"},P:{label:"Permiso",cls:"k-P"}};
+// La libranza ya no se usa, pero puede existir en cuadrantes antiguos: se sigue reconociendo
+const ABSENCES_LEGACY = {L:{label:"Libranza",cls:"k-L"}};
+function absInfo(code){ return ABSENCES[code] || ABSENCES_LEGACY[code] || null; }
 const byCode = Object.fromEntries(CONSULTAS.map(c=>[c.code,c]));
 const MORNING = CONSULTAS.filter(c=>c.group==="M");
 const AFTERNOON = CONSULTAS.filter(c=>c.group==="T");
@@ -507,7 +510,7 @@ function applyCode(pid, dateKey, code){
   if(code==="CLEAR") next={};
   else if(code==="CLEAR_M") next=Object.assign({},a,{m:null});
   else if(code==="CLEAR_T") next=Object.assign({},a,{t:null});
-  else if(ABSENCES[code]) next = a.f===code?{}:{f:code};
+  else if(absInfo(code)) next = a.f===code?{}:{f:code};
   else{
     const def = byCode[code]; if(!def) return;
     if(def.group==="T"){
@@ -531,7 +534,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v68";
+const APP_VERSION = "v69";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -595,7 +598,7 @@ const KEY_REQLOG = "cuadrante-reqlog-v1";
 const KEY_APPLIEDLOG = "cuadrante-appliedlog-v1";
 function cellToText(a){
   if(!a || (!a.m && !a.t && !a.f)) return "— (vacío)";
-  if(a.f) return byCode[a.f] ? byCode[a.f].code : (ABSENCES[a.f] ? ABSENCES[a.f].label : a.f);
+  if(a.f) return byCode[a.f] ? byCode[a.f].code : (absInfo(a.f) ? absInfo(a.f).label : a.f);
   return [a.m, a.t ? a.t : null].filter(Boolean).join(" + ") || "—";
 }
 function draftToCell(d){
@@ -606,12 +609,12 @@ function draftToCell(d){
 function partLabel(part){
   if(!part) return "— (nada, solo añadir)";
   const i = part.indexOf(":"); const slot = part.slice(0,i), code = part.slice(i+1);
-  const nm = ABSENCES[code] ? ABSENCES[code].label : code;
+  const nm = absInfo(code) ? absInfo(code).label : code;
   return nm + (slot==="m" ? " (mañana)" : slot==="t" ? " (tarde)" : " (día completo)");
 }
 function codeLabel(code){
   if(!code) return "Ninguna (liberar)";
-  if(ABSENCES[code]) return ABSENCES[code].label;
+  if(absInfo(code)) return absInfo(code).label;
   const def = byCode[code];
   return code + (def ? (def.group==="M" ? " (mañana)" : def.group==="T" ? " (tarde)" : " (día completo)") : "");
 }
@@ -623,7 +626,7 @@ function proposeCell(cur, fromPart, toCode){
     else c[slot] = null;
   }
   if(toCode){
-    if(ABSENCES[toCode] || toCode==="URG" || toCode==="URGF"){ c = {f:toCode}; }
+    if(absInfo(toCode) || toCode==="URG" || toCode==="URGF"){ c = {f:toCode}; }
     else{
       const def = byCode[toCode];
       if(def){ c.f = null; if(def.group==="M") c.m = toCode; else if(def.group==="T") c.t = toCode; }
@@ -1256,7 +1259,7 @@ function viewRotantes(){
       if(!a){
         inner = '<span class="full '+base+'"></span>';
       }else if(a.f){
-        const cls = a.f==="URG"?"k-urg":(a.f==="URGLV"?"k-urglv":(a.f==="URGF"?"k-urgf":ABSENCES[a.f].cls));
+        const cls = a.f==="URG"?"k-urg":(a.f==="URGLV"?"k-urglv":(a.f==="URGF"?"k-urgf":((absInfo(a.f)||{cls:"k-P"}).cls)));
         const r = rotGet(p.id,d.key,"f");
         inner = '<span class="full '+cls+' rotcell">'+a.f+(r?'<span class="rotbadge">'+r+'</span>':'')+'</span>';
       }else{
@@ -1420,14 +1423,7 @@ function viewCuadrante(){
     '<button class="btn" data-action="export-csv">Exportar '+state.year+' (CSV)</button></div></div>';
 
   if(MODE==="viewer"){
-    const leyChip = (txt,cls)=>'<span class="chip '+cls+'" style="cursor:default">'+txt+'</span>';
-    html += '<div class="palette no-print"><div class="row"><span class="tiny lbl">Mañana</span>'+
-      MORNING.map(c=>leyChip(c.short+" · "+c.code, c.cls)).join("")+'</div>'+
-      '<div class="row"><span class="tiny lbl">Tarde</span>'+AFTERNOON.map(c=>leyChip(c.short+" · "+c.code, c.cls)).join("")+
-      '<span class="tiny" style="margin-left:8px">Día</span>'+leyChip("URG","k-urg")+leyChip("URGLV","k-urglv")+leyChip("URGF","k-urgf")+'</div>'+
-      '<div class="row"><span class="tiny lbl">Ausenc.</span>'+
-      Object.entries(ABSENCES).map(([c,x])=>leyChip(c+" "+x.label, x.cls)).join("")+'</div>'+
-      '<div class="muted" style="font-size:11px;padding-top:2px">Leyenda de consultas. La <b style="color:#b45309">L</b> junto al día indica que quedan consultas de mañana libres.</div></div>';
+    html += '<p class="muted no-print" style="font-size:12px;margin:0 0 8px">La <b style="color:#b45309">L</b> junto al número del día indica que ese día quedan consultas de mañana libres.</p>';
   }
   if(MODE!=="viewer") html += '<div class="palette"><div class="row"><span class="tiny lbl">Mañana</span>'+
     MORNING.map(c=>chip(c.code,c.short,c.cls)).join("")+'</div>'+
@@ -1437,7 +1433,8 @@ function viewCuadrante(){
     Object.entries(ABSENCES).map(([c,s])=>chip(c,c+" "+s.label,s.cls)).join("")+
     '<button class="chip plain'+(ui.brush==="ERASE"?" on":"")+'" data-action="brush" data-code="ERASE">⌫ Borrar</button></div>'+
     '<div class="muted" style="font-size:11px;padding-top:2px">'+
-    (ui.brush?"Toca celdas para aplicar (los días bloqueados se omiten).":"Selecciona una consulta y pinta, o toca una celda para elegir mañana + tarde.")+'</div></div>';
+    (ui.brush?"Toca celdas para aplicar (los días bloqueados se omiten).":"Selecciona una consulta y pinta, o toca una celda para elegir mañana + tarde.")+
+    ' · La <b style="color:#b45309">L</b> junto al día indica que quedan consultas de mañana libres.</div></div>';
 
   html += '<div class="printhead">Cuadrante · '+MONTHS[ui.month]+' '+state.year+'</div>';
   html += '<div class="gridbox"><table><thead><tr><th class="namecol">Facultativo</th>';
@@ -1462,7 +1459,7 @@ function viewCuadrante(){
       if(!a){
         inner = blocked?'<span class="full blockcell">×</span>':'<span class="full '+base+'"></span>';
       }else if(a.f){
-        const cls = a.f==="URG"?"k-urg":(a.f==="URGLV"?"k-urglv":(a.f==="URGF"?"k-urgf":ABSENCES[a.f].cls));
+        const cls = a.f==="URG"?"k-urg":(a.f==="URGLV"?"k-urglv":(a.f==="URGF"?"k-urgf":((absInfo(a.f)||{cls:"k-P"}).cls)));
         inner = '<span class="full '+cls+'">'+a.f+'</span>';
       }else{
         const half = (c)=>c?('<span class="half '+byCode[c].cls+'">'+byCode[c].short+'</span>')
@@ -1579,7 +1576,7 @@ function viewStats(){
     if(a.f==="URG") r.URG++;
     else if(a.f==="URGLV") r.URGLV++;
     else if(a.f==="URGF") r.URGF++;
-    else if(a.f&&ABSENCES[a.f]) r.aus++;
+    else if(a.f&&absInfo(a.f)) r.aus++;
     [a.m,a.t].forEach(c=>{
       if(!c) return;
       if(c==="ORT") r.ORT++;
@@ -1612,7 +1609,7 @@ function viewStats(){
         if(hmapStats[key]) continue;
         // Vacaciones, baja, permiso o libranza: no son jornadas exigibles, se descuentan.
         const a = officialAt(p.id, key);
-        if(a && a.f && ABSENCES[a.f]) continue;
+        if(a && a.f && absInfo(a.f)) continue;
         n++;  // los días bloqueados NO reducen el objetivo (se compensan trabajando de tarde)
       }
     });
@@ -2110,7 +2107,7 @@ function carryBalance(p, beforeMonth, fromMonth){
       const a=officialAt(p.id, key);   // cómputo OFICIAL (ignora cambios entre compañeros)
       // Vacaciones, baja, permiso o libranza: ese día no se debe trabajar, así que
       // no cuenta como jornada exigible (si no, el saldo quedaría negativo sin motivo).
-      if(a && a.f && ABSENCES[a.f]) continue;
+      if(a && a.f && absInfo(a.f)) continue;
       lab++;
       if(a) done += turnosOf(a);   // URG=2, URGF=0
     }
@@ -2230,7 +2227,7 @@ function generateMonth(mode){
   state.physicians.forEach(p=>{
     // Días de ausencia (vacaciones, baja, permiso, libranza) en días laborables: no son exigibles
     let aus = 0;
-    labDays.forEach(d=>{ const a=getA(p.id,d.key); if(a && a.f && ABSENCES[a.f]) aus++; });
+    labDays.forEach(d=>{ const a=getA(p.id,d.key); if(a && a.f && absInfo(a.f)) aus++; });
     ausDias[p.id] = aus;
     baseTarget[p.id] = (labDays.length - aus) * (p.pct||100)/100;   // objetivo del mes, sin los días de ausencia
     carry[p.id] = carryBalance(p, ui.month, state.settings.computeFrom||0);  // saldo desde el mes de inicio del cómputo
