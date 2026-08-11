@@ -65,6 +65,8 @@
   .k-rhb{background:#d9f99d; color:#365314}
   .k-alt{background:#a5b4fc; color:#1e1b4b}
   .k-rhbt{background:#84cc16; color:#1a2e05}
+  .k-tfm{background:#f59e0b; color:#3b2005}
+  .k-tft{background:#8b5cf6; color:#fff}
   .rotbadge{position:absolute; right:1px; bottom:1px; font-size:8px; font-weight:800; line-height:1;
             padding:1px 2px; border-radius:3px; background:#111827; color:#fff}
   .rotcell{position:relative}
@@ -208,6 +210,10 @@ const CONSULTAS = [
   {code:"ALT1",short:"ALT1",group:"T",cls:"k-alt"},{code:"ALT2",short:"ALT2",group:"T",cls:"k-alt"},
   {code:"ALT3",short:"ALT3",group:"T",cls:"k-alt"},
   {code:"RHBT",short:"RHT",group:"T",cls:"k-rhbt"},
+  {code:"TFM1",short:"TFM1",group:"M",cls:"k-tfm"},{code:"TFM2",short:"TFM2",group:"M",cls:"k-tfm"},
+  {code:"TFM3",short:"TFM3",group:"M",cls:"k-tfm"},
+  {code:"TFT1",short:"TFT1",group:"T",cls:"k-tft"},{code:"TFT2",short:"TFT2",group:"T",cls:"k-tft"},
+  {code:"TFT3",short:"TFT3",group:"T",cls:"k-tft"},
   {code:"RXINT",short:"RXI",group:"M",cls:"k-rxint"},
   {code:"URG",short:"URG",group:"F",cls:"k-urg"},
   {code:"URGLV",short:"URGLV",group:"F",cls:"k-urglv"},
@@ -361,6 +367,8 @@ let state = {
   rotantesLeyenda: {R1:"",R2:"",R3:"",R4:"",R5:""},
   // Días en los que NO se asignan residentes (sesiones, congresos, docencia…)
   rotBloqueados: {},
+  // Hora de comienzo de las consultas de Tráfico: clave "pid|fecha|slot" → "09:30"
+  traficoHoras: {},
 };
 const ROT_CODES = ["R1","R2","R3","R4","R5"];
 
@@ -415,6 +423,8 @@ function loadState(){
       state.rotantes = d.rotantes||{};
       if(d.adminPass) state.adminPass = d.adminPass;
       state.rotBloqueados = d.rotBloqueados||{};
+  state.traficoHoras = d.traficoHoras||{};
+      state.traficoHoras = d.traficoHoras||{};
       state.rotantesLeyenda = Object.assign({R1:"",R2:"",R3:"",R4:"",R5:""}, d.rotantesLeyenda||{});
       state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
       state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
@@ -454,7 +464,9 @@ const keyOf = (y,m,d)=>y+"-"+pad(m+1)+"-"+pad(d);
 const uid = ()=>Math.random().toString(36).slice(2,9);
 const esc = s=>String(s==null?"":s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const isEmptyA = a=>!a||(!a.m&&!a.t&&!a.f);
-const turnosOf = a=>!a?0:((a.f==="URG"||a.f==="URGLV")?2:(a.f?0:((a.m?1:0)+(a.t?1:0))));
+// Consultas de Tráfico: voluntarias, se pagan como horas extra y NO computan como turnos
+const esTrafico = c => !!c && /^TF[MT][123]$/.test(c);
+const turnosOf = a=>!a?0:((a.f==="URG"||a.f==="URGLV")?2:(a.f?0:((a.m&&!esTrafico(a.m)?1:0)+(a.t&&!esTrafico(a.t)?1:0))));
 const fmtDate = k=>k.split("-").reverse().join("/");
 function holidayMap(){ const m={}; state.holidays.forEach(h=>m[h.date]=h.name); return m; }
 function nextWorkingDay(dateKey, hset, blocked){
@@ -493,8 +505,9 @@ function codeMapFor(days){
   });
   return map;
 }
-function poolCodes(){ return MORNING.filter(c=>state.settings.required[c.code]).map(c=>c.code); }
-function reqAfternoon(){ return AFTERNOON.filter(c=>state.settings.required[c.code]).map(c=>c.code); }
+// El generador nunca reparte consultas de Tráfico: son voluntarias y se piden aparte
+function poolCodes(){ return MORNING.filter(c=>state.settings.required[c.code] && !esTrafico(c.code)).map(c=>c.code); }
+function reqAfternoon(){ return AFTERNOON.filter(c=>state.settings.required[c.code] && !esTrafico(c.code)).map(c=>c.code); }
 
 // ------------------ Mutaciones ------------------
 function applyCode(pid, dateKey, code){
@@ -534,7 +547,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v69";
+const APP_VERSION = "v70";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -644,6 +657,47 @@ function buildRequestText(){
   const noteEl = document.getElementById("rq-note");
   const note = (noteEl ? noteEl.value : (ui.reqNote||"")).trim();
   const name = (document.getElementById("rq-name")||{value:""}).value.trim();
+  if(rq.type==="trafico"){
+    const pa = state.physicians.find(x=>x.id===rq.pid);
+    const d3 = ui.reqDraft||{};
+    const payload = {v:5, type:"trafico", by:name, note:note, pid:rq.pid, phys:pa?pa.name:"",
+                     date:rq.date, slot:d3.tfSlot||"m", code:d3.tfCode||"TFM1", hora:d3.tfHora||""};
+    return "Solicitud de CONSULTA DE TRÁFICO\n"+
+      "Solicitante: "+(name||"(sin nombre)")+"\n"+
+      "Facultativo: "+(pa?pa.name:"")+"\n"+
+      "Día: "+fmtDate(rq.date)+" · "+((d3.tfSlot||"m")==="m"?"mañana":"tarde")+"\n"+
+      "Consulta: "+(d3.tfCode||"")+" · comienzo "+(d3.tfHora||"")+"\n"+
+      (note?("Motivo: "+note+"\n"):"")+
+      "\n[SOLICITUD]"+JSON.stringify(payload);
+  }
+  if(rq.type==="ceder"){
+    const pa = state.physicians.find(x=>x.id===rq.pid);
+    const pb = state.physicians.find(x=>x.id===rq.pidB);
+    const d4 = ui.reqDraft||{};
+    const payload = {v:5, type:"ceder", by:name, note:note,
+                     pidA:rq.pid, physA:pa?pa.name:"", pidB:rq.pidB, physB:pb?pb.name:"",
+                     date:rq.date, part:d4.cedePart||""};
+    return "Solicitud para CEDER una consulta\n"+
+      "Solicitante: "+(name||"(sin nombre)")+"\n"+
+      (pa?pa.name:"")+" cede "+partLabel(d4.cedePart||"")+" del "+fmtDate(rq.date)+"\n"+
+      "La asume: "+(pb?pb.name:"")+"\n"+
+      (note?("Motivo: "+note+"\n"):"")+
+      "\n[SOLICITUD]"+JSON.stringify(payload);
+  }
+  if(rq.type==="urg2"){
+    const pa = state.physicians.find(x=>x.id===rq.pid);
+    const pb = state.physicians.find(x=>x.id===rq.pidB);
+    const cU = state.assignments[(rq.pid||"")+"|"+rq.date];
+    const payload = {v:5, type:"urg2", by:name, note:note,
+                     pidA:rq.pid, physA:pa?pa.name:"", pidB:rq.pidB, physB:pb?pb.name:"",
+                     dateU:rq.date, f1:rq.dateB, f2:rq.dateB2};
+    return "Solicitud: URGENCIA por DOS CONSULTAS\n"+
+      "Solicitante: "+(name||"(sin nombre)")+"\n"+
+      (pa?pa.name:"")+" cede "+cellToText(cU)+" del "+fmtDate(rq.date)+"\n"+
+      (pb?pb.name:"")+" la asume y entrega sus consultas del "+fmtDate(rq.dateB)+" y "+fmtDate(rq.dateB2)+"\n"+
+      (note?("Motivo: "+note+"\n"):"")+
+      "\n[SOLICITUD]"+JSON.stringify(payload);
+  }
   if(rq.type==="doble"){
     const pa = state.physicians.find(x=>x.id===rq.pid);
     const pb = state.physicians.find(x=>x.id===rq.pidB);
@@ -704,6 +758,18 @@ function parseRequest(txt){
   try{ r = JSON.parse(chunk); }
   catch(e){ try{ r = JSON.parse(chunk.replace(/[\r\n]+/g," ")); }catch(e2){ return null; } }
   if(!r) return null;
+  if(r.type==="trafico"){
+    if(!r.date || (!r.pid && !r.phys) || !r.code) return null;
+    return r;
+  }
+  if(r.type==="ceder"){
+    if(!r.date || !r.part || (!r.pidA && !r.physA) || (!r.pidB && !r.physB)) return null;
+    return r;
+  }
+  if(r.type==="urg2"){
+    if(!r.dateU || !r.f1 || !r.f2 || (!r.pidA && !r.physA) || (!r.pidB && !r.physB)) return null;
+    return r;
+  }
   if(r.type==="doble"){
     if(!r.pares || !r.pares.length || (!r.pidA && !r.physA) || (!r.pidB && !r.physB)) return null;
     return r;
@@ -720,6 +786,75 @@ function parseRequest(txt){
   return r;
 }
 function applyRequest(r){
+  if(r.type==="trafico"){
+    const p = state.physicians.find(x=>x.id===r.pid) || state.physicians.find(x=>x.name===r.phys);
+    if(!p) return "No se encuentra al facultativo.";
+    const k = p.id+"|"+r.date;
+    const a = Object.assign({}, state.assignments[k]||{});
+    if(a.f) return "Ese día está ocupado por "+cellToText(a)+".";
+    if(a[r.slot]) return "Ese turno ya está ocupado por "+a[r.slot]+".";
+    a[r.slot] = r.code;
+    state.assignments[k] = {m:a.m||null, t:a.t||null, f:null};
+    if(r.hora){ state.traficoHoras = state.traficoHoras||{}; state.traficoHoras[p.id+"|"+r.date+"|"+r.slot] = r.hora; }
+    save();
+    return null;
+  }
+  if(r.type==="ceder"){
+    const pa = state.physicians.find(x=>x.id===r.pidA) || state.physicians.find(x=>x.name===r.physA);
+    const pb = state.physicians.find(x=>x.id===r.pidB) || state.physicians.find(x=>x.name===r.physB);
+    if(!pa || !pb) return "No se encuentra a alguno de los facultativos.";
+    const kA = pa.id+"|"+r.date, kB = pb.id+"|"+r.date;
+    const orig = state.assignments[kA];
+    if(!orig) return "El día de origen no tiene nada asignado.";
+    const slot = (r.part||"").split(":")[0] || "m";
+    const code = r.part ? r.part.slice(r.part.indexOf(":")+1) : "";
+    if(!code) return "No se indica qué se cede.";
+    const dest = Object.assign({}, state.assignments[kB]||{});
+    if(slot==="f"){
+      if(dest.m||dest.t||dest.f) return "Quien la recibe ya tiene "+cellToText(dest)+" ese día.";
+      state.assignments[kB] = {f:code};
+      delete state.assignments[kA];
+    }else{
+      if(dest.f) return "Quien la recibe ya tiene "+cellToText(dest)+" ese día.";
+      if(dest[slot]) return "Quien la recibe ya tiene "+dest[slot]+" en ese turno.";
+      dest[slot] = code;
+      state.assignments[kB] = {m:dest.m||null, t:dest.t||null, f:null};
+      const c = Object.assign({}, orig); c[slot] = null;
+      if(!c.m && !c.t && !c.f) delete state.assignments[kA]; else state.assignments[kA] = c;
+    }
+    // La hora de tráfico viaja con la consulta
+    if(esTrafico(code) && state.traficoHoras){
+      const h = state.traficoHoras[pa.id+"|"+r.date+"|"+slot];
+      if(h){ state.traficoHoras[pb.id+"|"+r.date+"|"+slot] = h; delete state.traficoHoras[pa.id+"|"+r.date+"|"+slot]; }
+    }
+    save();
+    return null;
+  }
+  if(r.type==="urg2"){
+    const pa = state.physicians.find(x=>x.id===r.pidA) || state.physicians.find(x=>x.name===r.physA);
+    const pb = state.physicians.find(x=>x.id===r.pidB) || state.physicians.find(x=>x.name===r.physB);
+    if(!pa || !pb) return "No se encuentra a alguno de los facultativos.";
+    const kU = pa.id+"|"+r.dateU;
+    const guardia = state.assignments[kU];
+    if(!guardia || !guardia.f) return "El día indicado no tiene guardia.";
+    const k1B = pb.id+"|"+r.f1, k2B = pb.id+"|"+r.f2;
+    const c1 = state.assignments[k1B], c2 = state.assignments[k2B];
+    if(!c1 || !c2) return "Faltan las dos consultas que se entregan a cambio.";
+    // La guardia pasa a B
+    const destU = state.assignments[pb.id+"|"+r.dateU];
+    if(destU && (destU.f||destU.m||destU.t)) return "Quien asume la guardia ya tiene "+cellToText(destU)+" ese día.";
+    state.assignments[pb.id+"|"+r.dateU] = JSON.parse(JSON.stringify(guardia));
+    delete state.assignments[kU];
+    // Las dos consultas pasan a A
+    [[r.f1,c1],[r.f2,c2]].forEach(([f,c])=>{
+      const destA = state.assignments[pa.id+"|"+f];
+      if(destA && (destA.f||destA.m||destA.t)) return;
+      state.assignments[pa.id+"|"+f] = JSON.parse(JSON.stringify(c));
+      delete state.assignments[pb.id+"|"+f];
+    });
+    save();
+    return null;
+  }
   if(r.type==="doble"){
     const pa = state.physicians.find(x=>x.id===r.pidA) || state.physicians.find(x=>x.name===r.physA);
     const pb = state.physicians.find(x=>x.id===r.pidB) || state.physicians.find(x=>x.name===r.physB);
@@ -807,6 +942,7 @@ function render(){
   else if(ui.tab==="equipo") main.innerHTML = viewEquipo();
   else if(ui.tab==="stats") main.innerHTML = viewStats();
   else if(ui.tab==="rotantes") main.innerHTML = viewRotantes();
+  else if(ui.tab==="traficos") main.innerHTML = viewTraficos();
   else if(ui.tab==="solicitudes") main.innerHTML = viewSolicitudes();
   else main.innerHTML = viewAjustes();
   renderModal();
@@ -826,7 +962,94 @@ function solicitudFormHTML(){
   const hasContact = !!(state.settings.reqEmail||state.settings.reqPhone);
   rq.type = rq.type || "mover";
   let core;
-  if(rq.type==="doble"){
+  if(rq.type==="trafico"){
+    const d3 = ui.reqDraft || (ui.reqDraft={});
+    d3.tfSlot = d3.tfSlot || "m";
+    const codigos = (d3.tfSlot==="m") ? ["TFM1","TFM2","TFM3"] : ["TFT1","TFT2","TFT3"];
+    if(!codigos.includes(d3.tfCode)) d3.tfCode = codigos[0];
+    const horas = horasTrafico(d3.tfSlot);
+    if(!horas.includes(d3.tfHora)) d3.tfHora = horas[0];
+    core = '<p class="tiny" style="margin-top:10px">Facultativo y día</p>'+
+      '<div class="row" style="margin-top:4px">'+physSel("rq-phys", p?p.id:"")+
+      '<input type="date" value="'+rq.date+'" data-field="rq-date" style="padding:7px"></div>'+
+      '<p class="muted" style="margin-top:6px;font-size:13px">Ese día tienes: <b>'+cellToText(cur)+'</b></p>'+
+      '<p class="tiny" style="margin-top:10px">Turno</p>'+
+      '<select data-field="rq-tfslot" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+
+        '<option value="m"'+(d3.tfSlot==="m"?" selected":"")+'>Mañana (8:00 a 14:00)</option>'+
+        '<option value="t"'+(d3.tfSlot==="t"?" selected":"")+'>Tarde (15:00 a 17:00)</option></select>'+
+      '<p class="tiny" style="margin-top:10px">Consulta</p>'+
+      '<select data-field="rq-tfcode" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+
+        codigos.map(c=>'<option value="'+c+'"'+(d3.tfCode===c?" selected":"")+'>'+c+'</option>').join("")+'</select>'+
+      '<p class="tiny" style="margin-top:10px">Hora de comienzo</p>'+
+      '<select data-field="rq-tfhora" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+
+        horas.map(h=>'<option value="'+h+'"'+(d3.tfHora===h?" selected":"")+'>'+h+'</option>').join("")+'</select>'+
+      (function(){
+        const motivo = validarTrafico(rq.pid, rq.date, d3.tfSlot, d3.tfCode);
+        ui.reqBloqueo = motivo;
+        return motivo
+          ? '<div class="warnbox" style="margin-top:10px">⚠ <b>No se puede solicitar:</b><br>'+esc(motivo)+'</div>'
+          : '<p style="margin-top:10px;font-size:13px;color:var(--emerald-700)"><b>✓ Se puede solicitar.</b></p>';
+      })();
+  }else if(rq.type==="ceder"){
+    if(!rq.pidB || !phys.find(x=>x.id===rq.pidB)){
+      const alt = phys.find(x=>!p || x.id!==p.id) || p; rq.pidB = alt ? alt.id : null;
+    }
+    const pb3 = phys.find(x=>x.id===rq.pidB) || null;
+    const d4 = ui.reqDraft || (ui.reqDraft={});
+    if(d4.cedePart===undefined){
+      d4.cedePart = cur ? (cur.f ? "f:"+cur.f : (cur.m ? "m:"+cur.m : (cur.t ? "t:"+cur.t : ""))) : "";
+    }
+    let opts = '';
+    if(cur && cur.f) opts += '<option value="f:'+cur.f+'"'+(d4.cedePart==="f:"+cur.f?" selected":"")+'>'+partLabel("f:"+cur.f)+'</option>';
+    if(cur && cur.m) opts += '<option value="m:'+cur.m+'"'+(d4.cedePart==="m:"+cur.m?" selected":"")+'>'+partLabel("m:"+cur.m)+'</option>';
+    if(cur && cur.t) opts += '<option value="t:'+cur.t+'"'+(d4.cedePart==="t:"+cur.t?" selected":"")+'>'+partLabel("t:"+cur.t)+'</option>';
+    if(!opts) opts = '<option value="">— ese día no tienes nada asignado —</option>';
+    core = '<p class="tiny" style="margin-top:10px">Quién cede y qué día</p>'+
+      '<div class="row" style="margin-top:4px">'+physSel("rq-phys", p?p.id:"")+
+      '<input type="date" value="'+rq.date+'" data-field="rq-date" style="padding:7px"></div>'+
+      '<p class="muted" style="margin-top:4px;font-size:13px">Ese día tiene: <b>'+cellToText(cur)+'</b></p>'+
+      '<p class="tiny" style="margin-top:10px">Consulta o guardia que cede</p>'+
+      '<select data-field="rq-cedepart" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+opts+'</select>'+
+      '<p class="tiny" style="margin-top:10px">Quién la recibe</p>'+
+      '<div class="row" style="margin-top:4px">'+physSel("rq-physb", pb3?pb3.id:"")+'</div>'+
+      (function(){
+        const motivo = validarCesion(rq.pid, rq.date, d4.cedePart||"", rq.pidB);
+        ui.reqBloqueo = motivo;
+        return motivo
+          ? '<div class="warnbox" style="margin-top:10px">⚠ <b>No se puede ceder:</b><br>'+esc(motivo)+'</div>'
+          : '<p style="margin-top:10px;font-size:13px;color:var(--emerald-700)"><b>✓ La cesión es posible.</b></p>';
+      })();
+  }else if(rq.type==="urg2"){
+    if(!rq.pidB || !phys.find(x=>x.id===rq.pidB)){
+      const alt = phys.find(x=>!p || x.id!==p.id) || p; rq.pidB = alt ? alt.id : null;
+    }
+    rq.dateB  = rq.dateB  || rq.date;
+    rq.dateB2 = rq.dateB2 || rq.dateB;
+    const pb4 = phys.find(x=>x.id===rq.pidB) || null;
+    const cU  = p   ? state.assignments[p.id+"|"+rq.date]     : null;
+    const c1  = pb4 ? state.assignments[pb4.id+"|"+rq.dateB]  : null;
+    const c2  = pb4 ? state.assignments[pb4.id+"|"+rq.dateB2] : null;
+    core = '<p class="tiny" style="margin-top:10px">Quién cede la urgencia y qué día</p>'+
+      '<div class="row" style="margin-top:4px">'+physSel("rq-phys", p?p.id:"")+
+      '<input type="date" value="'+rq.date+'" data-field="rq-date" style="padding:7px"></div>'+
+      '<p class="muted" style="margin-top:4px;font-size:13px">Guardia que cede: <b>'+cellToText(cU)+'</b> (equivale a 2 turnos)</p>'+
+      '<p class="tiny" style="margin-top:12px">Quién la asume y qué dos consultas entrega a cambio</p>'+
+      '<div class="row" style="margin-top:4px">'+physSel("rq-physb", pb4?pb4.id:"")+'</div>'+
+      '<div class="row" style="margin-top:6px;gap:8px">'+
+        '<span style="flex:1"><span class="tiny">1ª consulta</span>'+
+          '<input type="date" value="'+rq.dateB+'" data-field="rq-dateb" style="padding:7px;width:100%"></span>'+
+        '<span style="flex:1"><span class="tiny">2ª consulta</span>'+
+          '<input type="date" value="'+rq.dateB2+'" data-field="rq-dateb2" style="padding:7px;width:100%"></span>'+
+      '</div>'+
+      '<p class="muted" style="font-size:12px;margin-top:4px">'+cellToText(c1)+'  ·  '+cellToText(c2)+'</p>'+
+      (function(){
+        const motivo = validarUrg2(rq.pid, rq.date, rq.pidB, rq.dateB, rq.dateB2);
+        ui.reqBloqueo = motivo;
+        return motivo
+          ? '<div class="warnbox" style="margin-top:10px">⚠ <b>No se puede hacer:</b><br>'+esc(motivo)+'</div>'
+          : '<p style="margin-top:10px;font-size:13px;color:var(--emerald-700)"><b>✓ El cambio es posible.</b></p>';
+      })();
+  }else if(rq.type==="doble"){
     if(!rq.pidB || !phys.find(x=>x.id===rq.pidB)){
       const alt = phys.find(x=>!p || x.id!==p.id) || p;
       rq.pidB = alt ? alt.id : null;
@@ -939,6 +1162,9 @@ function solicitudFormHTML(){
       '<option value="mover"'+(rq.type==="mover"?" selected":"")+'>Mover una consulta de día</option>'+
       '<option value="intercambio"'+(rq.type==="intercambio"?" selected":"")+'>Intercambio de días entre facultativos</option>'+
       '<option value="doble"'+(rq.type==="doble"?" selected":"")+'>Cambio doble (dos intercambios a la vez)</option>'+
+      '<option value="ceder"'+(rq.type==="ceder"?" selected":"")+'>Ceder una consulta a otro facultativo</option>'+
+      '<option value="urg2"'+(rq.type==="urg2"?" selected":"")+'>Cambiar una urgencia por dos consultas</option>'+
+      '<option value="trafico"'+(rq.type==="trafico"?" selected":"")+'>Solicitar consulta de Tráfico</option>'+
     '</select>'+
     core+
     '<input type="text" id="rq-name" placeholder="Tu nombre" value="'+esc(name)+'" data-field="rq-name" style="width:100%;padding:8px;margin-top:10px;border:1px solid var(--slate-300);border-radius:8px">'+
@@ -1199,6 +1425,93 @@ function validarIntercambio(pidA, dateA, pidB, dateB){
   return avisos.length ? avisos.join(" · ") : null;
 }
 
+// Consulta de Tráfico: comprueba día, turno y hueco físico
+function validarTrafico(pid, fecha, slot, code){
+  const p = state.physicians.find(x=>x.id===pid);
+  if(!p) return "Falta indicar el facultativo.";
+  const dt = new Date(fecha), dow = dt.getDay();
+  const hmap = holidayMap();
+  if(dow===0||dow===6) return "Las consultas de Tráfico se hacen en días laborables.";
+  if(hmap[fecha]) return "Ese día es festivo ("+hmap[fecha]+").";
+  const a = state.assignments[pid+"|"+fecha] || {};
+  if(a.f) return "Ese día lo tienes ocupado con "+cellToText(a)+".";
+  if(a[slot]) return "Ya tienes "+a[slot]+" en el turno de "+(slot==="m"?"mañana":"tarde")+" de ese día.";
+  // Esa consulta no puede repetirse ese día
+  const repe = state.physicians.some(q=>{
+    if(q.id===pid) return false;
+    const x = state.assignments[q.id+"|"+fecha];
+    return x && x[slot]===code;
+  });
+  if(repe) return "La consulta "+code+" ya la tiene otro compañero ese día.";
+  // Ocupa consulta física
+  if(slot==="m" && mananasOcupadasDia(fecha) >= (state.settings.maxMorning||8))
+    return "Ese día ya están ocupadas las "+(state.settings.maxMorning||8)+" consultas físicas de mañana.";
+  return null;
+}
+
+// Ceder una consulta o guardia a otro facultativo
+function validarCesion(pidA, fecha, part, pidB){
+  const pa = state.physicians.find(x=>x.id===pidA);
+  const pb = state.physicians.find(x=>x.id===pidB);
+  if(!pa || !pb) return "Faltan facultativos.";
+  if(pa.id===pb.id) return "Elige un facultativo distinto para recibirla.";
+  if(!part) return "Elige qué consulta o guardia cede.";
+  const slot = part.split(":")[0], code = part.slice(part.indexOf(":")+1);
+  const dest = state.assignments[pb.id+"|"+fecha] || {};
+  if(slot==="f"){
+    if(dest.m || dest.t || dest.f) return esc(pb.name)+" ya tiene "+cellToText(dest)+" ese día.";
+  }else{
+    if(dest.f) return esc(pb.name)+" ya tiene "+cellToText(dest)+" ese día.";
+    if(dest[slot]) return esc(pb.name)+" ya tiene "+dest[slot]+" en ese turno.";
+  }
+  const dow = new Date(fecha).getDay();
+  if((pb.blocked||[]).includes(dow)) return esc(pb.name)+" no trabaja ese día de la semana.";
+  if(slot==="t" && !dest.m) return esc(pb.name)+" tendría tarde sin mañana ese día.";
+  // ¿puede hacerla?
+  if((code==="RHB1"||code==="RHB2") && pb.noRhb) return esc(pb.name)+" no hace RHB.";
+  if(code==="ALRU" && pb.noAlru) return esc(pb.name)+" no hace ALRU.";
+  if(code==="ALINTER" && pb.noInt) return esc(pb.name)+" no hace ALINTER.";
+  if(code==="ORT" && pb.noOrt) return esc(pb.name)+" no hace ORT.";
+  if(code==="RXINT" && pb.noRxint) return esc(pb.name)+" no hace RXINT.";
+  if((code==="URG"||code==="URGLV") && pb.noUrg) return esc(pb.name)+" no hace urgencias entre semana.";
+  if(code==="URGF" && pb.noUrgf) return esc(pb.name)+" no hace urgencias de festivo.";
+  // Reglas de guardias para quien la recibe
+  if(code==="URG"||code==="URGLV"||code==="URGF"){
+    const esU = x=>!!x&&(x.f==="URG"||x.f==="URGLV"||x.f==="URGF");
+    const base = new Date(fecha);
+    const lun = new Date(base); lun.setDate(base.getDate()-((base.getDay()+6)%7));
+    for(let i=0;i<7;i++){
+      const d2=new Date(lun); d2.setDate(lun.getDate()+i);
+      const k = keyOf(d2.getFullYear(),d2.getMonth(),d2.getDate());
+      if(k!==fecha && esU(state.assignments[pb.id+"|"+k])) return esc(pb.name)+" ya tiene otra guardia esa semana.";
+    }
+  }
+  return null;
+}
+
+// Una urgencia (2 turnos) a cambio de dos consultas normales
+function validarUrg2(pidA, fechaU, pidB, f1, f2){
+  const pa = state.physicians.find(x=>x.id===pidA);
+  const pb = state.physicians.find(x=>x.id===pidB);
+  if(!pa || !pb) return "Faltan facultativos.";
+  if(pa.id===pb.id) return "Elige dos facultativos distintos.";
+  const cU = state.assignments[pa.id+"|"+fechaU];
+  if(!cU || !(cU.f==="URG"||cU.f==="URGLV"||cU.f==="URGF")) return "El día indicado no tiene una guardia asignada.";
+  if(f1===f2) return "Las dos consultas deben ser de días distintos.";
+  const c1 = state.assignments[pb.id+"|"+f1], c2 = state.assignments[pb.id+"|"+f2];
+  if(!c1 || c1.f) return esc(pb.name)+" no tiene una consulta normal el "+fmtDate(f1)+".";
+  if(!c2 || c2.f) return esc(pb.name)+" no tiene una consulta normal el "+fmtDate(f2)+".";
+  // Quien asume la guardia debe poder hacerla y tener libre ese día
+  const cerrar = validarCesion(pidA, fechaU, "f:"+cU.f, pidB);
+  if(cerrar) return cerrar;
+  // Quien cede la guardia debe tener libres los dos días que recibe
+  [[f1,c1],[f2,c2]].forEach(()=>{});
+  const libre1 = state.assignments[pa.id+"|"+f1], libre2 = state.assignments[pa.id+"|"+f2];
+  if(libre1 && (libre1.f||libre1.m||libre1.t)) return esc(pa.name)+" ya tiene "+cellToText(libre1)+" el "+fmtDate(f1)+".";
+  if(libre2 && (libre2.f||libre2.m||libre2.t)) return esc(pa.name)+" ya tiene "+cellToText(libre2)+" el "+fmtDate(f2)+".";
+  return null;
+}
+
 function viewRotantes(){
   const days = monthDays();
   const admin = (MODE!=="viewer");
@@ -1283,6 +1596,81 @@ function viewRotantes(){
   return html;
 }
 
+function trafKey(pid,date,slot){ return pid+"|"+date+"|"+slot; }
+function trafHora(pid,date,slot){ return (state.traficoHoras||{})[trafKey(pid,date,slot)]||""; }
+function trafSetHora(pid,date,slot,hora){
+  state.traficoHoras = state.traficoHoras||{};
+  const k = trafKey(pid,date,slot);
+  if(hora) state.traficoHoras[k]=hora; else delete state.traficoHoras[k];
+  save();
+}
+// Horas posibles: mañana 8:00–14:00, tarde 15:00–17:00, en punto y y media
+function horasTrafico(slot){
+  const out=[];
+  const ini = slot==="m" ? 8 : 15, fin = slot==="m" ? 14 : 17;
+  for(let h=ini; h<=fin; h++){
+    out.push(pad(h)+":00");
+    if(h!==fin) out.push(pad(h)+":30");
+  }
+  return out;
+}
+
+function viewTraficos(){
+  const days = monthDays();
+  const admin = (MODE!=="viewer");
+  let html = '<div class="card no-print" style="padding:8px 12px;margin-bottom:10px">'+
+    '<div class="row between" style="flex-wrap:wrap;gap:8px">'+
+      '<div class="row" style="align-items:center">'+
+        '<button class="btn" style="border:none;padding:6px 8px" data-action="prev-month">‹</button>'+
+        '<b style="min-width:132px;text-align:center">'+MONTHS[ui.month]+' '+state.year+'</b>'+
+        '<button class="btn" style="border:none;padding:6px 8px" data-action="next-month">›</button>'+
+      '</div>'+
+      '<button class="btn" data-action="traf-print">Imprimir</button>'+
+    '</div></div>';
+  html += '<div class="printhead">Consultas de Tráfico · '+MONTHS[ui.month]+' '+state.year+'</div>';
+
+  // Recopilar todas las consultas de tráfico del mes
+  const filas = [];
+  days.forEach(d=>{
+    state.physicians.forEach(p=>{
+      const a = state.assignments[p.id+"|"+d.key];
+      if(!a) return;
+      ["m","t"].forEach(slot=>{
+        const c = a[slot];
+        if(!esTrafico(c)) return;
+        filas.push({d, p, slot, code:c, hora:trafHora(p.id,d.key,slot)});
+      });
+    });
+  });
+
+  if(!filas.length){
+    html += '<div class="card"><p class="muted" style="font-size:14px">No hay consultas de Tráfico este mes.</p>'+
+      '<p class="muted" style="font-size:13px;margin-top:6px">Se solicitan desde la pestaña Solicitudes o las asigna el jefe de servicio a mano en el cuadrante.</p></div>';
+    return html;
+  }
+
+  html += '<div class="card"><div style="overflow-x:auto"><table class="stats" style="min-width:520px">'+
+    '<thead><tr><th>Día</th><th>Facultativo</th><th>Consulta</th><th>Turno</th><th>Comienzo</th></tr></thead><tbody>';
+  filas.forEach(f=>{
+    const cls = f.slot==="m" ? "k-tfm" : "k-tft";
+    html += '<tr>'+
+      '<td style="text-align:left"><b>'+f.d.n+'</b> <span class="muted">'+WD[f.d.dow]+'</span></td>'+
+      '<td style="text-align:left">'+esc(f.p.name)+'</td>'+
+      '<td><span class="chip '+cls+'" style="cursor:default">'+f.code+'</span></td>'+
+      '<td>'+(f.slot==="m"?"Mañana":"Tarde")+'</td>'+
+      '<td>'+(admin
+        ? '<select data-field="traf-hora" data-pid="'+f.p.id+'" data-date="'+f.d.key+'" data-slot="'+f.slot+'" style="padding:5px;border:1px solid var(--slate-300);border-radius:8px">'+
+          '<option value="">— sin hora —</option>'+
+          horasTrafico(f.slot).map(h=>'<option value="'+h+'"'+(f.hora===h?" selected":"")+'>'+h+'</option>').join("")+
+          '</select>'
+        : '<b>'+(f.hora||"—")+'</b>')+'</td>'+
+    '</tr>';
+  });
+  html += '</tbody></table></div>';
+  html += '<p class="muted" style="font-size:12px;margin-top:8px">Consultas voluntarias retribuidas como horas extra. No computan en el total de turnos, pero sí aparecen en Estadísticas y ocupan una consulta física.</p></div>';
+  return html;
+}
+
 function viewSolicitudes(){
   if(MODE==="viewer"){
     if(!ui.reqModal || !ui.reqModal.tab){
@@ -1323,7 +1711,22 @@ function viewSolicitudes(){
         (r.note?'<p style="font-size:14px;margin-top:4px"><b>Motivo:</b> '+esc(r.note)+'</p>':'')+
         warns.map(w=>'<p style="font-size:12px;color:#92400e;margin-top:4px">⚠ '+w+'</p>').join("");
     }else{
-      if(r.type==="doble"){
+      if(r.type==="trafico"){
+        ficha = '<p style="font-size:14px"><b>Solicitante:</b> '+esc(r.by||"(sin nombre)")+' · <b>CONSULTA DE TRÁFICO</b></p>'+
+          '<p style="font-size:14px;margin-top:4px"><b>'+esc(r.phys||"")+'</b> · '+fmtDate(r.date)+'</p>'+
+          '<p style="font-size:14px;margin-top:4px">'+r.code+' · '+(r.slot==="m"?"mañana":"tarde")+' · comienzo <b>'+esc(r.hora||"sin indicar")+'</b></p>'+
+          (r.note?'<p style="font-size:14px;margin-top:4px"><b>Motivo:</b> '+esc(r.note)+'</p>':'');
+      }else if(r.type==="ceder"){
+        ficha = '<p style="font-size:14px"><b>Solicitante:</b> '+esc(r.by||"(sin nombre)")+' · <b>CESIÓN</b></p>'+
+          '<p style="font-size:14px;margin-top:4px"><b>'+esc(r.physA||"")+'</b> cede '+esc(partLabel(r.part||""))+' del '+fmtDate(r.date)+'</p>'+
+          '<p style="font-size:14px;margin-top:4px">La asume: <b>'+esc(r.physB||"")+'</b></p>'+
+          (r.note?'<p style="font-size:14px;margin-top:4px"><b>Motivo:</b> '+esc(r.note)+'</p>':'');
+      }else if(r.type==="urg2"){
+        ficha = '<p style="font-size:14px"><b>Solicitante:</b> '+esc(r.by||"(sin nombre)")+' · <b>URGENCIA POR DOS CONSULTAS</b></p>'+
+          '<p style="font-size:14px;margin-top:4px"><b>'+esc(r.physA||"")+'</b> cede su guardia del '+fmtDate(r.dateU)+'</p>'+
+          '<p style="font-size:14px;margin-top:4px"><b>'+esc(r.physB||"")+'</b> la asume y entrega sus consultas del '+fmtDate(r.f1)+' y '+fmtDate(r.f2)+'</p>'+
+          (r.note?'<p style="font-size:14px;margin-top:4px"><b>Motivo:</b> '+esc(r.note)+'</p>':'');
+      }else if(r.type==="doble"){
         ficha = '<p style="font-size:14px"><b>Solicitante:</b> '+esc(r.by||"(sin nombre)")+' · <b>CAMBIO DOBLE</b></p>'+
           '<p style="font-size:14px;margin-top:4px">Entre <b>'+esc(r.physA||"")+'</b> y <b>'+esc(r.physB||"")+'</b></p>'+
           (r.pares||[]).map((par,i)=>'<p style="font-size:14px;margin-top:4px">'+(i+1)+') '+fmtDate(par.a)+'  ⇄  '+fmtDate(par.b)+'</p>').join("")+
@@ -1368,8 +1771,8 @@ function viewSolicitudes(){
 }
 
 function renderNav(){
-  let tabs = [["cuadrante","Cuadrante"],["rotantes","Rotantes"],["solicitudes","Solicitudes"],["equipo","Equipo"],["stats","Estadísticas"],["ajustes","Ajustes"]];
-  if(MODE==="viewer") tabs = tabs.filter(t=>t[0]==="cuadrante"||t[0]==="rotantes"||t[0]==="solicitudes"||t[0]==="stats");
+  let tabs = [["cuadrante","Cuadrante"],["rotantes","Rotantes"],["traficos","Tráficos"],["solicitudes","Solicitudes"],["equipo","Equipo"],["stats","Estadísticas"],["ajustes","Ajustes"]];
+  if(MODE==="viewer") tabs = tabs.filter(t=>t[0]==="cuadrante"||t[0]==="rotantes"||t[0]==="traficos"||t[0]==="solicitudes"||t[0]==="stats");
   document.getElementById("nav").innerHTML = tabs.map(([id,l])=>
     '<button data-action="tab" data-tab="'+id+'" class="'+(ui.tab===id?"active":"")+'">'+l+'</button>').join("");
 }
@@ -1561,7 +1964,7 @@ function viewStats(){
   if(ui.statsTo===undefined) ui.statsTo = 11;      // diciembre
   const statsFrom = Math.min(ui.statsFrom, ui.statsTo);
   const statsTo = Math.max(ui.statsFrom, ui.statsTo);
-  const res = state.physicians.map(p=>({p,turnos:0,URGLV:0,URG:0,URGF:0,AL:0,ALRU:0,ALT:0,INT:0,RHB:0,ORT:0,RXINT:0,aus:0}));
+  const res = state.physicians.map(p=>({p,turnos:0,URGLV:0,URG:0,URGF:0,AL:0,ALRU:0,ALT:0,INT:0,RHB:0,ORT:0,RXINT:0,TRAF:0,aus:0}));
   const byId = Object.fromEntries(res.map(r=>[r.p.id,r]));
   Object.entries(state.assignments).forEach(([k,a0])=>{
     const i=k.indexOf("|"); const pid=k.slice(0,i), date=k.slice(i+1);
@@ -1579,7 +1982,8 @@ function viewStats(){
     else if(a.f&&absInfo(a.f)) r.aus++;
     [a.m,a.t].forEach(c=>{
       if(!c) return;
-      if(c==="ORT") r.ORT++;
+      if(esTrafico(c)) r.TRAF++;
+      else if(c==="ORT") r.ORT++;
       else if(c==="RXINT") r.RXINT++;
       else if(c==="ALRU") r.ALRU++;
       else if(c.indexOf("ALT")===0 || c==="RHBT") r.ALT++;
@@ -1632,8 +2036,8 @@ function viewStats(){
   if(!state.physicians.length){ return html+'<p class="muted" style="margin-top:12px">Añade facultativos en la pestaña Equipo.</p></div>'; }
   html += '<p class="muted" style="margin-top:6px">Turnos totales: <b>'+totalT+'</b> (URG computa 2; URGF se retribuye como extra, se cuenta aparte y no suma turnos). «Esperado» = jornadas laborables del periodo × % de contrato (en vista de mes, ajustado para compensar el saldo previo). Las cifras corresponden al <b>cuadrante oficial</b>: los cambios pactados entre compañeros y autorizados no alteran el cómputo de nadie. «Saldo» = jornadas trabajadas menos las debidas en el periodo elegido (+ de más, − de menos); el generador lo compensa en el mes siguiente. Usa <b>Rango</b> para computar solo los meses que ya gestionas (p.ej. octubre a diciembre).</p>';
   html += '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:10px"><table class="stats">'+
-    '<thead><tr><th>Facultativo</th><th>Turnos</th><th>Esperado</th><th>Saldo</th><th>URGLV</th><th>URG</th><th>URGF</th><th>AL</th><th>ALRU</th><th>ALT</th><th>INT</th><th>RHB</th><th>ORT</th><th>RXI</th><th>Aus.</th></tr></thead><tbody>';
-  res.forEach(({p,turnos,URGLV,URG,URGF,AL,ALRU,ALT,INT,RHB,ORT,RXINT,aus})=>{
+    '<thead><tr><th>Facultativo</th><th>Turnos</th><th>Esperado</th><th>Saldo</th><th>URGLV</th><th>URG</th><th>URGF</th><th>AL</th><th>ALRU</th><th>ALT</th><th>INT</th><th>RHB</th><th>ORT</th><th>RXI</th><th>Tráf.</th><th>Aus.</th></tr></thead><tbody>';
+  res.forEach(({p,turnos,URGLV,URG,URGF,AL,ALRU,ALT,INT,RHB,ORT,RXINT,TRAF,aus})=>{
     // «Esperado» debe reflejar el MISMO objetivo que usó el generador para ese mes:
     // jornadas del periodo × % contrato, ajustado por el saldo arrastrado (máx ±25%),
     // igual que en generateMonth. Así Turnos y Esperado son comparables y no aparece
@@ -1654,7 +2058,7 @@ function viewStats(){
       '<td><div style="display:flex;align-items:center;gap:6px"><span class="bar" style="width:'+Math.round((turnos/maxT)*90)+'px;min-width:'+(turnos?6:0)+'px;flex:none"></span><b style="font-size:12px">'+turnos+'</b></div></td>'+
       '<td class="'+(Math.abs(dev)>=3?"dev-bad":"muted")+'" style="font-size:12px">'+expected.toFixed(1)+' ('+(dev>=0?"+":"")+dev.toFixed(1)+')</td>'+
       '<td style="font-size:12px;font-weight:600;color:'+(Math.abs(saldo)<0.5?"var(--slate-400)":(saldo>0?"#c2410c":"#0369a1"))+'">'+(saldo>=0?"+":"")+saldo.toFixed(1)+'</td>'+
-      '<td style="color:#991b1b;font-weight:600">'+(URGLV||"–")+'</td><td style="color:#b45309;font-weight:600">'+(URG||"–")+'</td><td style="color:#c2410c;font-weight:600">'+(URGF||"–")+'</td><td>'+(AL||"–")+'</td><td>'+(ALRU||"–")+'</td><td>'+(ALT||"–")+'</td><td>'+(INT||"–")+'</td><td>'+(RHB||"–")+'</td><td>'+(ORT||"–")+'</td><td style="color:#6d28d9;font-weight:600">'+(RXINT||"–")+'</td><td>'+(aus||"–")+'</td></tr>';
+      '<td style="color:#991b1b;font-weight:600">'+(URGLV||"–")+'</td><td style="color:#b45309;font-weight:600">'+(URG||"–")+'</td><td style="color:#c2410c;font-weight:600">'+(URGF||"–")+'</td><td>'+(AL||"–")+'</td><td>'+(ALRU||"–")+'</td><td>'+(ALT||"–")+'</td><td>'+(INT||"–")+'</td><td>'+(RHB||"–")+'</td><td>'+(ORT||"–")+'</td><td style="color:#6d28d9;font-weight:600">'+(RXINT||"–")+'</td><td style="color:#b45309;font-weight:600">'+(TRAF||"–")+'</td><td>'+(aus||"–")+'</td></tr>';
   });
   html += '</tbody></table></div></div>';
   return html;
@@ -2057,6 +2461,7 @@ function importBackup(file){
       state.rotantes = d.rotantes||{};
       if(d.adminPass) state.adminPass = d.adminPass;
       state.rotBloqueados = d.rotBloqueados||{};
+      state.traficoHoras = d.traficoHoras||{};
       state.rotantesLeyenda = Object.assign({R1:"",R2:"",R3:"",R4:"",R5:""}, d.rotantesLeyenda||{});
       state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
       state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
@@ -2206,6 +2611,11 @@ function generateMonth(mode){
       state.physicians.forEach(p=>{
         const k=p.id+"|"+d.key; const a=state.assignments[k];
         if(!a) return;
+        if(esTrafico(a.m) || esTrafico(a.t)){
+          // Tráfico es voluntario: se conserva y se limpia solo el resto de la celda
+          const c = {m: esTrafico(a.m)?a.m:null, t: esTrafico(a.t)?a.t:null, f:null};
+          state.assignments[k] = c; cleared++; return;
+        }
         if(a.f==="URG" || a.f==="URGLV" || a.f==="URGF" || (a.f==="L"&&a.auto) || !a.f){ delete state.assignments[k]; cleared++; }
       });
     });
@@ -2652,8 +3062,8 @@ function generateMonth(mode){
   // =========================================================
   {
     // Catálogos de relleno: TODAS las consultas de mañana y de tarde (excepto ALINTER, ya gestionada)
-    const allM = MORNING.map(c=>c.code).filter(c=>c!=="ALINTER");
-    const allT = AFTERNOON.map(c=>c.code);
+    const allM = MORNING.map(c=>c.code).filter(c=>c!=="ALINTER" && !esTrafico(c));
+    const allT = AFTERNOON.map(c=>c.code).filter(c=>!esTrafico(c));
     // Al completar contrato, quien es de RHB recibe antes RHBT que una ALT genérica
     const allTFor = (p)=> allT.filter(c=>puedeTarde(p,c)).sort((a,b)=>{
       if(!esRHB(p)) return 0;
@@ -2809,6 +3219,7 @@ document.addEventListener("click", e=>{
     case "rot-blockday": { ui.rotBlockDay = el.dataset.date; renderModal(); break; }
     case "rot-toggleres": { rotToggleRes(el.dataset.date, el.dataset.code); renderModal(); render(); break; }
     case "rot-print": window.print(); break;
+    case "traf-print": window.print(); break;
     case "rot-gen": {
       if(!window.confirm("Asignar residentes automáticamente en "+MONTHS[ui.month]+" "+state.year+".\n\n"+
         "Se reparten entre las consultas AL1–AL7 (mañana) y ALT1–ALT3 (tarde) de los facultativos con «Residente: Sí».\n"+
@@ -2998,7 +3409,8 @@ document.addEventListener("click", e=>{
           }catch(e){}
           const dref = rq0.type==="swap" ? rq0.dateA
                     : (rq0.type==="move" ? rq0.dateTo
-                    : (rq0.type==="doble" ? (rq0.pares&&rq0.pares[0]?rq0.pares[0].a:rq0.date) : rq0.date));
+                    : (rq0.type==="doble" ? (rq0.pares&&rq0.pares[0]?rq0.pares[0].a:rq0.date)
+                    : (rq0.type==="urg2" ? rq0.dateU : rq0.date)));
           const pr = dref.split("-").map(Number);
           state.year = pr[0]; ui.month = pr[1]-1; save();
           ui.reviewTab = {}; ui.tab = "cuadrante";
@@ -3185,6 +3597,10 @@ document.addEventListener("change", e=>{
     else if(fld==="rq-dateb"){ if(ui.reqModal && el.value){ ui.reqModal.dateB = el.value; rqRefresh(); } }
     else if(fld==="rq-date2"){ if(ui.reqModal && el.value){ ui.reqModal.date2 = el.value; rqRefresh(); } }
     else if(fld==="rq-dateb2"){ if(ui.reqModal && el.value){ ui.reqModal.dateB2 = el.value; rqRefresh(); } }
+    else if(fld==="rq-tfslot"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.tfSlot=el.value; ui.reqDraft.tfCode=null; ui.reqDraft.tfHora=null; rqRefresh(); }
+    else if(fld==="rq-tfcode"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.tfCode=el.value; rqRefresh(); }
+    else if(fld==="rq-tfhora"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.tfHora=el.value; rqRefresh(); }
+    else if(fld==="rq-cedepart"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.cedePart=el.value; rqRefresh(); }
     else if(fld==="rq-name"){ ui.reqName = el.value; try{ localStorage.setItem(KEY_REQNAME, el.value.trim()); }catch(e2){} }
     return;
   }
@@ -3204,6 +3620,10 @@ document.addEventListener("change", e=>{
   else if(field==="urgreq"){ state.settings.urgRequired = el.checked; save(); }
   else if(field==="minmorning"){ state.settings.minMorning = Math.min(20,Math.max(0,Number(el.value)||0)); save(); }
   else if(field==="maxmorning"){ state.settings.maxMorning = Math.min(20,Math.max(1,Number(el.value)||8)); save(); }
+  else if(field==="traf-hora"){
+    trafSetHora(el.dataset.pid, el.dataset.date, el.dataset.slot, el.value);
+    return;
+  }
   else if(field==="rot-name"){
     state.rotantesLeyenda = state.rotantesLeyenda || {R1:"",R2:"",R3:"",R4:"",R5:""};
     state.rotantesLeyenda[el.dataset.rot] = el.value.trim();
