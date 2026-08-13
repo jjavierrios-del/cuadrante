@@ -556,7 +556,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v74";
+const APP_VERSION = "v75";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -986,18 +986,41 @@ function render(){
   if(MODE==="viewer" && (ui.tab==="equipo" || ui.tab==="ajustes")) ui.tab = "cuadrante";
   renderNav();
   const main = document.getElementById("main");
-  if(ui.tab==="cuadrante") main.innerHTML = viewCuadrante();
-  else if(ui.tab==="equipo") main.innerHTML = viewEquipo();
-  else if(ui.tab==="stats") main.innerHTML = viewStats();
-  else if(ui.tab==="rotantes") main.innerHTML = viewRotantes();
-  else if(ui.tab==="traficos") main.innerHTML = viewTraficos();
-  else if(ui.tab==="solicitudes") main.innerHTML = viewSolicitudes();
-  else main.innerHTML = viewAjustes();
-  renderModal();
+  try{
+    if(ui.tab==="cuadrante") main.innerHTML = viewCuadrante();
+    else if(ui.tab==="equipo") main.innerHTML = viewEquipo();
+    else if(ui.tab==="stats") main.innerHTML = viewStats();
+    else if(ui.tab==="rotantes") main.innerHTML = viewRotantes();
+    else if(ui.tab==="traficos") main.innerHTML = viewTraficos();
+    else if(ui.tab==="solicitudes") main.innerHTML = viewSolicitudes();
+    else main.innerHTML = viewAjustes();
+  }catch(e){
+    // Nunca dejar la pantalla en blanco: mostrar qué ha fallado
+    main.innerHTML = '<div class="card" style="border-color:#fca5a5;background:#fff1f2">'+
+      '<h2 style="color:#991b1b">No se ha podido mostrar esta pestaña</h2>'+
+      '<p class="muted" style="margin-top:6px;font-size:13px">Detalle del error (útil para corregirlo):</p>'+
+      '<pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;background:#fff;padding:8px;border-radius:8px;margin-top:6px">'+
+      esc(String(e && e.message ? e.message : e))+'</pre>'+
+      '<button class="btn primary" style="margin-top:10px" data-action="tab" data-tab="cuadrante">Volver al cuadrante</button></div>';
+  }
+  try{ renderModal(); }catch(e){}
 }
 function solicitudFormHTML(){
+  // Asegurar contexto: evita fallos si se entra sin haber inicializado la solicitud
+  if(!ui.reqModal || typeof ui.reqModal !== "object"){
+    const hoy = new Date();
+    ui.reqModal = {tab:true, pid:(state.physicians[0]||{}).id, date: keyOf(hoy.getFullYear(), hoy.getMonth(), hoy.getDate())};
+  }
+  if(!ui.reqDraft || typeof ui.reqDraft !== "object") ui.reqDraft = {};
   const rq = ui.reqModal;
   const phys = state.physicians;
+  if(!phys.length){
+    return '<p class="muted" style="margin-top:10px">Aún no hay facultativos en el equipo.</p>';
+  }
+  if(!rq.date){
+    const hoy = new Date();
+    rq.date = keyOf(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
+  }
   const p = phys.find(x=>x.id===rq.pid) || phys[0] || null;
   if(p && rq.pid!==p.id) rq.pid = p.id;
   const cur = p ? state.assignments[p.id+"|"+rq.date] : null;
