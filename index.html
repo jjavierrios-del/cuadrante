@@ -556,7 +556,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v72";
+const APP_VERSION = "v74";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1781,7 +1781,26 @@ function viewSolicitudes(){
     return h;
   }
   const rv = ui.reviewTab || (ui.reviewTab={});
-  let h = '<div class="card"><h2>Revisar solicitudes</h2>'+
+  // El administrador puede alternar entre revisar las recibidas y aplicar un cambio él mismo
+  if(ui.reqSub===undefined) ui.reqSub = "revisar";
+  let h = '<div class="seg no-print" style="margin-bottom:10px">'+
+    '<button class="'+(ui.reqSub==="revisar"?"on":"")+'" data-action="req-sub-revisar">Revisar recibidas</button>'+
+    '<button class="'+(ui.reqSub==="crear"?"on":"")+'" data-action="req-sub-crear">Aplicar un cambio</button></div>';
+
+  if(ui.reqSub==="crear"){
+    if(!ui.reqModal || !ui.reqModal.tab){
+      const n = new Date();
+      ui.reqModal = {tab:true, pid:(state.physicians[0]||{}).id, date: keyOf(n.getFullYear(), n.getMonth(), n.getDate())};
+      ui.reqDraft = ui.reqDraft || {};
+    }
+    return h + '<div class="card"><h2>Aplicar un cambio</h2>'+
+      '<p class="muted" style="margin-top:2px">Prepara aquí el cambio y aplícalo directamente, sin pasar por el circuito de solicitudes.</p>'+
+      solicitudFormHTML()+
+      '<div class="row" style="margin-top:12px"><button class="btn primary" style="flex:1" data-action="req-aplicar-directo">Aplicar ahora</button></div>'+
+      '</div>';
+  }
+
+  h += '<div class="card"><h2>Revisar solicitudes</h2>'+
     '<p class="muted" style="margin-top:2px">Pega el mensaje recibido (correo o WhatsApp), analízalo y autoriza el cambio con un clic. Con la publicación automática activada, el equipo lo verá al momento.</p>';
   if(rv.req){
     const r = rv.req;
@@ -2362,6 +2381,11 @@ function renderModal(){
       '<div class="row between"><div><b>'+esc(p.name)+'</b><div class="muted" style="font-size:12px">'+fmtDate(date)+'</div></div>'+
       '<button class="icon" data-action="close-modal" style="font-size:16px">✕</button></div>'+
       (blocked?'<div class="warnbox">⚠ Día bloqueado en su patrón semanal. Puedes asignar igualmente si es una excepción.</div>':"")+
+      (esDiaLibre(pid,date)
+        ? '<div class="warnbox" style="margin-top:10px;background:#fee2e2;border-color:#fca5a5">'+
+          '<b>Día de no disponibilidad</b> concedido a este facultativo. No cuenta como jornada exigible.'+
+          '<button class="btn" style="width:100%;margin-top:8px" data-action="nodisp-off" data-pid="'+pid+'" data-date="'+date+'">Quitar la no disponibilidad</button></div>'
+        : '<button class="btn" style="width:100%;margin-top:10px" data-action="nodisp-on" data-pid="'+pid+'" data-date="'+date+'">Marcar como no disponible</button>')+
       '<div class="tiny" style="margin-top:12px">Mañana</div><div class="optgrid">'+
       MORNING.map(c=>opt(c.code,c.short,c.cls,a.m===c.code)).join("")+opt("CLEAR_M","Quitar","plain",false)+'</div>'+
       (dow===5
@@ -3271,7 +3295,7 @@ document.addEventListener("click", e=>{
   const el = e.target.closest("[data-action]");
   if(!el){ return; }
   const act = el.dataset.action;
-  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-required","official-on","official-off","rot-cell","rot-set","rot-gen","rot-clear","rot-blockmode","rot-blockday","rot-toggleres","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-required","official-on","official-off","rot-cell","rot-set","rot-gen","rot-clear","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
       ui.reqDraft = {}; ui.reqNote = "";
@@ -3417,6 +3441,48 @@ document.addEventListener("click", e=>{
       ui.reqModal = {tab:true, pid:(state.physicians[0]||{}).id, date: keyOf(n.getFullYear(), n.getMonth(), n.getDate())};
       ui.reqDraft = {}; ui.reqNote = "";
       ui.tab = "solicitudes"; render(); break;
+    }
+    case "nodisp-on": case "nodisp-off": {
+      const pidND = el.dataset.pid, dateND = el.dataset.date;
+      if(act==="nodisp-on"){
+        const p2 = state.physicians.find(x=>x.id===pidND);
+        const mo = Number(dateND.slice(5,7))-1;
+        const ya = diasLibresDelMes(pidND, mo).length;
+        if(ya >= MAX_DIAS_LIBRES &&
+           !window.confirm((p2?p2.name:"Este facultativo")+" ya tiene "+ya+" días de no disponibilidad en "+MONTHS[mo]+
+             " (el máximo habitual es "+MAX_DIAS_LIBRES+").\n\n¿Añadir este de todos modos?")) break;
+        toggleDiaLibre(pidND, dateND);
+        // Al marcarlo, se libera lo que tuviera ese día
+        delete state.assignments[pidND+"|"+dateND];
+        save();
+      }else{
+        toggleDiaLibre(pidND, dateND);
+      }
+      ui.editCell = null;
+      render(); renderModal();
+      break;
+    }
+    case "req-sub-revisar": ui.reqSub = "revisar"; render(); break;
+    case "req-sub-crear": ui.reqSub = "crear"; render(); break;
+    case "req-aplicar-directo": {
+      if(ui.reqBloqueo){ window.alert("No se puede aplicar:\n\n"+ui.reqBloqueo); break; }
+      const txt = buildRequestText();
+      if(!txt) break;
+      const r = parseRequest(txt);
+      if(!r){ window.alert("No se ha podido preparar el cambio."); break; }
+      const err = applyRequest(r);
+      if(err){ window.alert("No se ha podido aplicar:\n\n"+err); break; }
+      // Saltar al mes afectado y publicar
+      const dref = r.type==="swap" ? r.dateA
+                : (r.type==="move" ? r.dateTo
+                : (r.type==="doble" ? (r.pares&&r.pares[0]?r.pares[0].a:r.date)
+                : (r.type==="urg2" ? r.dateU
+                : (r.type==="libre" ? (r.dias&&r.dias[0]?r.dias[0]:r.date) : r.date))));
+      if(dref){ const pr = dref.split("-").map(Number); state.year = pr[0]; ui.month = pr[1]-1; }
+      ui.reqDraft = {}; ui.reqNote = "";
+      save(); setSave("✓ Cambio aplicado"); ui.tab = "cuadrante"; render();
+      ghPublish(true);
+      break;
     }
     case "req-libre-add": {
       const d5 = ui.reqDraft = ui.reqDraft || {};
