@@ -556,7 +556,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v71";
+const APP_VERSION = "v72";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -3417,6 +3417,29 @@ document.addEventListener("click", e=>{
       ui.reqModal = {tab:true, pid:(state.physicians[0]||{}).id, date: keyOf(n.getFullYear(), n.getMonth(), n.getDate())};
       ui.reqDraft = {}; ui.reqNote = "";
       ui.tab = "solicitudes"; render(); break;
+    }
+    case "req-libre-add": {
+      const d5 = ui.reqDraft = ui.reqDraft || {};
+      d5.libres = Array.isArray(d5.libres) ? d5.libres : [];
+      // Si no ha tocado el selector, se toma el valor que muestre el campo
+      let dia = d5.nuevoDia;
+      if(!dia){
+        const campo = document.querySelector('[data-field="rq-libredia"]');
+        dia = campo ? campo.value : (ui.reqModal||{}).date;
+      }
+      if(!dia){ window.alert("Elige primero una fecha."); break; }
+      if(d5.libres.length >= MAX_DIAS_LIBRES){ window.alert("Máximo "+MAX_DIAS_LIBRES+" días al mes."); break; }
+      if(d5.libres.includes(dia)){ window.alert("Ese día ya está en la lista."); break; }
+      if(d5.libres.length && d5.libres[0].slice(0,7)!==dia.slice(0,7)){
+        window.alert("Todos los días deben ser del mismo mes."); break;
+      }
+      d5.libres.push(dia); d5.libres.sort();
+      render(); break;
+    }
+    case "req-libre-del": {
+      const d5 = ui.reqDraft || {};
+      if(Array.isArray(d5.libres)) d5.libres.splice(Number(el.dataset.idx),1);
+      render(); break;
     }
     case "req-copy": case "req-send-mail": case "req-send-wa": {
       const txt = buildRequestText();
