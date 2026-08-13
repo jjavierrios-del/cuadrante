@@ -474,7 +474,10 @@ const isEmptyA = a=>!a||(!a.m&&!a.t&&!a.f);
 // Consultas de Tráfico: voluntarias, se pagan como horas extra y NO computan como turnos
 const esTrafico = c => !!c && /^TF[MT][123]$/.test(c);
 const turnosOf = a=>!a?0:((a.f==="URG"||a.f==="URGLV")?2:(a.f?0:((a.m&&!esTrafico(a.m)?1:0)+(a.t&&!esTrafico(a.t)?1:0))));
-const fmtDate = k=>k.split("-").reverse().join("/");
+const fmtDate = k=>{
+  if(!k || typeof k!=="string" || k.indexOf("-")<0) return "—";
+  return k.split("-").reverse().join("/");
+};
 function holidayMap(){ const m={}; state.holidays.forEach(h=>m[h.date]=h.name); return m; }
 function nextWorkingDay(dateKey, hset, blocked){
   const [y,m,d] = dateKey.split("-").map(Number);
@@ -556,7 +559,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v75";
+const APP_VERSION = "v76";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -968,6 +971,7 @@ function applyRequest(r){
   let p = state.physicians.find(x=>x.id===r.pid);
   if(!p) p = state.physicians.find(x=>x.name===r.phys);
   if(!p) return "No se encuentra al facultativo «"+(r.phys||"")+"» en el equipo.";
+  if(!r.date) return "La solicitud no indica fecha.";
   let to = r.to||{};
   if(to.f==="URG"){
     const pr = r.date.split("-").map(Number);
@@ -3621,11 +3625,35 @@ document.addEventListener("click", e=>{
         else{
           try{
             const lg = JSON.parse(localStorage.getItem(KEY_APPLIEDLOG)||"[]");
-            const entry = rq0.type==="swap"
-              ? {at:new Date().toISOString(), by:rq0.by||"", phys:(rq0.physA||"")+" ⇄ "+(rq0.physB||""), date:rq0.dateA, prop:"Intercambio "+fmtDate(rq0.dateA)+" / "+fmtDate(rq0.dateB)}
-              : (rq0.type==="move"
-                 ? {at:new Date().toISOString(), by:rq0.by||"", phys:rq0.phys||"", date:rq0.dateFrom, prop:"Mueve "+partLabel(rq0.part||"")+" a "+fmtDate(rq0.dateTo)}
-                 : {at:new Date().toISOString(), by:rq0.by||"", phys:rq0.phys||"", date:rq0.date, prop:cellToText(rq0.to&&rq0.to.clear?null:rq0.to)});
+            const ahora = new Date().toISOString();
+            let entry;
+            switch(rq0.type){
+              case "swap":
+                entry = {at:ahora, by:rq0.by||"", phys:(rq0.physA||"")+" ⇄ "+(rq0.physB||""), date:rq0.dateA,
+                         prop:"Intercambio "+fmtDate(rq0.dateA)+" / "+fmtDate(rq0.dateB)}; break;
+              case "move":
+                entry = {at:ahora, by:rq0.by||"", phys:rq0.phys||"", date:rq0.dateFrom,
+                         prop:"Mueve "+partLabel(rq0.part||"")+" a "+fmtDate(rq0.dateTo)}; break;
+              case "doble":
+                entry = {at:ahora, by:rq0.by||"", phys:(rq0.physA||"")+" ⇄ "+(rq0.physB||""),
+                         date:(rq0.pares&&rq0.pares[0]?rq0.pares[0].a:""),
+                         prop:"Cambio doble: "+(rq0.pares||[]).map(x=>fmtDate(x.a)+"⇄"+fmtDate(x.b)).join(" y ")}; break;
+              case "ceder":
+                entry = {at:ahora, by:rq0.by||"", phys:(rq0.physA||"")+" → "+(rq0.physB||""), date:rq0.date,
+                         prop:"Cede "+partLabel(rq0.part||"")}; break;
+              case "urg2":
+                entry = {at:ahora, by:rq0.by||"", phys:(rq0.physA||"")+" ⇄ "+(rq0.physB||""), date:rq0.dateU,
+                         prop:"Urgencia del "+fmtDate(rq0.dateU)+" por consultas del "+fmtDate(rq0.f1)+" y "+fmtDate(rq0.f2)}; break;
+              case "trafico":
+                entry = {at:ahora, by:rq0.by||"", phys:rq0.phys||"", date:rq0.date,
+                         prop:"Tráfico "+(rq0.code||"")+(rq0.hora?" a las "+rq0.hora:"")}; break;
+              case "libre":
+                entry = {at:ahora, by:rq0.by||"", phys:rq0.phys||"", date:(rq0.dias&&rq0.dias[0])||"",
+                         prop:"No disponible: "+(rq0.dias||[]).map(fmtDate).join(", ")}; break;
+              default:
+                entry = {at:ahora, by:rq0.by||"", phys:rq0.phys||"", date:rq0.date||"",
+                         prop:cellToText(rq0.to&&rq0.to.clear?null:rq0.to)};
+            }
             lg.unshift(entry);
             localStorage.setItem(KEY_APPLIEDLOG, JSON.stringify(lg.slice(0,50)));
           }catch(e){}
