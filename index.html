@@ -559,7 +559,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v76";
+const APP_VERSION = "v77";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2158,7 +2158,6 @@ function viewStats(){
         const key = keyOf(state.year, mo, day);
         if(hmapStats[key]) continue;
         // Vacaciones, baja, permiso o libranza: no son jornadas exigibles, se descuentan.
-        if(esDiaLibre(p.id, key)) continue;   // día libre solicitado
         const a = officialAt(p.id, key);
         if(a && a.f && absInfo(a.f)) continue;
         n++;  // los días bloqueados NO reducen el objetivo (se compensan trabajando de tarde)
@@ -2662,7 +2661,6 @@ function carryBalance(p, beforeMonth, fromMonth){
       if(dow===0||dow===6) continue;
       const key=keyOf(state.year, mo, day);
       if(hmap[key]) continue;
-      if(esDiaLibre(p.id, key)) continue;   // día libre solicitado: no es jornada exigible
       const a=officialAt(p.id, key);   // cómputo OFICIAL (ignora cambios entre compañeros)
       // Vacaciones, baja, permiso o libranza: ese día no se debe trabajar, así que
       // no cuenta como jornada exigible (si no, el saldo quedaría negativo sin motivo).
@@ -2794,7 +2792,9 @@ function generateMonth(mode){
     let aus = 0;
     labDays.forEach(d=>{
       const a=getA(p.id,d.key);
-      if((a && a.f && absInfo(a.f)) || esDiaLibre(p.id,d.key)) aus++;
+      // Solo las ausencias reales (vacaciones, baja, permiso) reducen el objetivo.
+      // Los días de no disponibilidad NO lo reducen: hay que recuperarlos.
+      if(a && a.f && absInfo(a.f)) aus++;
     });
     ausDias[p.id] = aus;
     baseTarget[p.id] = (labDays.length - aus) * (p.pct||100)/100;   // objetivo del mes, sin los días de ausencia
@@ -2996,7 +2996,7 @@ function generateMonth(mode){
     labDays.filter(d=>d.dow===4).forEach(d=>{
       const ya = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&a.m==="RXINT";});
       if(ya) return;
-      const cand = state.physicians.filter(p=> !p.noRxint && !blockedOn(p,d) && freeM(p,d.key));
+      const cand = state.physicians.filter(p=> !p.noRxint && !blockedOn(p,d) && notAbsent(p,d.key) && freeM(p,d.key));
       const p = pickRound(cand, intvLoad, 1, d.key);
       if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:"RXINT"}); load[p.id]++; intvLoad[p.id]++; assigned++; }
       else missing_push(unfilled,d.key,"RXINT");
@@ -3011,7 +3011,7 @@ function generateMonth(mode){
       const ya = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&a.m==="ALINTER";});
       if(ya) return;
       if(!hayHuecoMañana(d.key)){ missing_push(unfilled,d.key,"ALINTER (sin consulta libre)"); return; }
-      const cand = state.physicians.filter(p=> !p.noInt && !blockedOn(p,d) && freeM(p,d.key));
+      const cand = state.physicians.filter(p=> !p.noInt && !blockedOn(p,d) && notAbsent(p,d.key) && freeM(p,d.key));
       // ALINTER: al de MENOS intervencionismo total (RXINT+ALINTER) en el año.
       // Quien ya acumuló RXINT recibirá menos ALINTER, igualando la suma para todos.
       const p = pickRound(cand, intvLoad, 1, d.key);
@@ -3051,6 +3051,7 @@ function generateMonth(mode){
           const dias = labDays.slice().sort(()=>Math.random()-0.5);   // aleatorio para variar el día
           for(const d of dias){
             if(blockedOn(p,d)) continue;
+            if(esDiaLibre(p.id,d.key)) continue;
             if(!hayHuecoMañana(d.key)) continue;
             const a=getA(p.id,d.key); if(a&&(a.f||a.m)) continue;
             if(strictMode && wouldExceed(p,1)) continue;
@@ -3096,6 +3097,7 @@ function generateMonth(mode){
           // ¿tiene algún día válido esta semana?
           return wdays.some(d=>{
             if(blockedOn(p,d)) return false;
+            if(esDiaLibre(p.id,d.key)) return false;
             if(!hayHuecoMañana(d.key)) return false;
             const a=getA(p.id,d.key); if(a&&(a.f||a.m)) return false;
             if(state.physicians.some(q=>{const aa=getA(q.id,d.key); return aa&&aa.m==="ALRU";})) return false;
@@ -3111,6 +3113,7 @@ function generateMonth(mode){
         // buscar su primer día válido de la semana
         const d = wdays.find(dd=>{
           if(blockedOn(p,dd)) return false;
+          if(esDiaLibre(p.id,dd.key)) return false;
           if(!hayHuecoMañana(dd.key)) return false;
           const a=getA(p.id,dd.key); if(a&&(a.f||a.m)) return false;
           if(state.physicians.some(q=>{const aa=getA(q.id,dd.key); return aa&&aa.m==="ALRU";})) return false;
