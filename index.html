@@ -376,6 +376,9 @@ let state = {
   // Días que un facultativo ha pedido no trabajar. Clave "pid|fecha" → true.
   // El generador no le asigna nada ese día y NO cuentan como jornada exigible.
   diasLibres: {},
+  // Bandeja de solicitudes: llegan como "pendiente" y tú las apruebas o rechazas.
+  // Cada una guarda su fecha de recepción para poder ordenarlas cronológicamente.
+  bandeja: [],
 };
 const ROT_CODES = ["R1","R2","R3","R4","R5"];
 
@@ -432,6 +435,7 @@ function loadState(){
       state.rotBloqueados = d.rotBloqueados||{};
       state.traficoHoras = d.traficoHoras||{};
       state.diasLibres = d.diasLibres||{};
+      state.bandeja = Array.isArray(d.bandeja) ? d.bandeja : [];
       state.rotantesLeyenda = Object.assign({R1:"",R2:"",R3:"",R4:"",R5:""}, d.rotantesLeyenda||{});
       state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
       state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
@@ -559,7 +563,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v77";
+const APP_VERSION = "v78";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1009,6 +1013,42 @@ function render(){
   }
   try{ renderModal(); }catch(e){}
 }
+// Resumen breve de una solicitud, para la lista de la bandeja
+function resumenSolicitud(r){
+  const n = x => esc(x||"");
+  switch(r.type){
+    case "swap":    return n(r.physA)+" ⇄ "+n(r.physB)+" · "+fmtDate(r.dateA)+" / "+fmtDate(r.dateB);
+    case "move":    return n(r.phys)+" · mueve "+esc(partLabel(r.part||""))+" del "+fmtDate(r.dateFrom)+" al "+fmtDate(r.dateTo);
+    case "doble":   return n(r.physA)+" ⇄ "+n(r.physB)+" · cambio doble ("+(r.pares||[]).length+" intercambios)";
+    case "ceder":   return n(r.physA)+" → "+n(r.physB)+" · cede "+esc(partLabel(r.part||""))+" del "+fmtDate(r.date);
+    case "urg2":    return n(r.physA)+" ⇄ "+n(r.physB)+" · urgencia del "+fmtDate(r.dateU)+" por dos consultas";
+    case "trafico": return n(r.phys)+" · Tráfico "+esc(r.code||"")+" el "+fmtDate(r.date)+(r.hora?" a las "+esc(r.hora):"");
+    case "libre":   return n(r.phys)+" · no disponible "+(r.dias||[]).map(fmtDate).join(", ");
+    default:        return n(r.phys)+" · "+fmtDate(r.date);
+  }
+}
+function etiquetaTipo(t){
+  const m = {swap:"Intercambio", move:"Mover consulta", doble:"Cambio doble", ceder:"Cesión",
+             urg2:"Urgencia × 2", trafico:"Tráfico", libre:"No disponibilidad"};
+  return m[t] || "Cambio";
+}
+function haceCuanto(iso){
+  if(!iso) return "";
+  const t = new Date(iso);
+  if(isNaN(t)) return "";
+  const dif = Date.now() - t.getTime();
+  // Fecha futura o recién llegada: se muestra la fecha en lugar de un tiempo negativo
+  if(dif < 60000) return t.toLocaleDateString("es-ES",{day:"2-digit",month:"2-digit"})+" "+
+                         t.toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"});
+  const min = Math.round(dif/60000);
+  if(min < 60) return "hace "+min+" min";
+  const h = Math.round(min/60);
+  if(h < 24) return "hace "+h+" h";
+  const d = Math.round(h/24);
+  if(d <= 7) return d===1 ? "ayer" : "hace "+d+" días";
+  return t.toLocaleDateString("es-ES",{day:"2-digit",month:"2-digit",year:"2-digit"});
+}
+
 function solicitudFormHTML(){
   // Asegurar contexto: evita fallos si se entra sin haber inicializado la solicitud
   if(!ui.reqModal || typeof ui.reqModal !== "object"){
@@ -1697,6 +1737,68 @@ function viewRotantes(){
   return html;
 }
 
+// ---------- Bandeja de solicitudes pendientes ----------
+function bandeja(){ if(!Array.isArray(state.bandeja)) state.bandeja=[]; return state.bandeja; }
+function bandejaPendientes(){
+  // Siempre en orden cronológico: la más antigua primero
+  return bandeja().filter(x=>x.estado==="pendiente").sort((a,b)=> (a.recibida||"").localeCompare(b.recibida||""));
+}
+function bandejaResueltas(){
+  return bandeja().filter(x=>x.estado!=="pendiente").sort((a,b)=> (b.resuelta||"").localeCompare(a.resuelta||""));
+}
+function bandejaAnadir(req, textoOriginal){
+  const b = bandeja();
+  // Evitar duplicados: misma solicitud pegada dos veces
+  const firma = JSON.stringify(req);
+  if(b.some(x=>x.firma===firma && x.estado==="pendiente")) return false;
+  b.push({
+    id: "s"+Date.now().toString(36)+Math.random().toString(36).slice(2,6),
+    recibida: new Date().toISOString(),
+    estado: "pendiente",
+    req: req,
+    firma: firma,
+    texto: (textoOriginal||"").slice(0,2000)
+  });
+  save();
+  return true;
+}
+function bandejaResolver(id, estado, motivo){
+  const it = bandeja().find(x=>x.id===id);
+  if(!it) return;
+  it.estado = estado;                    // "aprobada" | "rechazada"
+  it.resuelta = new Date().toISOString();
+  if(motivo) it.motivo = motivo;
+  save();
+}
+function bandejaBorrar(id){
+  state.bandeja = bandeja().filter(x=>x.id!==id);
+  save();
+}
+// Extrae TODAS las solicitudes de un texto (permite pegar varios correos de golpe)
+function extraerSolicitudes(texto){
+  const out = [];
+  const re = /\[SOLICITUD\]/g;
+  let m;
+  while((m = re.exec(texto)) !== null){
+    const desde = m.index;
+    // Buscar el JSON que sigue, contando llaves
+    const resto = texto.slice(desde + m[0].length);
+    const ini = resto.indexOf("{");
+    if(ini < 0) continue;
+    let prof = 0, fin = -1;
+    for(let i = ini; i < resto.length; i++){
+      const c = resto[i];
+      if(c === "{") prof++;
+      else if(c === "}"){ prof--; if(prof === 0){ fin = i; break; } }
+    }
+    if(fin < 0) continue;
+    const bloque = "[SOLICITUD]" + resto.slice(ini, fin+1);
+    const r = parseRequest(bloque);
+    if(r) out.push({req:r, texto: texto.slice(Math.max(0,desde-400), desde+fin+1)});
+  }
+  return out;
+}
+
 const MAX_DIAS_LIBRES = 3;   // máximo por facultativo y mes
 function esDiaLibre(pid, dkey){ return !!(state.diasLibres||{})[pid+"|"+dkey]; }
 function diasLibresDelMes(pid, mo){
@@ -1810,8 +1912,9 @@ function viewSolicitudes(){
   const rv = ui.reviewTab || (ui.reviewTab={});
   // El administrador puede alternar entre revisar las recibidas y aplicar un cambio él mismo
   if(ui.reqSub===undefined) ui.reqSub = "revisar";
+  const pend = bandejaPendientes();
   let h = '<div class="seg no-print" style="margin-bottom:10px">'+
-    '<button class="'+(ui.reqSub==="revisar"?"on":"")+'" data-action="req-sub-revisar">Revisar recibidas</button>'+
+    '<button class="'+(ui.reqSub==="revisar"?"on":"")+'" data-action="req-sub-revisar">Bandeja'+(pend.length?' ('+pend.length+')':'')+'</button>'+
     '<button class="'+(ui.reqSub==="crear"?"on":"")+'" data-action="req-sub-crear">Aplicar un cambio</button></div>';
 
   if(ui.reqSub==="crear"){
@@ -1827,8 +1930,68 @@ function viewSolicitudes(){
       '</div>';
   }
 
-  h += '<div class="card"><h2>Revisar solicitudes</h2>'+
-    '<p class="muted" style="margin-top:2px">Pega el mensaje recibido (correo o WhatsApp), analízalo y autoriza el cambio con un clic. Con la publicación automática activada, el equipo lo verá al momento.</p>';
+  // ---- Zona para volcar solicitudes a la bandeja ----
+  if(!rv.req){
+    h += '<div class="card"><h2>Recibir solicitudes</h2>'+
+      '<p class="muted" style="margin-top:2px">Pega aquí los mensajes recibidos. Puedes pegar varios de golpe (por ejemplo, un hilo de correos completo): se detectarán todas las solicitudes y entrarán en la bandeja para que las revises cuando quieras.</p>'+
+      '<textarea id="rv-text" rows="4" placeholder="Pega aquí uno o varios mensajes…" style="width:100%;margin-top:8px;padding:10px;border:1px solid var(--slate-300);border-radius:10px;font-size:14px"></textarea>'+
+      '<div class="row" style="margin-top:8px;gap:8px"><button class="btn primary" data-action="bandeja-add">Añadir a la bandeja</button>'+
+      (rv.err?'<span class="tiny" style="color:#b91c1c;align-self:center">'+esc(rv.err)+'</span>':'')+
+      (rv.ok?'<span class="tiny" style="color:var(--emerald-700);align-self:center">'+esc(rv.ok)+'</span>':'')+
+      '</div></div>';
+
+    // ---- Lista de pendientes, de la más antigua a la más reciente ----
+    h += '<div class="card" style="margin-top:10px"><div class="row between" style="align-items:center">'+
+      '<h2>Pendientes de aprobación'+(pend.length?' · '+pend.length:'')+'</h2>'+
+      (pend.length>1?'<span class="tiny muted">de la más antigua a la más reciente</span>':'')+'</div>';
+    if(!pend.length){
+      h += '<p class="muted" style="margin-top:8px;font-size:14px">No hay solicitudes pendientes.</p>';
+    }else{
+      pend.forEach((it,i)=>{
+        const r = it.req;
+        h += '<div style="border:1px solid var(--slate-200);border-radius:10px;padding:10px;margin-top:8px">'+
+          '<div class="row between" style="align-items:flex-start;gap:8px">'+
+            '<div style="flex:1;min-width:0">'+
+              '<div class="row" style="gap:6px;align-items:center;flex-wrap:wrap">'+
+                '<span class="tiny" style="background:var(--teal-700);color:#fff;padding:2px 7px;border-radius:999px">'+(i+1)+'</span>'+
+                '<b style="font-size:14px">'+etiquetaTipo(r.type)+'</b>'+
+                '<span class="tiny muted">'+esc(haceCuanto(it.recibida))+'</span>'+
+              '</div>'+
+              '<p style="font-size:14px;margin-top:5px">'+resumenSolicitud(r)+'</p>'+
+              (r.by?'<p class="tiny muted" style="margin-top:2px">Solicita: '+esc(r.by)+(r.note?' · '+esc(r.note):'')+'</p>':'')+
+            '</div>'+
+            '<div class="row" style="gap:6px;flex-wrap:wrap;justify-content:flex-end">'+
+              '<button class="btn" data-action="bandeja-ver" data-id="'+it.id+'" style="padding:5px 10px">Revisar</button>'+
+              '<button class="btn danger" data-action="bandeja-rechazar" data-id="'+it.id+'" style="padding:5px 10px">Rechazar</button>'+
+            '</div>'+
+          '</div></div>';
+      });
+    }
+    h += '</div>';
+
+    // ---- Historial de resueltas ----
+    const res = bandejaResueltas();
+    if(res.length){
+      h += '<div class="card" style="margin-top:10px"><h2>Resueltas</h2>';
+      res.slice(0,12).forEach(it=>{
+        const ok = it.estado==="aprobada";
+        h += '<div class="row between" style="padding:7px 0;border-bottom:1px solid var(--slate-100);gap:8px">'+
+          '<div style="flex:1;min-width:0">'+
+            '<span class="tiny" style="background:'+(ok?"#065f46":"#7f1d1d")+';color:#fff;padding:2px 7px;border-radius:999px">'+(ok?"Aprobada":"Rechazada")+'</span> '+
+            '<span style="font-size:13px">'+resumenSolicitud(it.req)+'</span>'+
+            (it.motivo?'<div class="tiny muted">Motivo: '+esc(it.motivo)+'</div>':'')+
+          '</div>'+
+          '<button class="btn" data-action="bandeja-borrar" data-id="'+it.id+'" style="padding:3px 8px">Quitar</button>'+
+        '</div>';
+      });
+      h += '</div>';
+      return h;
+    }
+    return h;
+  }
+
+  h += '<div class="card"><h2>Revisar solicitud</h2>'+
+    '<p class="muted" style="margin-top:2px">Comprueba los datos y decide. Si la apruebas, el cambio se aplica y se publica al equipo.</p>';
   if(rv.req){
     const r = rv.req;
     let ficha;
@@ -1895,9 +2058,10 @@ function viewSolicitudes(){
     }
     h += '<div class="card" style="margin-top:10px;background:var(--slate-50)">'+ficha+'</div>'+
       (rv.err?'<p style="color:var(--rose-700);font-size:13px;margin-top:8px">'+esc(rv.err)+'</p>':'')+
-      '<div class="row" style="margin-top:10px">'+
-      '<button class="btn primary" data-action="reviewt-apply">Autorizar y aplicar</button>'+
-      '<button class="btn" data-action="reviewt-back">Otra solicitud</button></div>';
+      '<div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">'+
+      '<button class="btn primary" data-action="reviewt-apply">Aprobar y aplicar</button>'+
+      (rv.id?'<button class="btn danger" data-action="bandeja-rechazar" data-id="'+rv.id+'">Rechazar</button>':'')+
+      '<button class="btn" data-action="reviewt-back">Volver a la bandeja</button></div>';
   }else{
     h += '<textarea id="rvt-in" style="width:100%;height:120px;padding:8px;margin-top:8px;border:1px solid var(--slate-300);border-radius:8px;font-family:monospace;font-size:11px" placeholder="Pega aquí el mensaje completo…"></textarea>'+
       (rv.err?'<p style="color:var(--rose-700);font-size:13px;margin-top:6px">'+esc(rv.err)+'</p>':'')+
@@ -2614,6 +2778,7 @@ function importBackup(file){
       state.rotBloqueados = d.rotBloqueados||{};
       state.traficoHoras = d.traficoHoras||{};
       state.diasLibres = d.diasLibres||{};
+      state.bandeja = Array.isArray(d.bandeja) ? d.bandeja : [];
       state.rotantesLeyenda = Object.assign({R1:"",R2:"",R3:"",R4:"",R5:""}, d.rotantesLeyenda||{});
       state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
       state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
@@ -3325,7 +3490,7 @@ document.addEventListener("click", e=>{
   const el = e.target.closest("[data-action]");
   if(!el){ return; }
   const act = el.dataset.action;
-  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-required","official-on","official-off","rot-cell","rot-set","rot-gen","rot-clear","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-required","official-on","official-off","rot-cell","rot-set","rot-gen","rot-clear","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
       ui.reqDraft = {}; ui.reqNote = "";
@@ -3620,6 +3785,39 @@ document.addEventListener("click", e=>{
       render(); break;
     }
     case "reviewt-back": ui.reviewTab = {}; render(); break;
+    case "bandeja-add": {
+      const campo = document.getElementById("rv-text");
+      const txt = campo ? campo.value : "";
+      if(!txt.trim()){ ui.reviewTab = {err:"Pega antes el texto de la solicitud."}; render(); break; }
+      const encontradas = extraerSolicitudes(txt);
+      if(!encontradas.length){
+        ui.reviewTab = {err:"No se ha encontrado ninguna solicitud. Asegúrate de pegar el mensaje completo, incluida la línea [SOLICITUD]{…}."};
+        render(); break;
+      }
+      let nuevas = 0, repetidas = 0;
+      encontradas.forEach(e=>{ if(bandejaAnadir(e.req, e.texto)) nuevas++; else repetidas++; });
+      ui.reviewTab = {ok: nuevas+(nuevas===1?" solicitud añadida":" solicitudes añadidas")+(repetidas?" · "+repetidas+" ya estaban en la bandeja":"")};
+      render(); break;
+    }
+    case "bandeja-ver": {
+      const it = bandeja().find(x=>x.id===el.dataset.id);
+      if(it) ui.reviewTab = {req: it.req, id: it.id};
+      render(); break;
+    }
+    case "bandeja-rechazar": {
+      const id = el.dataset.id;
+      const it = bandeja().find(x=>x.id===id);
+      if(!it) break;
+      const motivo = window.prompt("Motivo del rechazo (opcional). Quedará registrado en el historial:","");
+      if(motivo===null) break;                       // ha cancelado
+      bandejaResolver(id, "rechazada", motivo.trim());
+      ui.reviewTab = {ok:"Solicitud rechazada."};
+      render(); break;
+    }
+    case "bandeja-borrar": {
+      if(window.confirm("Quitar esta solicitud del historial?")){ bandejaBorrar(el.dataset.id); render(); }
+      break;
+    }
     case "reviewt-apply": {
       if(ui.reviewTab && ui.reviewTab.req){
         const rq0 = ui.reviewTab.req;
@@ -3667,6 +3865,7 @@ document.addEventListener("click", e=>{
                     : (rq0.type==="libre" ? (rq0.dias&&rq0.dias[0] ? rq0.dias[0] : rq0.date) : rq0.date))));
           const pr = dref.split("-").map(Number);
           state.year = pr[0]; ui.month = pr[1]-1; save();
+          if(ui.reviewTab && ui.reviewTab.id) bandejaResolver(ui.reviewTab.id, "aprobada");
           ui.reviewTab = {}; ui.tab = "cuadrante";
           render();
           ghPublish(true); // publicación inmediata, sin esperar; el indicador mostrará ✓ Publicado o el error concreto
