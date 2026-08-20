@@ -604,7 +604,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v86";
+const APP_VERSION = "v87";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1040,41 +1040,12 @@ function applyRequest(r){
     const pa = state.physicians.find(x=>x.id===r.pidA) || state.physicians.find(x=>x.name===r.physA);
     const pb = state.physicians.find(x=>x.id===r.pidB) || state.physicians.find(x=>x.name===r.physB);
     if(!pa || !pb) return "No se encuentra a alguno de los facultativos.";
-    const kU = pa.id+"|"+r.dateU;
-    const guardia = state.assignments[kU];
-    if(!guardia || !guardia.f) return "El día indicado no tiene guardia.";
-    const k1B = pb.id+"|"+r.f1, k2B = pb.id+"|"+r.f2;
-    const c1 = state.assignments[k1B], c2 = state.assignments[k2B];
-    if(!c1 || !c2) return "Faltan las dos consultas que se entregan a cambio.";
-    // La guardia pasa a B
-    const destU = state.assignments[pb.id+"|"+r.dateU];
-    if(destU && (destU.f||destU.m||destU.t)) return "Quien asume la guardia ya tiene "+cellToText(destU)+" ese día.";
-    state.assignments[pb.id+"|"+r.dateU] = JSON.parse(JSON.stringify(guardia));
-    delete state.assignments[kU];
-    // Las dos consultas pasan a A, en su día original o en el que se haya indicado
-    const movimientos = [
-      {origen:r.f1, celda:c1, destino:r.mov1||"", slot:r.slot1||"m"},
-      {origen:r.f2, celda:c2, destino:r.mov2||"", slot:r.slot2||"m"}
-    ];
-    for(const mv of movimientos){
-      delete state.assignments[pb.id+"|"+mv.origen];       // deja de ser de B
-      if(!mv.destino){
-        // Se queda en el mismo día
-        const destA = state.assignments[pa.id+"|"+mv.origen];
-        if(destA && (destA.f||destA.m||destA.t)) return "«"+pa.name+"» ya tiene "+cellToText(destA)+" el "+fmtDate(mv.origen)+".";
-        state.assignments[pa.id+"|"+mv.origen] = JSON.parse(JSON.stringify(mv.celda));
-      }else{
-        // Se traslada al día elegido, conservando el código de consulta
-        const codigo = mv.celda.m || mv.celda.t;
-        if(!codigo) return "No se puede identificar la consulta del "+fmtDate(mv.origen)+".";
-        const kDest = pa.id+"|"+mv.destino;
-        const actual = Object.assign({}, state.assignments[kDest]||{});
-        if(actual.f) return "«"+pa.name+"» ya tiene "+cellToText(actual)+" el "+fmtDate(mv.destino)+".";
-        if(actual[mv.slot]) return "«"+pa.name+"» ya tiene "+actual[mv.slot]+" en el turno de "+(mv.slot==="m"?"mañana":"tarde")+" del "+fmtDate(mv.destino)+".";
-        actual[mv.slot] = codigo;
-        state.assignments[kDest] = {m:actual.m||null, t:actual.t||null, f:null};
-      }
-    }
+    // Se usa la MISMA simulación que valida el formulario, para que no haya discrepancias
+    const sim = simularUrg2(pa.id, r.dateU, pb.id, r.f1, r.f2, r.mov1||"", r.slot1||"m", r.mov2||"", r.slot2||"m");
+    if(sim.error) return sim.error;
+    Object.entries(sim.cambios).forEach(([k,celda])=>{
+      if(celda) state.assignments[k] = celda; else delete state.assignments[k];
+    });
     save();
     return null;
   }
@@ -1817,59 +1788,90 @@ function validarCesion(pidA, fecha, part, pidB){
   return null;
 }
 
-// Una urgencia (2 turnos) a cambio de dos consultas normales
-function validarUrg2(pidA, fechaU, pidB, f1, f2){
+// Una urgencia (2 turnos) a cambio de dos consultas normales.
+// Se simula la operación completa sobre una copia, porque las celdas implicadas
+// se vacían durante el propio intercambio (puede ser todo el mismo día).
+function simularUrg2(pidA, fechaU, pidB, f1, f2, mov1, slot1, mov2, slot2){
   const pa = state.physicians.find(x=>x.id===pidA);
   const pb = state.physicians.find(x=>x.id===pidB);
-  if(!pa || !pb) return "Faltan facultativos.";
-  if(pa.id===pb.id) return "Elige dos facultativos distintos.";
-  const cU = state.assignments[pa.id+"|"+fechaU];
-  if(!cU || !(cU.f==="URG"||cU.f==="URGLV"||cU.f==="URGF")) return "El día indicado no tiene una guardia asignada.";
-  if(f1===f2) return "Las dos consultas deben ser de días distintos.";
-  const c1 = state.assignments[pb.id+"|"+f1], c2 = state.assignments[pb.id+"|"+f2];
-  if(!c1 || c1.f) return esc(pb.name)+" no tiene una consulta normal el "+fmtDate(f1)+".";
-  if(!c2 || c2.f) return esc(pb.name)+" no tiene una consulta normal el "+fmtDate(f2)+".";
-  // Quien asume la guardia debe poder hacerla y tener libre ese día
-  const cerrar = validarCesion(pidA, fechaU, "f:"+cU.f, pidB);
-  if(cerrar) return cerrar;
-  // Quien cede la guardia debe tener libres los dos días que recibe
-  [[f1,c1],[f2,c2]].forEach(()=>{});
-  const d7 = ui.reqDraft||{};
-  const hmap2 = holidayMap();
-  // Cada consulta: o se queda en su día (que debe estar libre) o se mueve a otro válido
-  const revisar = (origen, celda, destino, slot)=>{
-    if(!destino){
-      const ocupado = state.assignments[pa.id+"|"+origen];
-      if(ocupado && (ocupado.f||ocupado.m||ocupado.t)) return esc(pa.name)+" ya tiene "+cellToText(ocupado)+" el "+fmtDate(origen)+".";
-      return null;
-    }
-    const dt = new Date(destino), dow = dt.getDay();
-    if(dow===0||dow===6) return "El destino del "+fmtDate(origen)+" cae en fin de semana.";
-    if(hmap2[destino]) return "El destino del "+fmtDate(origen)+" es festivo.";
-    if((pa.blocked||[]).includes(dow)) return esc(pa.name)+" no trabaja ese día de la semana ("+fmtDate(destino)+").";
-    if(slot==="t" && dow===5) return "Los viernes no tienen consulta de tarde ("+fmtDate(destino)+").";
-    const act = state.assignments[pa.id+"|"+destino];
-    if(act && act.f) return esc(pa.name)+" ya tiene "+cellToText(act)+" el "+fmtDate(destino)+".";
-    if(act && act[slot]) return esc(pa.name)+" ya tiene "+act[slot]+" en ese turno del "+fmtDate(destino)+".";
+  if(!pa || !pb) return {error:"Faltan facultativos."};
+  if(pa.id===pb.id) return {error:"Elige dos facultativos distintos."};
+
+  const A = {}; // copia de trabajo: clave → celda (o null si se vacía)
+  const get = (pid, dk)=> (A.hasOwnProperty(pid+"|"+dk) ? A[pid+"|"+dk] : state.assignments[pid+"|"+dk]) || null;
+  const set = (pid, dk, celda)=>{ A[pid+"|"+dk] = celda; };
+
+  const guardia = get(pa.id, fechaU);
+  if(!guardia || !(guardia.f==="URG"||guardia.f==="URGLV"||guardia.f==="URGF"))
+    return {error:"El "+fmtDate(fechaU)+" no tiene una guardia asignada a "+esc(pa.name)+"."};
+  const c1 = get(pb.id, f1), c2 = get(pb.id, f2);
+  if(f1===f2) return {error:"Las dos consultas deben ser de días distintos."};
+  if(!c1 || c1.f) return {error:esc(pb.name)+" no tiene una consulta normal el "+fmtDate(f1)+"."};
+  if(!c2 || c2.f) return {error:esc(pb.name)+" no tiene una consulta normal el "+fmtDate(f2)+"."};
+
+  // 1) Se vacían las tres celdas de origen
+  set(pa.id, fechaU, null);
+  set(pb.id, f1, null);
+  set(pb.id, f2, null);
+
+  // 2) La guardia pasa a quien la asume
+  const destU = get(pb.id, fechaU);
+  if(destU && (destU.f || destU.m || destU.t))
+    return {error:esc(pb.name)+" ya tiene "+cellToText(destU)+" el "+fmtDate(fechaU)+" y no puede asumir la guardia."};
+  // ¿Puede hacer ese tipo de guardia?
+  if((guardia.f==="URG"||guardia.f==="URGLV") && pb.noUrg) return {error:esc(pb.name)+" no hace urgencias entre semana."};
+  if(guardia.f==="URGF" && pb.noUrgf) return {error:esc(pb.name)+" no hace urgencias de festivo."};
+  const dowU = new Date(fechaU).getDay();
+  if((pb.blocked||[]).includes(dowU)) return {error:esc(pb.name)+" no trabaja ese día de la semana."};
+  // Una guardia por semana y sin días seguidos
+  const esU = x=>!!x&&(x.f==="URG"||x.f==="URGLV"||x.f==="URGF");
+  const base = new Date(fechaU);
+  const lun = new Date(base); lun.setDate(base.getDate()-((base.getDay()+6)%7));
+  for(let i=0;i<7;i++){
+    const d2=new Date(lun); d2.setDate(lun.getDate()+i);
+    const k = keyOf(d2.getFullYear(),d2.getMonth(),d2.getDate());
+    if(k!==fechaU && esU(get(pb.id,k))) return {error:esc(pb.name)+" ya tiene otra guardia esa semana."};
+  }
+  set(pb.id, fechaU, JSON.parse(JSON.stringify(guardia)));
+
+  // 3) Las dos consultas pasan a quien cede la guardia, en su día o en el elegido
+  const hmap = holidayMap();
+  const colocar = (celda, origen, destino, slot)=>{
+    const dia = destino || origen;
+    const turno = destino ? slot : (celda.m ? "m" : "t");
     const cod = celda.m || celda.t;
-    if(cod){
-      const repe = state.physicians.some(q=>{
-        if(q.id===pa.id || q.id===pb.id) return false;
-        const x = state.assignments[q.id+"|"+destino];
-        return x && x[slot]===cod;
-      });
-      if(repe) return "La consulta "+cod+" ya la pasa otro compañero el "+fmtDate(destino)+".";
-      if(slot==="m" && cod!=="RXINT" && mananasOcupadasDia(destino) >= (state.settings.maxMorning||8))
-        return "El "+fmtDate(destino)+" ya están ocupadas las "+(state.settings.maxMorning||8)+" consultas de mañana.";
-    }
-    if(slot==="t" && !(act && act.m)) return "Tendría tarde sin mañana el "+fmtDate(destino)+".";
+    if(!cod) return "No se identifica la consulta del "+fmtDate(origen)+".";
+    const dt = new Date(dia), dow = dt.getDay();
+    if(dow===0||dow===6) return "El "+fmtDate(dia)+" cae en fin de semana.";
+    if(hmap[dia]) return "El "+fmtDate(dia)+" es festivo.";
+    if((pa.blocked||[]).includes(dow)) return esc(pa.name)+" no trabaja los "+["domingos","lunes","martes","miércoles","jueves","viernes","sábados"][dow]+".";
+    if(turno==="t" && dow===5) return "Los viernes no tienen consulta de tarde.";
+    const act = get(pa.id, dia) || {};
+    if(act.f) return esc(pa.name)+" ya tiene "+cellToText(act)+" el "+fmtDate(dia)+".";
+    if(act[turno]) return esc(pa.name)+" ya tiene "+act[turno]+" en ese turno del "+fmtDate(dia)+".";
+    if(turno==="t" && !act.m) return esc(pa.name)+" tendría tarde sin mañana el "+fmtDate(dia)+".";
+    // Duplicidad de consulta ese día
+    const repe = state.physicians.some(q=>{
+      if(q.id===pa.id) return false;
+      const x = get(q.id, dia);
+      return x && x[turno]===cod;
+    });
+    if(repe) return "La consulta "+cod+" ya la pasa otro compañero el "+fmtDate(dia)+".";
+    const nueva = {m:act.m||null, t:act.t||null, f:null};
+    nueva[turno] = cod;
+    set(pa.id, dia, nueva);
     return null;
   };
-  const e1 = revisar(f1, c1, d7.mov1||"", d7.slot1||"m"); if(e1) return e1;
-  const e2 = revisar(f2, c2, d7.mov2||"", d7.slot2||"m"); if(e2) return e2;
-  if(d7.mov1 && d7.mov2 && d7.mov1===d7.mov2 && (d7.slot1||"m")===(d7.slot2||"m"))
-    return "Las dos consultas no pueden ir al mismo día y turno.";
-  return null;
+  const e1 = colocar(c1, f1, mov1||"", slot1||"m"); if(e1) return {error:e1};
+  const e2 = colocar(c2, f2, mov2||"", slot2||"m"); if(e2) return {error:e2};
+
+  return {ok:true, cambios:A};
+}
+
+function validarUrg2(pidA, fechaU, pidB, f1, f2){
+  const d = ui.reqDraft||{};
+  const r = simularUrg2(pidA, fechaU, pidB, f1, f2, d.mov1||"", d.slot1||"m", d.mov2||"", d.slot2||"m");
+  return r.error || null;
 }
 
 function viewRotantes(){
