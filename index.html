@@ -604,7 +604,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v87";
+const APP_VERSION = "v88";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1593,7 +1593,7 @@ function validarMovimiento(pid, dateFrom, part, dateTo, slot){
   if(dow===0 || dow===6) return "El día de destino es fin de semana.";
   if(hmap[dateTo]) return "El día de destino es festivo ("+hmap[dateTo]+").";
   if((p.blocked||[]).includes(dow)) return "Ese día de la semana no trabajas (día bloqueado en tu ficha).";
-  if(slot==="t" && dow===5) return "Los viernes no tienen consulta de tarde.";
+  // Las tardes de viernes se permiten en los cambios pactados (la regla solo rige al generar)
 
   const dest = state.assignments[pid+"|"+dateTo] || {};
   if(dest.f) return "El día de destino ya está ocupado por "+cellToText(dest)+".";
@@ -1613,11 +1613,7 @@ function validarMovimiento(pid, dateFrom, part, dateTo, slot){
     if(ocupadas >= (state.settings.maxMorning||8))
       return "Ese día ya están ocupadas las "+(state.settings.maxMorning||8)+" consultas físicas de mañana: no hay hueco.";
   }
-  // Una tarde exige tener consulta esa mañana
-  if(slot==="t"){
-    const tieneM = dest.m || (dateFrom===dateTo && slotOrig==="m" ? false : false);
-    if(!tieneM) return "Para tener consulta de tarde el "+fmtDate(dateTo)+" necesitas tener también consulta esa mañana.";
-  }
+  // Tarde sin mañana: permitida en los cambios pactados (la regla solo rige al generar)
   return null;
 }
 
@@ -1679,8 +1675,7 @@ function validarIntercambio(pidA, dateA, pidB, dateB){
     }
     if((quien.blocked||[]).includes(dow))
       avisos.push(esc(quien.name)+" no trabaja los "+["domingos","lunes","martes","miércoles","jueves","viernes","sábados"][dow]+" ("+fmtDate(fecha)+").");
-    if(celda.t && dow===5) avisos.push("No puede haber consulta de tarde en viernes ("+fmtDate(fecha)+").");
-    if(celda.t && !celda.m) avisos.push(esc(quien.name)+" tendría tarde sin mañana el "+fmtDate(fecha)+".");
+    // Tardes de viernes y tardes sueltas: permitidas en cambios pactados
     // Consulta duplicada ese día
     ["m","t"].forEach(sl=>{
       const cod = celda[sl]; if(!cod) return;
@@ -1706,12 +1701,8 @@ function validarIntercambio(pidA, dateA, pidB, dateB){
         if(k===dateB && quien.id===pb.id) continue;
         if(esU(state.assignments[quien.id+"|"+k])) enSem++;
       }
-      if(enSem>0) avisos.push(esc(quien.name)+" ya tiene otra guardia esa semana ("+fmtDate(fecha)+").");
-      for(const off of [-1,1]){
-        const d2=new Date(base); d2.setDate(base.getDate()+off);
-        const k = keyOf(d2.getFullYear(),d2.getMonth(),d2.getDate());
-        if(esU(state.assignments[quien.id+"|"+k])) avisos.push(esc(quien.name)+" tendría guardias en días seguidos ("+fmtDate(fecha)+").");
-      }
+      // Las reglas de reparto de guardias (una por semana, sin días seguidos)
+      // solo se aplican al generar el cuadrante, no a los cambios pactados.
     }
   };
   chequear(pb, cA, dateA);   // B recibe lo de A
@@ -1765,7 +1756,7 @@ function validarCesion(pidA, fecha, part, pidB){
   }
   const dow = new Date(fecha).getDay();
   if((pb.blocked||[]).includes(dow)) return esc(pb.name)+" no trabaja ese día de la semana.";
-  if(slot==="t" && !dest.m) return esc(pb.name)+" tendría tarde sin mañana ese día.";
+  // Tarde sin mañana: permitida en cambios pactados
   // ¿puede hacerla?
   if((code==="RHB1"||code==="RHB2") && pb.noRhb) return esc(pb.name)+" no hace RHB.";
   if(code==="ALRU" && pb.noAlru) return esc(pb.name)+" no hace ALRU.";
@@ -1779,11 +1770,7 @@ function validarCesion(pidA, fecha, part, pidB){
     const esU = x=>!!x&&(x.f==="URG"||x.f==="URGLV"||x.f==="URGF");
     const base = new Date(fecha);
     const lun = new Date(base); lun.setDate(base.getDate()-((base.getDay()+6)%7));
-    for(let i=0;i<7;i++){
-      const d2=new Date(lun); d2.setDate(lun.getDate()+i);
-      const k = keyOf(d2.getFullYear(),d2.getMonth(),d2.getDate());
-      if(k!==fecha && esU(state.assignments[pb.id+"|"+k])) return esc(pb.name)+" ya tiene otra guardia esa semana.";
-    }
+    // Sin límite de guardias por semana en las cesiones pactadas
   }
   return null;
 }
@@ -1827,11 +1814,7 @@ function simularUrg2(pidA, fechaU, pidB, f1, f2, mov1, slot1, mov2, slot2){
   const esU = x=>!!x&&(x.f==="URG"||x.f==="URGLV"||x.f==="URGF");
   const base = new Date(fechaU);
   const lun = new Date(base); lun.setDate(base.getDate()-((base.getDay()+6)%7));
-  for(let i=0;i<7;i++){
-    const d2=new Date(lun); d2.setDate(lun.getDate()+i);
-    const k = keyOf(d2.getFullYear(),d2.getMonth(),d2.getDate());
-    if(k!==fechaU && esU(get(pb.id,k))) return {error:esc(pb.name)+" ya tiene otra guardia esa semana."};
-  }
+  // Sin límite de guardias por semana en los cambios pactados
   set(pb.id, fechaU, JSON.parse(JSON.stringify(guardia)));
 
   // 3) Las dos consultas pasan a quien cede la guardia, en su día o en el elegido
@@ -1845,11 +1828,11 @@ function simularUrg2(pidA, fechaU, pidB, f1, f2, mov1, slot1, mov2, slot2){
     if(dow===0||dow===6) return "El "+fmtDate(dia)+" cae en fin de semana.";
     if(hmap[dia]) return "El "+fmtDate(dia)+" es festivo.";
     if((pa.blocked||[]).includes(dow)) return esc(pa.name)+" no trabaja los "+["domingos","lunes","martes","miércoles","jueves","viernes","sábados"][dow]+".";
-    if(turno==="t" && dow===5) return "Los viernes no tienen consulta de tarde.";
+    // Tardes de viernes permitidas en cambios pactados
     const act = get(pa.id, dia) || {};
     if(act.f) return esc(pa.name)+" ya tiene "+cellToText(act)+" el "+fmtDate(dia)+".";
     if(act[turno]) return esc(pa.name)+" ya tiene "+act[turno]+" en ese turno del "+fmtDate(dia)+".";
-    if(turno==="t" && !act.m) return esc(pa.name)+" tendría tarde sin mañana el "+fmtDate(dia)+".";
+    // Tarde sin mañana permitida en cambios pactados
     // Duplicidad de consulta ese día
     const repe = state.physicians.some(q=>{
       if(q.id===pa.id) return false;
