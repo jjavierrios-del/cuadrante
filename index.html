@@ -604,7 +604,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v85";
+const APP_VERSION = "v86";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -860,13 +860,20 @@ function buildRequestText(){
     const pa = state.physicians.find(x=>x.id===rq.pid);
     const pb = state.physicians.find(x=>x.id===rq.pidB);
     const cU = state.assignments[(rq.pid||"")+"|"+rq.date];
-    const payload = {v:5, type:"urg2", by:name, note:note,
+    const d6 = ui.reqDraft||{};
+    const payload = {v:7, type:"urg2", by:name, note:note,
                      pidA:rq.pid, physA:pa?pa.name:"", pidB:rq.pidB, physB:pb?pb.name:"",
-                     dateU:rq.date, f1:rq.dateB, f2:rq.dateB2};
+                     dateU:rq.date, f1:rq.dateB, f2:rq.dateB2,
+                     mov1:d6.mov1||"", slot1:d6.slot1||"m",
+                     mov2:d6.mov2||"", slot2:d6.slot2||"m"};
     return "Solicitud: URGENCIA por DOS CONSULTAS\n"+
       "Solicitante: "+(name||"(sin nombre)")+"\n"+
       (pa?pa.name:"")+" cede "+cellToText(cU)+" del "+fmtDate(rq.date)+"\n"+
       (pb?pb.name:"")+" la asume y entrega sus consultas del "+fmtDate(rq.dateB)+" y "+fmtDate(rq.dateB2)+"\n"+
+      ((d6.mov1||d6.mov2) ? ("Además se mueven: "+
+        (d6.mov1?("la del "+fmtDate(rq.dateB)+" al "+fmtDate(d6.mov1)+" ("+((d6.slot1||"m")==="m"?"mañana":"tarde")+")"):"")+
+        ((d6.mov1&&d6.mov2)?" y ":"")+
+        (d6.mov2?("la del "+fmtDate(rq.dateB2)+" al "+fmtDate(d6.mov2)+" ("+((d6.slot2||"m")==="m"?"mañana":"tarde")+")"):"")+"\n") : "")+
       (note?("Motivo: "+note+"\n"):"")+
       "\n[SOLICITUD]"+JSON.stringify(payload);
   }
@@ -1044,13 +1051,30 @@ function applyRequest(r){
     if(destU && (destU.f||destU.m||destU.t)) return "Quien asume la guardia ya tiene "+cellToText(destU)+" ese día.";
     state.assignments[pb.id+"|"+r.dateU] = JSON.parse(JSON.stringify(guardia));
     delete state.assignments[kU];
-    // Las dos consultas pasan a A
-    [[r.f1,c1],[r.f2,c2]].forEach(([f,c])=>{
-      const destA = state.assignments[pa.id+"|"+f];
-      if(destA && (destA.f||destA.m||destA.t)) return;
-      state.assignments[pa.id+"|"+f] = JSON.parse(JSON.stringify(c));
-      delete state.assignments[pb.id+"|"+f];
-    });
+    // Las dos consultas pasan a A, en su día original o en el que se haya indicado
+    const movimientos = [
+      {origen:r.f1, celda:c1, destino:r.mov1||"", slot:r.slot1||"m"},
+      {origen:r.f2, celda:c2, destino:r.mov2||"", slot:r.slot2||"m"}
+    ];
+    for(const mv of movimientos){
+      delete state.assignments[pb.id+"|"+mv.origen];       // deja de ser de B
+      if(!mv.destino){
+        // Se queda en el mismo día
+        const destA = state.assignments[pa.id+"|"+mv.origen];
+        if(destA && (destA.f||destA.m||destA.t)) return "«"+pa.name+"» ya tiene "+cellToText(destA)+" el "+fmtDate(mv.origen)+".";
+        state.assignments[pa.id+"|"+mv.origen] = JSON.parse(JSON.stringify(mv.celda));
+      }else{
+        // Se traslada al día elegido, conservando el código de consulta
+        const codigo = mv.celda.m || mv.celda.t;
+        if(!codigo) return "No se puede identificar la consulta del "+fmtDate(mv.origen)+".";
+        const kDest = pa.id+"|"+mv.destino;
+        const actual = Object.assign({}, state.assignments[kDest]||{});
+        if(actual.f) return "«"+pa.name+"» ya tiene "+cellToText(actual)+" el "+fmtDate(mv.destino)+".";
+        if(actual[mv.slot]) return "«"+pa.name+"» ya tiene "+actual[mv.slot]+" en el turno de "+(mv.slot==="m"?"mañana":"tarde")+" del "+fmtDate(mv.destino)+".";
+        actual[mv.slot] = codigo;
+        state.assignments[kDest] = {m:actual.m||null, t:actual.t||null, f:null};
+      }
+    }
     save();
     return null;
   }
@@ -1326,6 +1350,22 @@ function solicitudFormHTML(){
           '<input type="date" value="'+rq.dateB2+'" data-field="rq-dateb2" style="padding:7px;width:100%"></span>'+
       '</div>'+
       '<p class="muted" style="font-size:12px;margin-top:4px">'+cellToText(c1)+'  ·  '+cellToText(c2)+'</p>'+
+      '<div class="card" style="margin-top:10px;background:var(--slate-50);padding:10px">'+
+        '<b style="font-size:13px">¿Mover alguna de esas consultas a otro día?</b>'+
+        '<p class="muted" style="font-size:12px;margin-top:2px">Opcional. Deja la fecha en blanco para quedarte con el día original.</p>'+
+        '<div class="row" style="margin-top:8px;gap:8px">'+
+          '<span style="flex:1"><span class="tiny">1ª consulta ('+fmtDate(rq.dateB)+') pasa a</span>'+
+            '<input type="date" value="'+esc((ui.reqDraft||{}).mov1||"")+'" data-field="rq-u2mov1" style="padding:7px;width:100%">'+
+            '<select data-field="rq-u2slot1" style="width:100%;padding:6px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px;font-size:13px">'+
+              '<option value="m"'+(((ui.reqDraft||{}).slot1||"m")==="m"?" selected":"")+'>Mañana</option>'+
+              '<option value="t"'+(((ui.reqDraft||{}).slot1||"m")==="t"?" selected":"")+'>Tarde</option></select></span>'+
+          '<span style="flex:1"><span class="tiny">2ª consulta ('+fmtDate(rq.dateB2)+') pasa a</span>'+
+            '<input type="date" value="'+esc((ui.reqDraft||{}).mov2||"")+'" data-field="rq-u2mov2" style="padding:7px;width:100%">'+
+            '<select data-field="rq-u2slot2" style="width:100%;padding:6px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px;font-size:13px">'+
+              '<option value="m"'+(((ui.reqDraft||{}).slot2||"m")==="m"?" selected":"")+'>Mañana</option>'+
+              '<option value="t"'+(((ui.reqDraft||{}).slot2||"m")==="t"?" selected":"")+'>Tarde</option></select></span>'+
+        '</div>'+
+      '</div>'+
       (function(){
         const motivo = validarUrg2(rq.pid, rq.date, rq.pidB, rq.dateB, rq.dateB2);
         ui.reqBloqueo = motivo;
@@ -1794,9 +1834,41 @@ function validarUrg2(pidA, fechaU, pidB, f1, f2){
   if(cerrar) return cerrar;
   // Quien cede la guardia debe tener libres los dos días que recibe
   [[f1,c1],[f2,c2]].forEach(()=>{});
-  const libre1 = state.assignments[pa.id+"|"+f1], libre2 = state.assignments[pa.id+"|"+f2];
-  if(libre1 && (libre1.f||libre1.m||libre1.t)) return esc(pa.name)+" ya tiene "+cellToText(libre1)+" el "+fmtDate(f1)+".";
-  if(libre2 && (libre2.f||libre2.m||libre2.t)) return esc(pa.name)+" ya tiene "+cellToText(libre2)+" el "+fmtDate(f2)+".";
+  const d7 = ui.reqDraft||{};
+  const hmap2 = holidayMap();
+  // Cada consulta: o se queda en su día (que debe estar libre) o se mueve a otro válido
+  const revisar = (origen, celda, destino, slot)=>{
+    if(!destino){
+      const ocupado = state.assignments[pa.id+"|"+origen];
+      if(ocupado && (ocupado.f||ocupado.m||ocupado.t)) return esc(pa.name)+" ya tiene "+cellToText(ocupado)+" el "+fmtDate(origen)+".";
+      return null;
+    }
+    const dt = new Date(destino), dow = dt.getDay();
+    if(dow===0||dow===6) return "El destino del "+fmtDate(origen)+" cae en fin de semana.";
+    if(hmap2[destino]) return "El destino del "+fmtDate(origen)+" es festivo.";
+    if((pa.blocked||[]).includes(dow)) return esc(pa.name)+" no trabaja ese día de la semana ("+fmtDate(destino)+").";
+    if(slot==="t" && dow===5) return "Los viernes no tienen consulta de tarde ("+fmtDate(destino)+").";
+    const act = state.assignments[pa.id+"|"+destino];
+    if(act && act.f) return esc(pa.name)+" ya tiene "+cellToText(act)+" el "+fmtDate(destino)+".";
+    if(act && act[slot]) return esc(pa.name)+" ya tiene "+act[slot]+" en ese turno del "+fmtDate(destino)+".";
+    const cod = celda.m || celda.t;
+    if(cod){
+      const repe = state.physicians.some(q=>{
+        if(q.id===pa.id || q.id===pb.id) return false;
+        const x = state.assignments[q.id+"|"+destino];
+        return x && x[slot]===cod;
+      });
+      if(repe) return "La consulta "+cod+" ya la pasa otro compañero el "+fmtDate(destino)+".";
+      if(slot==="m" && cod!=="RXINT" && mananasOcupadasDia(destino) >= (state.settings.maxMorning||8))
+        return "El "+fmtDate(destino)+" ya están ocupadas las "+(state.settings.maxMorning||8)+" consultas de mañana.";
+    }
+    if(slot==="t" && !(act && act.m)) return "Tendría tarde sin mañana el "+fmtDate(destino)+".";
+    return null;
+  };
+  const e1 = revisar(f1, c1, d7.mov1||"", d7.slot1||"m"); if(e1) return e1;
+  const e2 = revisar(f2, c2, d7.mov2||"", d7.slot2||"m"); if(e2) return e2;
+  if(d7.mov1 && d7.mov2 && d7.mov1===d7.mov2 && (d7.slot1||"m")===(d7.slot2||"m"))
+    return "Las dos consultas no pueden ir al mismo día y turno.";
   return null;
 }
 
@@ -2180,6 +2252,10 @@ function viewSolicitudes(){
         ficha = '<p style="font-size:14px"><b>Solicitante:</b> '+esc(r.by||"(sin nombre)")+' · <b>URGENCIA POR DOS CONSULTAS</b></p>'+
           '<p style="font-size:14px;margin-top:4px"><b>'+esc(r.physA||"")+'</b> cede su guardia del '+fmtDate(r.dateU)+'</p>'+
           '<p style="font-size:14px;margin-top:4px"><b>'+esc(r.physB||"")+'</b> la asume y entrega sus consultas del '+fmtDate(r.f1)+' y '+fmtDate(r.f2)+'</p>'+
+          ((r.mov1||r.mov2)?'<p style="font-size:14px;margin-top:4px"><b>Además se mueven:</b> '+
+            (r.mov1?fmtDate(r.f1)+' → '+fmtDate(r.mov1)+' ('+((r.slot1||"m")==="m"?"mañana":"tarde")+')':'')+
+            ((r.mov1&&r.mov2)?' · ':'')+
+            (r.mov2?fmtDate(r.f2)+' → '+fmtDate(r.mov2)+' ('+((r.slot2||"m")==="m"?"mañana":"tarde")+')':'')+'</p>':'')+
           (r.note?'<p style="font-size:14px;margin-top:4px"><b>Motivo:</b> '+esc(r.note)+'</p>':'');
       }else if(r.type==="doble"){
         ficha = '<p style="font-size:14px"><b>Solicitante:</b> '+esc(r.by||"(sin nombre)")+' · <b>CAMBIO DOBLE</b></p>'+
@@ -4293,6 +4369,10 @@ document.addEventListener("change", e=>{
     else if(fld==="rq-tfhora"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.tfHora=el.value; rqRefresh(); }
     else if(fld==="rq-cedepart"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.cedePart=el.value; rqRefresh(); }
     else if(fld==="rq-libredia"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.nuevoDia=el.value; }
+    else if(fld==="rq-u2mov1"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.mov1=el.value; rqRefresh(); }
+    else if(fld==="rq-u2mov2"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.mov2=el.value; rqRefresh(); }
+    else if(fld==="rq-u2slot1"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.slot1=el.value; rqRefresh(); }
+    else if(fld==="rq-u2slot2"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.slot2=el.value; rqRefresh(); }
     else if(fld==="rq-name"){ ui.reqName = el.value; try{ localStorage.setItem(KEY_REQNAME, el.value.trim()); }catch(e2){} }
     return;
   }
