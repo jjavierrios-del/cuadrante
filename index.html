@@ -604,7 +604,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v88";
+const APP_VERSION = "v89";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1023,7 +1023,9 @@ function applyRequest(r){
     }else{
       if(dest.f) return "Quien la recibe ya tiene "+cellToText(dest)+" ese día.";
       if(dest[slot]) return "Quien la recibe ya tiene "+dest[slot]+" en ese turno.";
-      dest[slot] = code;
+      const codCede = codigoLibreEn(code, r.date, slot, [pa.id, pb.id]);
+      if(!codCede) return "La consulta "+code+" ya la pasa otro compañero ese día y no queda ninguna equivalente libre.";
+      dest[slot] = codCede;
       state.assignments[kB] = {m:dest.m||null, t:dest.t||null, f:null};
       const c = Object.assign({}, orig); c[slot] = null;
       if(!c.m && !c.t && !c.f) delete state.assignments[kA]; else state.assignments[kA] = c;
@@ -1089,9 +1091,11 @@ function applyRequest(r){
       const c = Object.assign({}, orig); c[slotOrig] = null;
       if(!c.m && !c.t && !c.f) delete state.assignments[kFrom]; else state.assignments[kFrom] = c;
     }
-    // Colocar en el destino
+    // Colocar en el destino, sustituyendo la consulta si su código ya está ocupado
     const dest2 = Object.assign({}, state.assignments[kTo]||{});
-    dest2[slotDest] = code;
+    const codFinal = (slotDest==="f") ? code : codigoLibreEn(code, r.dateTo, slotDest, [p.id]);
+    if(!codFinal) return "La consulta "+code+" ya la pasa otro compañero el "+fmtDate(r.dateTo)+" y no queda ninguna equivalente libre.";
+    dest2[slotDest] = codFinal;
     state.assignments[kTo] = {m:dest2.m||null, t:dest2.t||null, f:null};
     save();
     return null;
@@ -1599,13 +1603,9 @@ function validarMovimiento(pid, dateFrom, part, dateTo, slot){
   if(dest.f) return "El día de destino ya está ocupado por "+cellToText(dest)+".";
   if(dest[slot]) return "El turno de "+(slot==="m"?"mañana":"tarde")+" del "+fmtDate(dateTo)+" ya lo tienes ocupado con "+dest[slot]+".";
 
-  // ¿Esa consulta ya la pasa otro ese día y turno? (no puede repetirse)
-  const repetida = state.physicians.some(q=>{
-    if(q.id===pid) return false;
-    const a = state.assignments[q.id+"|"+dateTo];
-    return a && a[slot]===code;
-  });
-  if(repetida) return "La consulta "+code+" ya la pasa otro compañero el "+fmtDate(dateTo)+" por la "+(slot==="m"?"mañana":"tarde")+".";
+  // Si el código concreto está ocupado, se busca un equivalente libre
+  const sustituto = codigoLibreEn(code, dateTo, slot, [pid]);
+  if(!sustituto) return "La consulta "+code+" ya la pasa otro compañero el "+fmtDate(dateTo)+" y no queda ninguna equivalente libre.";
 
   // Hueco físico de mañana (RXINT no ocupa despacho)
   if(slot==="m" && code!=="RXINT"){
@@ -1716,6 +1716,30 @@ function validarIntercambio(pidA, dateA, pidB, dateB){
 }
 
 // Consulta de Tráfico: comprueba día, turno y hueco físico
+// ---------- Sustitución automática de consulta ----------
+// Si al mover una consulta el código concreto ya está ocupado ese día (p. ej. AL2),
+// se busca otro equivalente libre (AL1, AL3…) siempre que quede hueco físico.
+// Solo se sustituyen las consultas genéricas: AL1–AL7 y ALT1–ALT3.
+function familiaDe(code, slot){
+  if(slot==="m" && /^AL[1-7]$/.test(code)) return ["AL1","AL2","AL3","AL4","AL5","AL6","AL7"];
+  if(slot==="t" && /^ALT[1-3]$/.test(code)) return ["ALT1","ALT2","ALT3"];
+  return null;   // RHB, ALINTER, ALRU, ORT, RXINT, ADM y Tráfico no se sustituyen
+}
+// getter opcional para trabajar sobre una simulación en curso
+function codigoLibreEn(code, fecha, slot, ignorar, getter){
+  const leer = getter || ((pid,dk)=> state.assignments[pid+"|"+dk]);
+  const ocupado = (cod)=> state.physicians.some(q=>{
+    if((ignorar||[]).indexOf(q.id) >= 0) return false;
+    const x = leer(q.id, fecha);
+    return x && x[slot]===cod;
+  });
+  if(!ocupado(code)) return code;              // el original está libre
+  const fam = familiaDe(code, slot);
+  if(!fam) return null;                        // no admite sustituto
+  for(const c of fam){ if(!ocupado(c)) return c; }
+  return null;                                 // todas ocupadas
+}
+
 function validarTrafico(pid, fecha, slot, code){
   const p = state.physicians.find(x=>x.id===pid);
   if(!p) return "Falta indicar el facultativo.";
@@ -1763,6 +1787,8 @@ function validarCesion(pidA, fecha, part, pidB){
   if(code==="ALINTER" && pb.noInt) return esc(pb.name)+" no hace ALINTER.";
   if(code==="ORT" && pb.noOrt) return esc(pb.name)+" no hace ORT.";
   if(code==="RXINT" && pb.noRxint) return esc(pb.name)+" no hace RXINT.";
+  if(slot!=="f" && !codigoLibreEn(code, fecha, slot, [pa.id, pb.id]))
+    return "La consulta "+code+" ya la pasa otro compañero ese día y no queda ninguna equivalente libre.";
   if((code==="URG"||code==="URGLV") && pb.noUrg) return esc(pb.name)+" no hace urgencias entre semana.";
   if(code==="URGF" && pb.noUrgf) return esc(pb.name)+" no hace urgencias de festivo.";
   // Reglas de guardias para quien la recibe
@@ -1833,15 +1859,11 @@ function simularUrg2(pidA, fechaU, pidB, f1, f2, mov1, slot1, mov2, slot2){
     if(act.f) return esc(pa.name)+" ya tiene "+cellToText(act)+" el "+fmtDate(dia)+".";
     if(act[turno]) return esc(pa.name)+" ya tiene "+act[turno]+" en ese turno del "+fmtDate(dia)+".";
     // Tarde sin mañana permitida en cambios pactados
-    // Duplicidad de consulta ese día
-    const repe = state.physicians.some(q=>{
-      if(q.id===pa.id) return false;
-      const x = get(q.id, dia);
-      return x && x[turno]===cod;
-    });
-    if(repe) return "La consulta "+cod+" ya la pasa otro compañero el "+fmtDate(dia)+".";
+    // Si el código está ocupado ese día, se busca un equivalente libre
+    const codFinal = codigoLibreEn(cod, dia, turno, [pa.id, pb.id], get);
+    if(!codFinal) return "La consulta "+cod+" ya la pasa otro compañero el "+fmtDate(dia)+" y no queda ninguna equivalente libre.";
     const nueva = {m:act.m||null, t:act.t||null, f:null};
-    nueva[turno] = cod;
+    nueva[turno] = codFinal;
     set(pa.id, dia, nueva);
     return null;
   };
