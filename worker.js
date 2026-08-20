@@ -103,6 +103,15 @@ export default {
         return json({ ok: true, borradas: ids.length });
       }
 
+      // ---------- Comprobar si una contraseña sirve para publicar ----------
+      // Lo usa la aplicación al entrar en modo edición, para no tener que pedirla aparte.
+      if (request.method === "POST" && ruta === "/verificar") {
+        const cuerpo = await request.json().catch(() => null);
+        if (!cuerpo) return json({ error: "Petición mal formada." }, 400);
+        const vale = !!env.CLAVE_PUBLICAR && cuerpo.clave === env.CLAVE_PUBLICAR;
+        return json({ ok: true, valida: vale });
+      }
+
       // ---------- Publicar el cuadrante en GitHub ----------
       // El token de GitHub vive aquí, en el servidor. La aplicación solo envía
       // una contraseña, de modo que ningún dispositivo guarda el token.

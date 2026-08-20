@@ -601,7 +601,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v83";
+const APP_VERSION = "v84";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -616,6 +616,46 @@ function buzonClavePublicar(){ try{ return localStorage.getItem(KEY_BUZON_PUB)||
 function setBuzonClavePublicar(v){ try{ if(v) localStorage.setItem(KEY_BUZON_PUB, v); else localStorage.removeItem(KEY_BUZON_PUB); }catch(e){} }
 // ¿Se publica a través del servidor en lugar de con el token de GitHub?
 function publicaPorServidor(){ return !!((state.buzon||{}).url && buzonClavePublicar()); }
+
+// Comprueba contra el servidor si una contraseña sirve para publicar
+async function verificarClavePublicar(clave){
+  const b = state.buzon||{};
+  if(!b.url || !clave) return false;
+  try{
+    const r = await fetch(b.url.replace(/\/+$/,"")+"/verificar", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({clave: clave})
+    });
+    const d = await r.json().catch(()=>null);
+    return !!(d && d.valida);
+  }catch(e){ return false; }
+}
+
+// Al entrar en modo edición, deja el dispositivo preparado para publicar.
+// Primero prueba la propia contraseña de administración; si no sirve, la pide.
+async function prepararPublicacion(claveAdmin){
+  const b = state.buzon||{};
+  if(!b.url) return;                       // sin servidor: se sigue usando el token
+  if(buzonClavePublicar()) return;         // ya está guardada en este dispositivo
+  if(await verificarClavePublicar(claveAdmin)){
+    setBuzonClavePublicar(claveAdmin);
+    setSave("✓ Listo para publicar");
+    render();
+    return;
+  }
+  const intento = window.prompt(
+    "Contraseña de publicación\n\n"+
+    "Este dispositivo aún no puede publicar los cambios al equipo. Introduce la contraseña de publicación "+
+    "(la que configuraste en el servidor). Si lo dejas en blanco, podrás editar pero los cambios no se publicarán.");
+  if(!intento) return;
+  if(await verificarClavePublicar(intento)){
+    setBuzonClavePublicar(intento);
+    setSave("✓ Listo para publicar");
+  }else{
+    window.alert("Esa contraseña de publicación no es válida. Podrás editar, pero los cambios no se publicarán.\n\nPuedes introducirla más tarde en Ajustes → Buzón de solicitudes.");
+  }
+  render();
+}
 function buzonClaveAdmin(){ try{ return localStorage.getItem(KEY_BUZON_ADMIN)||""; }catch(e){ return ""; } }
 function setBuzonClaveAdmin(v){ try{ if(v) localStorage.setItem(KEY_BUZON_ADMIN, v); else localStorage.removeItem(KEY_BUZON_ADMIN); }catch(e){} }
 function buzonConfigurado(){ return !!((state.buzon||{}).url && (state.buzon||{}).claveEnvio); }
@@ -2213,6 +2253,11 @@ function viewCuadrante(){
       '<button class="btn" data-action="viewer-refresh" title="Se actualiza sola; púlsalo solo si quieres comprobarlo ahora mismo" style="padding:6px 9px">⟳</button>'+
       '<button class="btn" data-action="viewer-edit" title="Solo administración" style="padding:6px 9px">⚙</button></span></div>';
   }
+  if(MODE==="editor" && (state.buzon||{}).url && !buzonClavePublicar() && !(SYNC.owner && SYNC.repo && SYNC.token)){
+    html += '<div class="warnbox no-print" style="margin-bottom:10px">⚠ <b>Los cambios no se publicarán.</b> '+
+      'Este dispositivo no tiene contraseña de publicación. Puedes introducirla en '+
+      '<b>Ajustes → Buzón de solicitudes</b>.</div>';
+  }
   if(MODE==="editor" && NEWER){
     html += '<div class="card no-print" style="padding:8px 12px;margin-bottom:10px;background:#fffbeb;border-color:#fcd34d;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">'+
       '<span style="font-size:13px;color:#92400e">Hay una versión publicada más reciente que la copia de este dispositivo.</span>'+
@@ -3754,7 +3799,9 @@ document.addEventListener("click", e=>{
         if(intento===null) break;                       // ha cancelado
         if(!checkAdminPass(intento)){ window.alert("Contraseña incorrecta."); break; }
         marcarAutenticado();
-        MODE="editor"; render(); break;
+        MODE="editor"; render();
+        prepararPublicacion(intento);      // deja el dispositivo listo para publicar
+        break;
       }
       // Sin contraseña configurada todavía: se permite y se recomienda ponerla
       if(window.confirm("Modo edición (solo administración).\n\nAún no has definido una contraseña: cualquiera con el enlace podría entrar aquí. Puedes ponerla en Ajustes.\n\n¿Continuar?")){
