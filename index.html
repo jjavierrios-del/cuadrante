@@ -382,7 +382,10 @@ async function ghPublish(manual){
   }
 }
 function schedulePublish(){
-  if(!SYNC.auto || MODE!=="editor") return;
+  if(MODE!=="editor") return;
+  // Si se publica a través del servidor, la publicación automática está siempre activa:
+  // no depende de una casilla local que en un dispositivo nuevo estaría sin marcar.
+  if(!publicaPorServidor() && !SYNC.auto) return;
   clearTimeout(pubT);
   pubT = setTimeout(()=>ghPublish(false), 2500);
 }
@@ -601,7 +604,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v84";
+const APP_VERSION = "v85";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2650,7 +2653,9 @@ function viewAjustes(){
     '<div class="row" style="margin-top:8px">'+
       '<input type="password" id="sy-token" placeholder="Token fine-grained (Contents: read/write)" value="'+esc(SYNC.token)+'" style="flex:1;min-width:220px">'+
     '</div>'+
-    '<label class="row" style="margin-top:8px;font-size:14px;cursor:pointer"><input type="checkbox" id="sy-auto" '+(SYNC.auto?'checked':'')+' style="accent-color:var(--teal-700)"> Publicar automáticamente al guardar</label>'+
+    (publicaPorServidor()
+      ? '<p class="muted" style="margin-top:8px;font-size:13px">✓ La publicación automática está activa a través del servidor. No hace falta configurar nada aquí.</p>'
+      : '<label class="row" style="margin-top:8px;font-size:14px;cursor:pointer"><input type="checkbox" id="sy-auto" '+(SYNC.auto?'checked':'')+' style="accent-color:var(--teal-700)"> Publicar automáticamente al guardar</label>')+
     '<div class="row" style="margin-top:10px">'+
       '<button class="btn primary" data-action="sync-save">Guardar conexión y publicar ahora</button>'+
       '<button class="btn" data-action="pull-published">Cargar versión publicada</button>'+
@@ -4126,7 +4131,8 @@ document.addEventListener("click", e=>{
       SYNC.repo   = (document.getElementById("sy-repo").value||"").trim();
       SYNC.branch = ((document.getElementById("sy-branch").value||"").trim())||"main";
       SYNC.token  = (document.getElementById("sy-token").value||"").trim();
-      SYNC.auto   = document.getElementById("sy-auto").checked;
+      const elAuto = document.getElementById("sy-auto");
+      SYNC.auto   = elAuto ? elAuto.checked : SYNC.auto;
       saveSync();
       ghPublish(true);
       break;
