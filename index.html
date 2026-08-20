@@ -295,7 +295,40 @@ let pubT = null, pubBusy = false, pubAgain = false;
 function b64utf8(str){ return btoa(unescape(encodeURIComponent(str))); }
 async function ghPublish(manual){
   if(MODE!=="editor") return;
-  if(!SYNC.owner || !SYNC.repo || !SYNC.token){ if(manual) setSave("⚠ Configura GitHub en Ajustes"); return; }
+  // Vía preferente: publicar a través del servidor, que guarda el token de GitHub.
+  // Así este dispositivo solo necesita una contraseña.
+  if(publicaPorServidor()){
+    if(!manual && !state.physicians.length) return;
+    if(pubBusy){ pubAgain = true; return; }
+    pubBusy = true;
+    setSave("Publicando…");
+    const body = JSON.parse(JSON.stringify(state));
+    body.publishedAt = new Date().toISOString();
+    body.publishedBy = DEVICE_ID;
+    try{
+      const r = await fetch((state.buzon.url||"").replace(/\/+$/,"")+"/publicar", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({clave: buzonClavePublicar(), data: body})
+      });
+      const d = await r.json().catch(()=>null);
+      if(r.ok && d && d.ok){
+        PUBLISHED_AT = body.publishedAt;
+        PUB_TIENE_PASS = !!body.adminPass;
+        state.updatedAt = body.publishedAt;
+        try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){}
+        NEWER = false;
+        setSave("✓ Publicado");
+      }else{
+        setSave("⚠ " + ((d && d.error) ? d.error : "No se ha podido publicar"));
+      }
+    }catch(e){
+      setSave("⚠ Sin conexión al publicar");
+    }
+    pubBusy = false;
+    if(pubAgain){ pubAgain = false; ghPublish(false); }
+    return;
+  }
+  if(!SYNC.owner || !SYNC.repo || !SYNC.token){ if(manual) setSave("⚠ Configura la publicación en Ajustes"); return; }
   if(!manual && !state.physicians.length) return; // no publicar un cuadrante vacío por accidente
   if(pubBusy){ pubAgain = true; return; }        // nunca dos publicaciones a la vez
   pubBusy = true;
@@ -568,7 +601,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v82";
+const APP_VERSION = "v83";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -578,6 +611,11 @@ const DEVICE_ID = (function(){
   }catch(e){ return "d0"; }
 })();
 const KEY_BUZON_ADMIN = "cuadrante-buzon-admin-v1";
+const KEY_BUZON_PUB = "cuadrante-buzon-publicar-v1";
+function buzonClavePublicar(){ try{ return localStorage.getItem(KEY_BUZON_PUB)||""; }catch(e){ return ""; } }
+function setBuzonClavePublicar(v){ try{ if(v) localStorage.setItem(KEY_BUZON_PUB, v); else localStorage.removeItem(KEY_BUZON_PUB); }catch(e){} }
+// ¿Se publica a través del servidor en lugar de con el token de GitHub?
+function publicaPorServidor(){ return !!((state.buzon||{}).url && buzonClavePublicar()); }
 function buzonClaveAdmin(){ try{ return localStorage.getItem(KEY_BUZON_ADMIN)||""; }catch(e){ return ""; } }
 function setBuzonClaveAdmin(v){ try{ if(v) localStorage.setItem(KEY_BUZON_ADMIN, v); else localStorage.removeItem(KEY_BUZON_ADMIN); }catch(e){} }
 function buzonConfigurado(){ return !!((state.buzon||{}).url && (state.buzon||{}).claveEnvio); }
@@ -2480,6 +2518,13 @@ function viewAjustes(){
     '<input type="text" id="bz-envio" value="'+esc((state.buzon||{}).claveEnvio||"")+'" placeholder="clave de envío" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px;font-size:13px">'+
     '<p class="tiny" style="margin-top:10px">Clave de administración (solo tuya)</p>'+
     '<input type="password" id="bz-admin" value="'+esc(buzonClaveAdmin())+'" placeholder="clave de administración" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px;font-size:13px">'+
+    '<p class="tiny" style="margin-top:10px">Contraseña de publicación (opcional, sustituye al token de GitHub)</p>'+
+    '<input type="password" id="bz-pub" value="'+esc(buzonClavePublicar())+'" placeholder="contraseña de publicación" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px;font-size:13px">'+
+    '<p class="muted" style="font-size:12px;margin-top:4px">'+
+      (publicaPorServidor()
+        ? '✓ Publicando a través del servidor: este dispositivo no necesita el token de GitHub.'
+        : 'Si la rellenas, el cuadrante se publicará a través del servidor y no hará falta configurar el token de GitHub en este dispositivo.')+
+    '</p>'+
     '<div class="row" style="margin-top:10px;gap:8px"><button class="btn primary" data-action="buzon-guardar">Guardar y comprobar</button></div>'+
     '<p class="muted" style="font-size:12px;margin-top:6px">La dirección y la clave de envío se publican con el cuadrante para que la app de tus compañeros pueda enviar. La clave de administración se guarda solo en este dispositivo y nunca viaja.</p></div>'+
     '<div class="card"><h2>Residentes rotantes</h2>'+
@@ -3892,8 +3937,10 @@ document.addEventListener("click", e=>{
       const u = (document.getElementById("bz-url")||{value:""}).value.trim();
       const e1 = (document.getElementById("bz-envio")||{value:""}).value.trim();
       const a1 = (document.getElementById("bz-admin")||{value:""}).value.trim();
+      const pb = (document.getElementById("bz-pub")||{value:""}).value.trim();
       state.buzon = {url:u, claveEnvio:e1};
       setBuzonClaveAdmin(a1);
+      setBuzonClavePublicar(pb);
       save();
       if(!u){ setSave("Buzón desactivado"); render(); break; }
       setSave("Comprobando…");
