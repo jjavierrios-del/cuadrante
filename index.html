@@ -379,6 +379,10 @@ let state = {
   // Bandeja de solicitudes: llegan como "pendiente" y tú las apruebas o rechazas.
   // Cada una guarda su fecha de recepción para poder ordenarlas cronológicamente.
   bandeja: [],
+  // Buzón de solicitudes (Cloudflare Worker). La dirección y la clave de envío se
+  // publican para que la app de los compañeros pueda enviar; la clave de
+  // administración nunca viaja: se guarda solo en el dispositivo del jefe de servicio.
+  buzon: {url:"", claveEnvio:""},
 };
 const ROT_CODES = ["R1","R2","R3","R4","R5"];
 
@@ -436,6 +440,7 @@ function loadState(){
       state.traficoHoras = d.traficoHoras||{};
       state.diasLibres = d.diasLibres||{};
       state.bandeja = Array.isArray(d.bandeja) ? d.bandeja : [];
+      state.buzon = Object.assign({url:"",claveEnvio:""}, d.buzon||{});
       state.rotantesLeyenda = Object.assign({R1:"",R2:"",R3:"",R4:"",R5:""}, d.rotantesLeyenda||{});
       state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
       state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
@@ -563,7 +568,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v78";
+const APP_VERSION = "v80";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -572,6 +577,64 @@ const DEVICE_ID = (function(){
     return id;
   }catch(e){ return "d0"; }
 })();
+const KEY_BUZON_ADMIN = "cuadrante-buzon-admin-v1";
+function buzonClaveAdmin(){ try{ return localStorage.getItem(KEY_BUZON_ADMIN)||""; }catch(e){ return ""; } }
+function setBuzonClaveAdmin(v){ try{ if(v) localStorage.setItem(KEY_BUZON_ADMIN, v); else localStorage.removeItem(KEY_BUZON_ADMIN); }catch(e){} }
+function buzonConfigurado(){ return !!((state.buzon||{}).url && (state.buzon||{}).claveEnvio); }
+
+// Envía una solicitud al buzón. Devuelve null si todo fue bien, o el motivo del fallo.
+async function buzonEnviar(req, texto){
+  const b = state.buzon||{};
+  if(!b.url || !b.claveEnvio) return "El buzón no está configurado.";
+  try{
+    const r = await fetch(b.url.replace(/\/+$/,"")+"/", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({clave:b.claveEnvio, req:req, texto:(texto||"").slice(0,3000)})
+    });
+    const d = await r.json().catch(()=>null);
+    if(!r.ok || !d || !d.ok) return (d && d.error) ? d.error : "No se ha podido enviar (código "+r.status+").";
+    return null;
+  }catch(e){ return "Sin conexión con el buzón."; }
+}
+
+// Descarga las solicitudes del buzón y las mete en la bandeja
+async function buzonRecibir(){
+  const b = state.buzon||{};
+  const admin = buzonClaveAdmin();
+  if(!b.url) return {error:"Falta la dirección del buzón (Ajustes)."};
+  if(!admin) return {error:"Falta la clave de administración del buzón (Ajustes)."};
+  try{
+    const r = await fetch(b.url.replace(/\/+$/,"")+"/?admin="+encodeURIComponent(admin)+"&t="+Date.now(), {cache:"no-store"});
+    const d = await r.json().catch(()=>null);
+    if(!r.ok || !d || !d.ok) return {error:(d && d.error) ? d.error : "No se ha podido conectar (código "+r.status+")."};
+    let nuevas = 0, repetidas = 0;
+    const ids = [];
+    (d.solicitudes||[]).forEach(it=>{
+      ids.push(it.id);
+      const req = it.req;
+      if(!req || !req.type) return;
+      if(bandejaAnadir(req, it.texto||"")){
+        // Conservar la fecha real de envío del compañero
+        const guardada = bandeja()[bandeja().length-1];
+        if(guardada && it.recibida) guardada.recibida = it.recibida;
+        nuevas++;
+      }else repetidas++;
+    });
+    // Confirmar al buzón que ya las tenemos, para que no vuelvan a bajar
+    if(ids.length){
+      try{
+        await fetch(b.url.replace(/\/+$/,"")+"/borrar", {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({admin:admin, ids:ids})
+        });
+      }catch(e){}
+    }
+    save();
+    return {nuevas, repetidas, total:(d.solicitudes||[]).length};
+  }catch(e){ return {error:"Sin conexión con el buzón."}; }
+}
+
 const KEY_ADMINPASS = "cuadrante-adminpass-v1";
 // Huella de la contraseña (no se guarda la contraseña en claro)
 function passHash(txt){
@@ -1311,7 +1374,8 @@ function solicitudFormHTML(){
     '<input type="text" id="rq-name" placeholder="Tu nombre" value="'+esc(name)+'" data-field="rq-name" style="width:100%;padding:8px;margin-top:10px;border:1px solid var(--slate-300);border-radius:8px">'+
     '<textarea id="rq-note" placeholder="Motivo (opcional)" style="width:100%;height:64px;padding:8px;margin-top:8px;border:1px solid var(--slate-300);border-radius:8px;font-family:inherit;font-size:14px">'+esc(ui.reqNote||"")+'</textarea>'+
     '<div class="row" style="margin-top:12px">'+
-      (state.settings.reqEmail?'<button class="btn primary" style="flex:1" data-action="req-send-mail">Enviar por correo</button>':'')+
+      (buzonConfigurado()?'<button class="btn primary" style="flex:1" data-action="req-enviar-buzon">Enviar</button>':'')+
+      (state.settings.reqEmail?'<button class="btn'+(buzonConfigurado()?'':' primary')+'" style="flex:1" data-action="req-send-mail">Enviar por correo</button>':'')+
       (state.settings.reqPhone?'<button class="btn primary" style="flex:1" data-action="req-send-wa">WhatsApp</button>':'')+
       '<button class="btn" data-action="req-copy">Copiar texto</button>'+
     '</div>'+
@@ -1935,7 +1999,9 @@ function viewSolicitudes(){
     h += '<div class="card"><h2>Recibir solicitudes</h2>'+
       '<p class="muted" style="margin-top:2px">Pega aquí los mensajes recibidos. Puedes pegar varios de golpe (por ejemplo, un hilo de correos completo): se detectarán todas las solicitudes y entrarán en la bandeja para que las revises cuando quieras.</p>'+
       '<textarea id="rv-text" rows="4" placeholder="Pega aquí uno o varios mensajes…" style="width:100%;margin-top:8px;padding:10px;border:1px solid var(--slate-300);border-radius:10px;font-size:14px"></textarea>'+
-      '<div class="row" style="margin-top:8px;gap:8px"><button class="btn primary" data-action="bandeja-add">Añadir a la bandeja</button>'+
+      '<div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap">'+
+      (buzonConfigurado()?'<button class="btn primary" data-action="buzon-recibir">Recibir del buzón</button>':'')+
+      '<button class="btn'+(buzonConfigurado()?'':' primary')+'" data-action="bandeja-add">Añadir a la bandeja</button>'+
       (rv.err?'<span class="tiny" style="color:#b91c1c;align-self:center">'+esc(rv.err)+'</span>':'')+
       (rv.ok?'<span class="tiny" style="color:var(--emerald-700);align-self:center">'+esc(rv.ok)+'</span>':'')+
       '</div></div>';
@@ -2400,6 +2466,20 @@ function viewAjustes(){
       (adminPassHash()?'<button class="btn primary" data-action="admin-pass-publish">Publicar ahora</button>':'')+
     '</div>'+
     '<p class="muted" style="font-size:12px;margin-top:6px">Se guarda cifrada (nunca en claro) y se publica junto al cuadrante, de modo que basta definirla una vez. Protege frente a ediciones accidentales o curiosidad; no es una barrera frente a alguien con conocimientos técnicos, porque la aplicación funciona por completo en el navegador.</p></div>'+
+    '<div class="card"><h2>Buzón de solicitudes</h2>'+
+    '<p class="muted" style="margin-top:2px;font-size:13px">'+
+      (buzonConfigurado()
+        ? 'Configurado. Tus compañeros verán el botón «Enviar» y las solicitudes llegarán a tu bandeja sin correos de por medio.'
+        : 'Sin configurar. Mientras tanto, las solicitudes se envían por correo y se pegan a mano en la bandeja.')+
+    '</p>'+
+    '<p class="tiny" style="margin-top:10px">Dirección del buzón</p>'+
+    '<input type="text" id="bz-url" value="'+esc((state.buzon||{}).url||"")+'" placeholder="https://buzon-cuadrante.tu-cuenta.workers.dev" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px;font-size:13px">'+
+    '<p class="tiny" style="margin-top:10px">Clave de envío (la usan tus compañeros)</p>'+
+    '<input type="text" id="bz-envio" value="'+esc((state.buzon||{}).claveEnvio||"")+'" placeholder="clave de envío" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px;font-size:13px">'+
+    '<p class="tiny" style="margin-top:10px">Clave de administración (solo tuya)</p>'+
+    '<input type="password" id="bz-admin" value="'+esc(buzonClaveAdmin())+'" placeholder="clave de administración" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px;font-size:13px">'+
+    '<div class="row" style="margin-top:10px;gap:8px"><button class="btn primary" data-action="buzon-guardar">Guardar y comprobar</button></div>'+
+    '<p class="muted" style="font-size:12px;margin-top:6px">La dirección y la clave de envío se publican con el cuadrante para que la app de tus compañeros pueda enviar. La clave de administración se guarda solo en este dispositivo y nunca viaja.</p></div>'+
     '<div class="card"><h2>Residentes rotantes</h2>'+
     '<p class="muted" style="margin-top:2px;font-size:13px">Nombres de los residentes del periodo. Solo se ven aquí y en la leyenda de la pestaña Rotantes, ambas de acceso exclusivo del administrador. Los huecos vacíos no aparecen como opción al asignar.</p>'+
     '<div style="margin-top:8px">'+
@@ -2668,7 +2748,8 @@ function renderModal(){
       '<input type="text" id="rq-name" placeholder="Tu nombre" value="'+esc(name)+'" data-field="rq-name" style="width:100%;padding:8px;margin-top:10px;border:1px solid var(--slate-300);border-radius:8px">'+
       '<textarea id="rq-note" placeholder="Motivo (opcional)" style="width:100%;height:64px;padding:8px;margin-top:8px;border:1px solid var(--slate-300);border-radius:8px;font-family:inherit;font-size:14px"></textarea>'+
       '<div class="row" style="margin-top:12px">'+
-        (state.settings.reqEmail?'<button class="btn primary" style="flex:1" data-action="req-send-mail">Enviar por correo</button>':'')+
+        (buzonConfigurado()?'<button class="btn primary" style="flex:1" data-action="req-enviar-buzon">Enviar</button>':'')+
+      (state.settings.reqEmail?'<button class="btn'+(buzonConfigurado()?'':' primary')+'" style="flex:1" data-action="req-send-mail">Enviar por correo</button>':'')+
         (state.settings.reqPhone?'<button class="btn primary" style="flex:1" data-action="req-send-wa">WhatsApp</button>':'')+
         '<button class="btn" data-action="req-copy">Copiar texto</button>'+
       '</div>'+
@@ -2779,6 +2860,7 @@ function importBackup(file){
       state.traficoHoras = d.traficoHoras||{};
       state.diasLibres = d.diasLibres||{};
       state.bandeja = Array.isArray(d.bandeja) ? d.bandeja : [];
+      state.buzon = Object.assign({url:"",claveEnvio:""}, d.buzon||{});
       state.rotantesLeyenda = Object.assign({R1:"",R2:"",R3:"",R4:"",R5:""}, d.rotantesLeyenda||{});
       state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
       state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
@@ -3490,7 +3572,7 @@ document.addEventListener("click", e=>{
   const el = e.target.closest("[data-action]");
   if(!el){ return; }
   const act = el.dataset.action;
-  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-required","official-on","official-off","rot-cell","rot-set","rot-gen","rot-clear","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-required","official-on","official-off","rot-cell","rot-set","rot-gen","rot-clear","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","buzon-recibir","buzon-guardar","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
       ui.reqDraft = {}; ui.reqNote = "";
@@ -3785,6 +3867,58 @@ document.addEventListener("click", e=>{
       render(); break;
     }
     case "reviewt-back": ui.reviewTab = {}; render(); break;
+    case "req-enviar-buzon": {
+      const txt = buildRequestText();
+      if(!txt) break;
+      const req = parseRequest(txt);
+      if(!req){ window.alert("No se ha podido preparar la solicitud."); break; }
+      setSave("Enviando…");
+      buzonEnviar(req, txt).then(err=>{
+        if(err){ window.alert("No se ha podido enviar:\n\n"+err+"\n\nPuedes copiar el texto y mandarlo por el canal habitual."); setSave("⚠ No enviada"); }
+        else{
+          window.alert("Solicitud enviada al jefe de servicio.\n\nLa recibirá en su bandeja de pendientes.");
+          setSave("✓ Enviada");
+          try{ localStorage.setItem(KEY_REQNAME, (document.getElementById("rq-name")||{value:""}).value.trim()); }catch(e){}
+          ui.reqDraft = {}; ui.reqNote = ""; render();
+        }
+      });
+      break;
+    }
+    case "buzon-guardar": {
+      const u = (document.getElementById("bz-url")||{value:""}).value.trim();
+      const e1 = (document.getElementById("bz-envio")||{value:""}).value.trim();
+      const a1 = (document.getElementById("bz-admin")||{value:""}).value.trim();
+      state.buzon = {url:u, claveEnvio:e1};
+      setBuzonClaveAdmin(a1);
+      save();
+      if(!u){ setSave("Buzón desactivado"); render(); break; }
+      setSave("Comprobando…");
+      fetch(u.replace(/\/+$/,"")+"/estado", {cache:"no-store"})
+        .then(r=>r.json())
+        .then(d=>{
+          if(d && d.ok){
+            window.alert("Conexión correcta con el buzón.\n\nTus compañeros ya pueden enviar solicitudes desde la aplicación. Recuerda publicar para que les llegue la configuración.");
+            setSave("✓ Buzón conectado");
+          }else{
+            window.alert("El buzón responde, pero no como se esperaba. Revisa la dirección.");
+            setSave("⚠ Revisar buzón");
+          }
+          render();
+        })
+        .catch(()=>{ window.alert("No se ha podido conectar con esa dirección. Comprueba que el Worker está desplegado y que la dirección es correcta."); setSave("⚠ Sin conexión"); render(); });
+      break;
+    }
+    case "buzon-recibir": {
+      setSave("Consultando el buzón…");
+      buzonRecibir().then(r=>{
+        if(r.error){ ui.reviewTab = {err:r.error}; setSave("⚠ Error"); render(); return; }
+        ui.reviewTab = {ok: r.total===0 ? "El buzón está vacío."
+          : (r.nuevas+(r.nuevas===1?" solicitud recibida":" solicitudes recibidas")+(r.repetidas?" · "+r.repetidas+" ya estaban":""))};
+        setSave("✓ Buzón consultado");
+        render();
+      });
+      break;
+    }
     case "bandeja-add": {
       const campo = document.getElementById("rv-text");
       const txt = campo ? campo.value : "";
@@ -4110,6 +4244,7 @@ function applyPublished(d){
   state.rotBloqueados = d.rotBloqueados||{};
   state.traficoHoras = d.traficoHoras||{};
   state.diasLibres = d.diasLibres||{};
+  state.buzon = Object.assign({url:"",claveEnvio:""}, d.buzon||{});
   state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
   state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
   state.settings.required = Object.assign({}, DEFAULT_REQUIRED, (d.settings&&d.settings.required)||{});
