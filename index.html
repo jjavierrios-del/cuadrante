@@ -568,7 +568,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v81";
+const APP_VERSION = "v82";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1380,7 +1380,7 @@ function solicitudFormHTML(){
       '<button class="btn" data-action="req-copy">Copiar texto</button>'+
     '</div>'+
     (buzonConfigurado()
-      ? '<p class="muted" style="font-size:12px;margin-top:8px">Al pulsar «Enviar», la solicitud llega directamente a la bandeja del jefe de servicio.</p>'
+      ? '<p class="muted" style="font-size:12px;margin-top:8px">Al pulsar «Enviar», la solicitud llega directamente a la bandeja del coordinador.</p>'
       : (hasContact?'':'<p class="muted" style="font-size:12px;margin-top:8px">El administrador no ha configurado correo/WhatsApp: copia el texto y envíaselo por el canal habitual.</p>'));
 }
 
@@ -1931,7 +1931,7 @@ function viewTraficos(){
 
   if(!filas.length){
     html += '<div class="card"><p class="muted" style="font-size:14px">No hay consultas de Tráfico este mes.</p>'+
-      '<p class="muted" style="font-size:13px;margin-top:6px">Se solicitan desde la pestaña Solicitudes o las asigna el jefe de servicio a mano en el cuadrante.</p></div>';
+      '<p class="muted" style="font-size:13px;margin-top:6px">Se solicitan desde la pestaña Solicitudes o las asigna el coordinador a mano en el cuadrante.</p></div>';
     return html;
   }
 
@@ -1966,7 +1966,7 @@ function viewSolicitudes(){
     }
     let log=[]; try{ log = JSON.parse(localStorage.getItem(KEY_REQLOG)||"[]"); }catch(e){}
     let h = '<div class="card"><h2>Solicitar un cambio</h2>'+
-      '<p class="muted" style="margin-top:2px">Elige facultativo, fecha y tu propuesta; la solicitud le llegará al jefe de servicio para su autorización.</p>'+
+      '<p class="muted" style="margin-top:2px">Elige facultativo, fecha y tu propuesta; la solicitud le llegará al coordinador para su autorización.</p>'+
       solicitudFormHTML()+'</div>';
     if(log.length){
       h += '<div class="card"><div class="row between"><h2>Mis solicitudes enviadas</h2><button class="btn" data-action="reqlog-clear">Vaciar</button></div><div style="margin-top:8px">'+
@@ -2756,7 +2756,7 @@ function renderModal(){
         '<button class="btn" data-action="req-copy">Copiar texto</button>'+
       '</div>'+
       (buzonConfigurado()
-      ? '<p class="muted" style="font-size:12px;margin-top:8px">Al pulsar «Enviar», la solicitud llega directamente a la bandeja del jefe de servicio.</p>'
+      ? '<p class="muted" style="font-size:12px;margin-top:8px">Al pulsar «Enviar», la solicitud llega directamente a la bandeja del coordinador.</p>'
       : (hasContact?'':'<p class="muted" style="font-size:12px;margin-top:8px">El administrador no ha configurado correo/WhatsApp: copia el texto y envíaselo por el canal habitual.</p>'))+
       '</div></div>';
   }else if(ui.reviewModal){
@@ -3880,7 +3880,7 @@ document.addEventListener("click", e=>{
       buzonEnviar(req, txt).then(err=>{
         if(err){ window.alert("No se ha podido enviar:\n\n"+err+"\n\nPuedes copiar el texto y mandarlo por el canal habitual."); setSave("⚠ No enviada"); }
         else{
-          window.alert("Solicitud enviada al jefe de servicio.\n\nLa recibirá en su bandeja de pendientes.");
+          window.alert("Solicitud enviada al coordinador.\n\nLa recibirá en su bandeja de pendientes.");
           setSave("✓ Enviada");
           try{ localStorage.setItem(KEY_REQNAME, (document.getElementById("rq-name")||{value:""}).value.trim()); }catch(e){}
           ui.reqDraft = {}; ui.reqNote = ""; render();
