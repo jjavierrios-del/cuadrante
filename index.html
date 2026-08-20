@@ -568,7 +568,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v80";
+const APP_VERSION = "v81";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1375,11 +1375,13 @@ function solicitudFormHTML(){
     '<textarea id="rq-note" placeholder="Motivo (opcional)" style="width:100%;height:64px;padding:8px;margin-top:8px;border:1px solid var(--slate-300);border-radius:8px;font-family:inherit;font-size:14px">'+esc(ui.reqNote||"")+'</textarea>'+
     '<div class="row" style="margin-top:12px">'+
       (buzonConfigurado()?'<button class="btn primary" style="flex:1" data-action="req-enviar-buzon">Enviar</button>':'')+
-      (state.settings.reqEmail?'<button class="btn'+(buzonConfigurado()?'':' primary')+'" style="flex:1" data-action="req-send-mail">Enviar por correo</button>':'')+
-      (state.settings.reqPhone?'<button class="btn primary" style="flex:1" data-action="req-send-wa">WhatsApp</button>':'')+
+      ((state.settings.reqEmail && !buzonConfigurado())?'<button class="btn primary" style="flex:1" data-action="req-send-mail">Enviar por correo</button>':'')+
+      ((state.settings.reqPhone && !buzonConfigurado())?'<button class="btn primary" style="flex:1" data-action="req-send-wa">WhatsApp</button>':'')+
       '<button class="btn" data-action="req-copy">Copiar texto</button>'+
     '</div>'+
-    (hasContact?'':'<p class="muted" style="font-size:12px;margin-top:8px">El administrador no ha configurado correo/WhatsApp: copia el texto y envíaselo por el canal habitual.</p>');
+    (buzonConfigurado()
+      ? '<p class="muted" style="font-size:12px;margin-top:8px">Al pulsar «Enviar», la solicitud llega directamente a la bandeja del jefe de servicio.</p>'
+      : (hasContact?'':'<p class="muted" style="font-size:12px;margin-top:8px">El administrador no ha configurado correo/WhatsApp: copia el texto y envíaselo por el canal habitual.</p>'));
 }
 
 // Consultas de mañana ocupadas ese día (RXINT no ocupa despacho físico)
@@ -2749,11 +2751,13 @@ function renderModal(){
       '<textarea id="rq-note" placeholder="Motivo (opcional)" style="width:100%;height:64px;padding:8px;margin-top:8px;border:1px solid var(--slate-300);border-radius:8px;font-family:inherit;font-size:14px"></textarea>'+
       '<div class="row" style="margin-top:12px">'+
         (buzonConfigurado()?'<button class="btn primary" style="flex:1" data-action="req-enviar-buzon">Enviar</button>':'')+
-      (state.settings.reqEmail?'<button class="btn'+(buzonConfigurado()?'':' primary')+'" style="flex:1" data-action="req-send-mail">Enviar por correo</button>':'')+
-        (state.settings.reqPhone?'<button class="btn primary" style="flex:1" data-action="req-send-wa">WhatsApp</button>':'')+
+      ((state.settings.reqEmail && !buzonConfigurado())?'<button class="btn primary" style="flex:1" data-action="req-send-mail">Enviar por correo</button>':'')+
+        ((state.settings.reqPhone && !buzonConfigurado())?'<button class="btn primary" style="flex:1" data-action="req-send-wa">WhatsApp</button>':'')+
         '<button class="btn" data-action="req-copy">Copiar texto</button>'+
       '</div>'+
-      (hasContact?'':'<p class="muted" style="font-size:12px;margin-top:8px">El administrador no ha configurado correo/WhatsApp: copia el texto y envíaselo por el canal habitual.</p>')+
+      (buzonConfigurado()
+      ? '<p class="muted" style="font-size:12px;margin-top:8px">Al pulsar «Enviar», la solicitud llega directamente a la bandeja del jefe de servicio.</p>'
+      : (hasContact?'':'<p class="muted" style="font-size:12px;margin-top:8px">El administrador no ha configurado correo/WhatsApp: copia el texto y envíaselo por el canal habitual.</p>'))+
       '</div></div>';
   }else if(ui.reviewModal){
     const rv = ui.reviewModal;
