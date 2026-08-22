@@ -604,7 +604,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v91";
+const APP_VERSION = "v93";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1970,6 +1970,45 @@ function bandejaPendientes(){
   // Siempre en orden cronológico: la más antigua primero
   return bandeja().filter(x=>x.estado==="pendiente").sort((a,b)=> (a.recibida||"").localeCompare(b.recibida||""));
 }
+// Última fecha a la que afecta una solicitud: cuando pasa, deja de tener interés
+function fechaRelevante(r){
+  if(!r) return "";
+  const f = [];
+  const meter = x => { if(x && typeof x==="string" && x.indexOf("-")>0) f.push(x); };
+  switch(r.type){
+    case "swap":    meter(r.dateA); meter(r.dateB); break;
+    case "move":    meter(r.dateFrom); meter(r.dateTo); break;
+    case "doble":   (r.pares||[]).forEach(par=>{ meter(par.a); meter(par.b); }); break;
+    case "ceder":   meter(r.date); break;
+    case "urg2":    meter(r.dateU); meter(r.f1); meter(r.f2); meter(r.mov1); meter(r.mov2); break;
+    case "trafico": meter(r.date); break;
+    case "libre":   (r.dias||[]).forEach(meter); break;
+    default:        meter(r.date);
+  }
+  return f.length ? f.sort()[f.length-1] : "";
+}
+function fechaPasada(dk){
+  if(!dk) return false;
+  const hoy = new Date();
+  const hoyKey = keyOf(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
+  return dk < hoyKey;                       // el propio día aún cuenta
+}
+// Retira del historial las solicitudes cuya fecha ya pasó.
+// Las que no llevan fecha se conservan 60 días desde que se resolvieron.
+function limpiarBandeja(){
+  const antes = bandeja().length;
+  const limite = new Date(Date.now() - 60*24*3600*1000).toISOString();
+  state.bandeja = bandeja().filter(it=>{
+    if(it.estado === "pendiente") return true;          // las pendientes nunca se tocan
+    const f = fechaRelevante(it.req);
+    if(f) return !fechaPasada(f);
+    return !it.resuelta || it.resuelta > limite;
+  });
+  const quitadas = antes - state.bandeja.length;
+  if(quitadas > 0) save();
+  return quitadas;
+}
+
 function bandejaResueltas(){
   return bandeja().filter(x=>x.estado!=="pendiente").sort((a,b)=> (b.resuelta||"").localeCompare(a.resuelta||""));
 }
@@ -2337,6 +2376,7 @@ function viewSolicitudes(){
   const rv = ui.reviewTab || (ui.reviewTab={});
   // El administrador puede alternar entre revisar las recibidas y aplicar un cambio él mismo
   if(ui.reqSub===undefined) ui.reqSub = "revisar";
+  try{ limpiarBandeja(); }catch(e){}
   const pend = bandejaPendientes();
   let h = '<div class="seg no-print" style="margin-bottom:10px">'+
     '<button class="'+(ui.reqSub==="revisar"?"on":"")+'" data-action="req-sub-revisar">Bandeja'+(pend.length?' ('+pend.length+')':'')+'</button>'+
@@ -2383,6 +2423,9 @@ function viewSolicitudes(){
                 '<span class="tiny" style="background:var(--teal-700);color:#fff;padding:2px 7px;border-radius:999px">'+(i+1)+'</span>'+
                 '<b style="font-size:14px">'+etiquetaTipo(r.type)+'</b>'+
                 '<span class="tiny muted">'+esc(haceCuanto(it.recibida))+'</span>'+
+                (fechaPasada(fechaRelevante(r))
+                  ? '<span class="tiny" style="background:#7f1d1d;color:#fff;padding:2px 7px;border-radius:999px">fecha pasada</span>'
+                  : '')+
               '</div>'+
               '<p style="font-size:14px;margin-top:5px">'+resumenSolicitud(r)+'</p>'+
               (r.by?'<p class="tiny muted" style="margin-top:2px">Solicita: '+esc(r.by)+(r.note?' · '+esc(r.note):'')+'</p>':'')+
@@ -2399,7 +2442,9 @@ function viewSolicitudes(){
     // ---- Historial de resueltas ----
     const res = bandejaResueltas();
     if(res.length){
-      h += '<div class="card" style="margin-top:10px"><h2>Resueltas</h2>';
+      h += '<div class="card" style="margin-top:10px"><div class="row between" style="align-items:center">'+
+        '<h2>Resueltas</h2>'+
+        '<span class="tiny muted">se borran solas al pasar su fecha</span></div>';
       res.slice(0,12).forEach(it=>{
         const ok = it.estado==="aprobada";
         h += '<div class="row between" style="padding:7px 0;border-bottom:1px solid var(--slate-100);gap:8px">'+
@@ -4668,6 +4713,7 @@ function applyPublished(d){
   state.rotBloqueados = d.rotBloqueados||{};
   state.traficoHoras = d.traficoHoras||{};
   state.diasLibres = d.diasLibres||{};
+  state.bandeja = Array.isArray(d.bandeja) ? d.bandeja : [];
   state.buzon = Object.assign({url:"",claveEnvio:"",claveCalendario:""}, d.buzon||{});
   state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
   state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
@@ -4731,6 +4777,7 @@ async function boot(){
   }else if(published && published.publishedAt){ PUBLISHED_AT = published.publishedAt; }
   // Si hay contraseña configurada, no se entra en edición sin haberla introducido en esta sesión
   if(adminPassHash() && !estaAutenticado()) MODE = "viewer";
+  try{ limpiarBandeja(); }catch(e){}
   loadStatsView();
   setSave(MODE==="viewer" ? "Solo consulta" : "✓ Guardado");
   render();
