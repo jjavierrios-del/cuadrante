@@ -604,7 +604,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v93";
+const APP_VERSION = "v94";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2127,17 +2127,10 @@ function sumarHoras(dkey, hhmm, horas){
 }
 function nombreActividad(code){
   if(!code) return "";
-  if(code==="URG")   return "Guardia de urgencias";
-  if(code==="URGLV") return "Guardia de urgencias";
-  if(code==="URGF")  return "Guardia de urgencias (festivo)";
-  if(code==="ADM" || code==="ADMT") return "Actividad administrativa";
-  if(esTrafico(code)) return "Consulta de Tráfico ("+code+")";
-  if(code==="ALINTER") return "Intervencionismo (ALINTER)";
-  if(code==="RXINT")   return "Radiología intervencionista (RXINT)";
-  if(code==="ORT")     return "Consulta de ortesis (ORT)";
-  if(code==="ALRU")    return "Consulta ALRU";
-  if(code==="RHB1"||code==="RHB2"||code==="RHBT") return "Rehabilitación ("+code+")";
-  return "Consulta "+code;
+  // Las guardias se muestran siempre como URG, sea festivo o no
+  if(code==="URG" || code==="URGLV" || code==="URGF") return "URG";
+  // El resto conserva la misma nomenclatura del cuadrante
+  return code;
 }
 
 function generarICS(pid, mo){
@@ -2174,7 +2167,7 @@ function generarICS(pid, mo){
 
   for(let d=1; d<=dim; d++){
     const dk = keyOf(state.year, mo, d);
-    if(esDiaLibre(p.id, dk)) eventoDiaCompleto(dk, "No disponible");
+    // Los días de no disponibilidad no se exportan al calendario personal
     const a = state.assignments[p.id+"|"+dk];
     if(!a) continue;
 

@@ -37,16 +37,10 @@ const esTraficoCal = (c) => !!c && /^TF[MT][123]$/.test(c);
 
 function nombreActividadCal(code) {
   if (!code) return "";
-  if (code === "URG" || code === "URGLV") return "Guardia de urgencias";
-  if (code === "URGF") return "Guardia de urgencias (festivo)";
-  if (code === "ADM" || code === "ADMT") return "Actividad administrativa";
-  if (esTraficoCal(code)) return "Consulta de Tráfico (" + code + ")";
-  if (code === "ALINTER") return "Intervencionismo (ALINTER)";
-  if (code === "RXINT") return "Radiología intervencionista (RXINT)";
-  if (code === "ORT") return "Consulta de ortesis (ORT)";
-  if (code === "ALRU") return "Consulta ALRU";
-  if (code === "RHB1" || code === "RHB2" || code === "RHBT") return "Rehabilitación (" + code + ")";
-  return "Consulta " + code;
+  // Las guardias se muestran siempre como URG, sea festivo o no
+  if (code === "URG" || code === "URGLV" || code === "URGF") return "URG";
+  // El resto conserva la misma nomenclatura del cuadrante
+  return code;
 }
 const escCal = (t) => String(t || "").replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
 const pad2 = (n) => String(n).padStart(2, "0");
@@ -100,7 +94,7 @@ function construirICS(datos, pid, meses) {
     const dim = new Date(year, mo + 1, 0).getDate();
     for (let d = 1; d <= dim; d++) {
       const dk = year + "-" + pad2(mo + 1) + "-" + pad2(d);
-      if (libres[p.id + "|" + dk]) eventoDia(dk, "No disponible");
+      // Los días de no disponibilidad no se exportan al calendario personal
       const a = asg[p.id + "|" + dk];
       if (!a) continue;
       if (a.f) {
