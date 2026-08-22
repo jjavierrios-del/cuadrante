@@ -418,7 +418,7 @@ let state = {
   // Buzón de solicitudes (Cloudflare Worker). La dirección y la clave de envío se
   // publican para que la app de los compañeros pueda enviar; la clave de
   // administración nunca viaja: se guarda solo en el dispositivo del jefe de servicio.
-  buzon: {url:"", claveEnvio:""},
+  buzon: {url:"", claveEnvio:"", claveCalendario:""},
 };
 const ROT_CODES = ["R1","R2","R3","R4","R5"];
 
@@ -476,7 +476,7 @@ function loadState(){
       state.traficoHoras = d.traficoHoras||{};
       state.diasLibres = d.diasLibres||{};
       state.bandeja = Array.isArray(d.bandeja) ? d.bandeja : [];
-      state.buzon = Object.assign({url:"",claveEnvio:""}, d.buzon||{});
+      state.buzon = Object.assign({url:"",claveEnvio:"",claveCalendario:""}, d.buzon||{});
       state.rotantesLeyenda = Object.assign({R1:"",R2:"",R3:"",R4:"",R5:""}, d.rotantesLeyenda||{});
       state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
       state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
@@ -604,7 +604,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v89";
+const APP_VERSION = "v91";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1142,7 +1142,8 @@ function render(){
     else if(ui.tab==="equipo") main.innerHTML = viewEquipo();
     else if(ui.tab==="stats") main.innerHTML = viewStats();
     else if(ui.tab==="rotantes") main.innerHTML = viewRotantes();
-    else if(ui.tab==="traficos") main.innerHTML = viewTraficos();
+      else if(ui.tab==="traficos") main.innerHTML = viewTraficos();
+    else if(ui.tab==="exportar") main.innerHTML = viewExportar();
     else if(ui.tab==="solicitudes") main.innerHTML = viewSolicitudes();
     else main.innerHTML = viewAjustes();
   }catch(e){
@@ -2061,6 +2062,204 @@ function horasTrafico(slot){
   return out;
 }
 
+// ---------- Exportar al calendario personal (.ics) ----------
+// Horarios acordados con el servicio
+const HORARIO = {
+  manana:  {ini:"080000", fin:"150000"},   // 8:00 a 15:00
+  tarde:   {ini:"150000", fin:"200000"},   // 15:00 a 20:00 (incluye la administrativa)
+  urgencia:{ini:"090000", fin:"210000"},   // 9:00 a 21:00
+  traficoHoras: 4                          // duración de las consultas de Tráfico
+};
+
+function icsEscapar(t){
+  return String(t||"").replace(/\\/g,"\\\\").replace(/;/g,"\\;").replace(/,/g,"\\,").replace(/\n/g,"\\n");
+}
+function icsFecha(dkey, hhmmss){ return dkey.replace(/-/g,"") + "T" + hhmmss; }
+// Suma horas a una hora "HHMMSS" y devuelve {fecha, hora} por si cruza medianoche
+function sumarHoras(dkey, hhmm, horas){
+  const h = parseInt(hhmm.slice(0,2),10), m = parseInt(hhmm.slice(2,4),10);
+  const pr = dkey.split("-").map(Number);
+  const d = new Date(pr[0], pr[1]-1, pr[2], h, m);
+  d.setHours(d.getHours()+horas);
+  return {
+    fecha: keyOf(d.getFullYear(), d.getMonth(), d.getDate()),
+    hora: pad(d.getHours())+pad(d.getMinutes())+"00"
+  };
+}
+function nombreActividad(code){
+  if(!code) return "";
+  if(code==="URG")   return "Guardia de urgencias";
+  if(code==="URGLV") return "Guardia de urgencias";
+  if(code==="URGF")  return "Guardia de urgencias (festivo)";
+  if(code==="ADM" || code==="ADMT") return "Actividad administrativa";
+  if(esTrafico(code)) return "Consulta de Tráfico ("+code+")";
+  if(code==="ALINTER") return "Intervencionismo (ALINTER)";
+  if(code==="RXINT")   return "Radiología intervencionista (RXINT)";
+  if(code==="ORT")     return "Consulta de ortesis (ORT)";
+  if(code==="ALRU")    return "Consulta ALRU";
+  if(code==="RHB1"||code==="RHB2"||code==="RHBT") return "Rehabilitación ("+code+")";
+  return "Consulta "+code;
+}
+
+function generarICS(pid, mo){
+  const p = state.physicians.find(x=>x.id===pid);
+  if(!p) return null;
+  const dim = new Date(state.year, mo+1, 0).getDate();
+  const sello = new Date().toISOString().replace(/[-:]/g,"").split(".")[0]+"Z";
+  const L = [];
+  let n = 0;
+
+  const evento = (dk, ini, fin, titulo, desc, finFecha)=>{
+    n++;
+    L.push("BEGIN:VEVENT");
+    L.push("UID:cuadrante-"+p.id+"-"+dk+"-"+n+"@rhb");
+    L.push("DTSTAMP:"+sello);
+    L.push("DTSTART;TZID=Europe/Madrid:"+icsFecha(dk, ini));
+    L.push("DTEND;TZID=Europe/Madrid:"+icsFecha(finFecha||dk, fin));
+    L.push("SUMMARY:"+icsEscapar(titulo));
+    if(desc) L.push("DESCRIPTION:"+icsEscapar(desc));
+    L.push("END:VEVENT");
+  };
+  const eventoDiaCompleto = (dk, titulo)=>{
+    n++;
+    const sig = sumarHoras(dk,"120000",24).fecha;
+    L.push("BEGIN:VEVENT");
+    L.push("UID:cuadrante-"+p.id+"-"+dk+"-"+n+"@rhb");
+    L.push("DTSTAMP:"+sello);
+    L.push("DTSTART;VALUE=DATE:"+dk.replace(/-/g,""));
+    L.push("DTEND;VALUE=DATE:"+sig.replace(/-/g,""));
+    L.push("SUMMARY:"+icsEscapar(titulo));
+    L.push("TRANSP:TRANSPARENT");
+    L.push("END:VEVENT");
+  };
+
+  for(let d=1; d<=dim; d++){
+    const dk = keyOf(state.year, mo, d);
+    if(esDiaLibre(p.id, dk)) eventoDiaCompleto(dk, "No disponible");
+    const a = state.assignments[p.id+"|"+dk];
+    if(!a) continue;
+
+    // Día completo: guardias y ausencias
+    if(a.f){
+      if(a.f==="URG" || a.f==="URGLV" || a.f==="URGF"){
+        evento(dk, HORARIO.urgencia.ini, HORARIO.urgencia.fin, nombreActividad(a.f), "Cuadrante del Servicio de Rehabilitación");
+      }else if(absInfo(a.f)){
+        eventoDiaCompleto(dk, absInfo(a.f).label);
+      }
+      continue;
+    }
+    // Mañana
+    if(a.m){
+      if(esTrafico(a.m)){
+        const h = (trafHora(p.id, dk, "m")||"08:00").replace(":","")+"00";
+        const f = sumarHoras(dk, h, HORARIO.traficoHoras);
+        evento(dk, h, f.hora, nombreActividad(a.m), "Consulta voluntaria retribuida como horas extra", f.fecha);
+      }else{
+        evento(dk, HORARIO.manana.ini, HORARIO.manana.fin, nombreActividad(a.m), "Cuadrante del Servicio de Rehabilitación");
+      }
+    }
+    // Tarde
+    if(a.t){
+      if(esTrafico(a.t)){
+        const h = (trafHora(p.id, dk, "t")||"15:00").replace(":","")+"00";
+        const f = sumarHoras(dk, h, HORARIO.traficoHoras);
+        evento(dk, h, f.hora, nombreActividad(a.t), "Consulta voluntaria retribuida como horas extra", f.fecha);
+      }else{
+        evento(dk, HORARIO.tarde.ini, HORARIO.tarde.fin, nombreActividad(a.t), "Cuadrante del Servicio de Rehabilitación");
+      }
+    }
+  }
+
+  const cab = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Servicio de Rehabilitacion y Aparato Locomotor//Cuadrante//ES",
+    "CALSCALE:GREGORIAN",
+    "METHOD:PUBLISH",
+    "X-WR-CALNAME:"+icsEscapar("Cuadrante "+p.name+" · "+MONTHS[mo]+" "+state.year),
+    "X-WR-TIMEZONE:Europe/Madrid",
+    // Definición del huso horario español, para que las horas no bailen
+    "BEGIN:VTIMEZONE",
+    "TZID:Europe/Madrid",
+    "BEGIN:DAYLIGHT",
+    "TZOFFSETFROM:+0100","TZOFFSETTO:+0200","TZNAME:CEST",
+    "DTSTART:19700329T020000",
+    "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU",
+    "END:DAYLIGHT",
+    "BEGIN:STANDARD",
+    "TZOFFSETFROM:+0200","TZOFFSETTO:+0100","TZNAME:CET",
+    "DTSTART:19701025T030000",
+    "RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU",
+    "END:STANDARD",
+    "END:VTIMEZONE"
+  ];
+  return {texto: cab.concat(L).concat(["END:VCALENDAR"]).join("\r\n"), eventos: n, nombre: p.name};
+}
+
+function viewExportar(){
+  const pid = ui.expPid || (state.physicians[0]||{}).id || "";
+  const mo  = (ui.expMes===undefined) ? ui.month : ui.expMes;
+  const p = state.physicians.find(x=>x.id===pid);
+  let turnos = 0;
+  if(p){
+    const dim = new Date(state.year, mo+1, 0).getDate();
+    for(let d=1; d<=dim; d++){
+      const a = state.assignments[p.id+"|"+keyOf(state.year,mo,d)];
+      if(!a) continue;
+      if(a.f) turnos++; else { if(a.m) turnos++; if(a.t) turnos++; }
+    }
+  }
+  return '<div class="card"><h2>Llevar el cuadrante a tu calendario</h2>'+
+    '<p class="muted" style="margin-top:2px;font-size:14px">Descarga tus turnos del mes y ábrelos con el calendario del móvil o del ordenador. Se añadirán como citas con su horario, sin tocar el resto de tu agenda.</p>'+
+    '<p class="tiny" style="margin-top:14px">Facultativo</p>'+
+    '<select data-field="exp-pid" style="width:100%;padding:9px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+
+      state.physicians.map(x=>'<option value="'+x.id+'"'+(x.id===pid?" selected":"")+'>'+esc(x.name)+'</option>').join("")+
+    '</select>'+
+    '<p class="tiny" style="margin-top:12px">Mes</p>'+
+    '<select data-field="exp-mes" style="width:100%;padding:9px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+
+      MONTHS.map((m,i)=>'<option value="'+i+'"'+(i===mo?" selected":"")+'>'+m+' '+state.year+'</option>').join("")+
+    '</select>'+
+    '<p class="muted" style="margin-top:12px;font-size:14px">'+
+      (turnos ? 'Se exportarán <b>'+turnos+'</b> turnos de '+esc(p?p.name:"")+' en '+MONTHS[mo]+'.'
+              : 'No hay turnos asignados ese mes.')+'</p>'+
+    '<div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap">'+
+      '<button class="btn primary" data-action="exp-descargar"'+(turnos?'':' disabled style="opacity:.4"')+'>Descargar calendario</button>'+
+    '</div></div>'+
+    (function(){
+      const b = state.buzon||{};
+      if(!b.url || !b.claveCalendario) return '';
+      const enlace = b.url.replace(/\/+$/,"")+"/calendario.ics?pid="+encodeURIComponent(pid)+"&k="+encodeURIComponent(b.claveCalendario);
+      return '<div class="card" style="margin-top:10px;border-color:var(--teal-700)"><h2>Calendario que se actualiza solo</h2>'+
+        '<p class="muted" style="margin-top:2px;font-size:14px">En lugar de descargar el archivo cada mes, puedes <b>suscribirte</b> a esta dirección. '+
+        'Cuando el cuadrante cambie, tu calendario se pondrá al día sin que hagas nada.</p>'+
+        '<div style="margin-top:10px;padding:8px;background:var(--slate-50);border-radius:8px;word-break:break-all;font-size:11px;font-family:monospace">'+esc(enlace)+'</div>'+
+        '<div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap">'+
+          '<button class="btn primary" data-action="exp-copiar" data-url="'+esc(enlace)+'">Copiar dirección</button>'+
+        '</div>'+
+        '<p class="tiny" style="margin-top:12px"><b>iPhone y iPad</b></p>'+
+        '<p class="muted" style="font-size:13px">Ajustes → Aplicaciones → Calendario → Cuentas → Añadir cuenta → Otra → Añadir calendario suscrito, y pega la dirección.</p>'+
+        '<p class="tiny" style="margin-top:10px"><b>Google Calendar</b></p>'+
+        '<p class="muted" style="font-size:13px">Desde el ordenador: junto a «Otros calendarios», pulsa + → Desde URL, y pega la dirección.</p>'+
+        '<p class="muted" style="font-size:12px;margin-top:10px">El iPhone comprueba los cambios cada pocos minutos u horas según lo configures. Google Calendar es bastante más lento y puede tardar hasta un día en reflejarlos.</p>'+
+        '</div>';
+    })()+
+    '<div class="card" style="margin-top:10px"><h2>Cómo añadirlo a tu calendario</h2>'+
+      '<p class="tiny" style="margin-top:8px"><b>iPhone y iPad</b></p>'+
+      '<p class="muted" style="font-size:13px">Al descargar el archivo, toca «Abrir en Calendario» y confirma «Añadir todos». Si se guarda en Archivos, tócalo desde allí.</p>'+
+      '<p class="tiny" style="margin-top:10px"><b>Android</b></p>'+
+      '<p class="muted" style="font-size:13px">Descarga el archivo y ábrelo; el sistema ofrecerá añadirlo a Google Calendar. Si no, desde el ordenador: Google Calendar → Configuración → Importar y exportar → Importar.</p>'+
+      '<p class="tiny" style="margin-top:10px"><b>Ordenador</b></p>'+
+      '<p class="muted" style="font-size:13px">En Google Calendar: Configuración → Importar y exportar → Importar. En Mac, ábrelo con doble clic.</p>'+
+    '</div>'+
+    '<div class="card" style="margin-top:10px"><h2>Horarios que se aplican</h2>'+
+      '<p class="muted" style="font-size:13px;margin-top:6px">'+
+      '<b>Mañanas</b>: de 8:00 a 15:00 · <b>Tardes</b>: de 15:00 a 20:00 (incluida la administrativa)<br>'+
+      '<b>Guardias</b>, de entre semana o de festivo: de 9:00 a 21:00<br>'+
+      '<b>Consultas de Tráfico</b>: desde la hora indicada, con 4 horas de duración<br>'+
+      '<b>Vacaciones, bajas y permisos</b>: como evento de día completo</p>'+
+    '</div>';
+}
+
 function viewTraficos(){
   const days = monthDays();
   const admin = (MODE!=="viewer");
@@ -2310,8 +2509,8 @@ function viewSolicitudes(){
 }
 
 function renderNav(){
-  let tabs = [["cuadrante","Cuadrante"],["rotantes","Rotantes"],["traficos","Tráficos"],["solicitudes","Solicitudes"],["equipo","Equipo"],["stats","Estadísticas"],["ajustes","Ajustes"]];
-  if(MODE==="viewer") tabs = tabs.filter(t=>t[0]==="cuadrante"||t[0]==="rotantes"||t[0]==="traficos"||t[0]==="solicitudes"||t[0]==="stats");
+  let tabs = [["cuadrante","Cuadrante"],["rotantes","Rotantes"],["traficos","Tráficos"],["solicitudes","Solicitudes"],["exportar","Exportar"],["equipo","Equipo"],["stats","Estadísticas"],["ajustes","Ajustes"]];
+  if(MODE==="viewer") tabs = tabs.filter(t=>t[0]==="cuadrante"||t[0]==="rotantes"||t[0]==="traficos"||t[0]==="solicitudes"||t[0]==="exportar"||t[0]==="stats");
   document.getElementById("nav").innerHTML = tabs.map(([id,l])=>
     '<button data-action="tab" data-tab="'+id+'" class="'+(ui.tab===id?"active":"")+'">'+l+'</button>').join("");
 }
@@ -2649,6 +2848,9 @@ function viewAjustes(){
     '<input type="text" id="bz-envio" value="'+esc((state.buzon||{}).claveEnvio||"")+'" placeholder="clave de envío" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px;font-size:13px">'+
     '<p class="tiny" style="margin-top:10px">Clave de administración (solo tuya)</p>'+
     '<input type="password" id="bz-admin" value="'+esc(buzonClaveAdmin())+'" placeholder="clave de administración" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px;font-size:13px">'+
+    '<p class="tiny" style="margin-top:10px">Clave del calendario suscrito (opcional)</p>'+
+    '<input type="text" id="bz-cal" value="'+esc((state.buzon||{}).claveCalendario||"")+'" placeholder="clave del calendario" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px;font-size:13px">'+
+    '<p class="muted" style="font-size:12px;margin-top:4px">Si la rellenas (y coincide con CLAVE_CALENDARIO en el servidor), en Exportar aparecerá una dirección a la que cada uno puede suscribir su calendario para que se actualice solo.</p>'+
     '<p class="tiny" style="margin-top:10px">Contraseña de publicación (opcional, sustituye al token de GitHub)</p>'+
     '<input type="password" id="bz-pub" value="'+esc(buzonClavePublicar())+'" placeholder="contraseña de publicación" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px;font-size:13px">'+
     '<p class="muted" style="font-size:12px;margin-top:4px">'+
@@ -3042,7 +3244,7 @@ function importBackup(file){
       state.traficoHoras = d.traficoHoras||{};
       state.diasLibres = d.diasLibres||{};
       state.bandeja = Array.isArray(d.bandeja) ? d.bandeja : [];
-      state.buzon = Object.assign({url:"",claveEnvio:""}, d.buzon||{});
+      state.buzon = Object.assign({url:"",claveEnvio:"",claveCalendario:""}, d.buzon||{});
       state.rotantesLeyenda = Object.assign({R1:"",R2:"",R3:"",R4:"",R5:""}, d.rotantesLeyenda||{});
       state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
       state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
@@ -3813,6 +4015,34 @@ document.addEventListener("click", e=>{
     case "rot-toggleres": { rotToggleRes(el.dataset.date, el.dataset.code); renderModal(); render(); break; }
     case "rot-print": window.print(); break;
     case "traf-print": window.print(); break;
+    case "exp-copiar": {
+      const txt = el.dataset.url||"";
+      try{
+        navigator.clipboard.writeText(txt).then(
+          ()=>{ setSave("✓ Dirección copiada"); window.alert("Dirección copiada.\n\nPégala en tu calendario siguiendo las instrucciones de abajo."); },
+          ()=>window.prompt("Copia esta dirección:", txt)
+        );
+      }catch(e){ window.prompt("Copia esta dirección:", txt); }
+      break;
+    }
+    case "exp-descargar": {
+      const pidE = ui.expPid || (state.physicians[0]||{}).id;
+      const moE  = (ui.expMes===undefined) ? ui.month : ui.expMes;
+      const rE = generarICS(pidE, moE);
+      if(!rE || !rE.eventos){ window.alert("No hay turnos que exportar en ese mes."); break; }
+      const limpio = rE.nombre.normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^A-Za-z0-9]/g,"-");
+      const nombreArch = "cuadrante-"+limpio+"-"+MONTHS[moE].toLowerCase()+"-"+state.year+".ics";
+      try{
+        const blob = new Blob([rE.texto], {type:"text/calendar;charset=utf-8"});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = nombreArch;
+        document.body.appendChild(a); a.click();
+        setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
+        setSave("✓ Calendario descargado ("+rE.eventos+" citas)");
+      }catch(e){ window.alert("No se ha podido generar el archivo: "+e.message); }
+      break;
+    }
     case "rot-gen": {
       if(!window.confirm("Asignar residentes automáticamente en "+MONTHS[ui.month]+" "+state.year+".\n\n"+
         "Se reparten entre las consultas AL1–AL7 (mañana) y ALT1–ALT3 (tarde) de los facultativos con «Residente: Sí».\n"+
@@ -4073,7 +4303,8 @@ document.addEventListener("click", e=>{
       const e1 = (document.getElementById("bz-envio")||{value:""}).value.trim();
       const a1 = (document.getElementById("bz-admin")||{value:""}).value.trim();
       const pb = (document.getElementById("bz-pub")||{value:""}).value.trim();
-      state.buzon = {url:u, claveEnvio:e1};
+      const cal = (document.getElementById("bz-cal")||{value:""}).value.trim();
+      state.buzon = {url:u, claveEnvio:e1, claveCalendario:cal};
       setBuzonClaveAdmin(a1);
       setBuzonClavePublicar(pb);
       save();
@@ -4399,6 +4630,8 @@ document.addEventListener("change", e=>{
   else if(field==="urgreq"){ state.settings.urgRequired = el.checked; save(); }
   else if(field==="minmorning"){ state.settings.minMorning = Math.min(20,Math.max(0,Number(el.value)||0)); save(); }
   else if(field==="maxmorning"){ state.settings.maxMorning = Math.min(20,Math.max(1,Number(el.value)||8)); save(); }
+  else if(field==="exp-pid"){ ui.expPid = el.value; render(); return; }
+  else if(field==="exp-mes"){ ui.expMes = Number(el.value); render(); return; }
   else if(field==="traf-hora"){
     trafSetHora(el.dataset.pid, el.dataset.date, el.dataset.slot, el.value);
     return;
@@ -4435,7 +4668,7 @@ function applyPublished(d){
   state.rotBloqueados = d.rotBloqueados||{};
   state.traficoHoras = d.traficoHoras||{};
   state.diasLibres = d.diasLibres||{};
-  state.buzon = Object.assign({url:"",claveEnvio:""}, d.buzon||{});
+  state.buzon = Object.assign({url:"",claveEnvio:"",claveCalendario:""}, d.buzon||{});
   state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
   state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
   state.settings.required = Object.assign({}, DEFAULT_REQUIRED, (d.settings&&d.settings.required)||{});
