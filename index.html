@@ -415,6 +415,8 @@ let state = {
   // Bandeja de solicitudes: llegan como "pendiente" y tú las apruebas o rechazas.
   // Cada una guarda su fecha de recepción para poder ordenarlas cronológicamente.
   bandeja: [],
+  // Historial: copia del cuadrante de cada mes en el momento de marcarlo como oficial
+  historial: {},
   // Buzón de solicitudes (Cloudflare Worker). La dirección y la clave de envío se
   // publican para que la app de los compañeros pueda enviar; la clave de
   // administración nunca viaja: se guarda solo en el dispositivo del jefe de servicio.
@@ -441,11 +443,53 @@ function officialStamp(mo){
   return isNaN(d) ? null : d.toLocaleString("es-ES",{day:"2-digit",month:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit"});
 }
 // Cierra (o reabre) el mes como cuadrante oficial
+// Guarda una copia del mes: lo imprescindible para reproducirlo tal cual
+function guardarHistorial(mo){
+  const mk = baselineMonthKey(mo);
+  const pre = mk + "-";
+  const filtrarPorFecha = (obj, sep)=>{
+    const out = {};
+    Object.entries(obj||{}).forEach(([k,v])=>{
+      const partes = k.split("|");
+      const fecha = sep ? partes[1] : k.slice(k.indexOf("|")+1);
+      if(fecha && fecha.indexOf(pre)===0) out[k] = (typeof v==="object") ? JSON.parse(JSON.stringify(v)) : v;
+    });
+    return out;
+  };
+  state.historial = state.historial || {};
+  state.historial[mk] = {
+    mes: mo,
+    anio: state.year,
+    guardado: new Date().toISOString(),
+    physicians: state.physicians.map(p=>({id:p.id, name:p.name, pct:p.pct})),
+    holidays: (state.holidays||[]).filter(h=>h.date.indexOf(mk)===0),
+    assignments: filtrarPorFecha(state.assignments, false),
+    rotantes: filtrarPorFecha(state.rotantes, true),
+    rotantesLeyenda: JSON.parse(JSON.stringify(state.rotantesLeyenda||{})),
+    traficoHoras: filtrarPorFecha(state.traficoHoras, true),
+    diasLibres: filtrarPorFecha(state.diasLibres, false)
+  };
+}
+function borrarHistorial(mo){
+  const mk = baselineMonthKey(mo);
+  if(state.historial && state.historial[mk]) delete state.historial[mk];
+}
+function historialOrdenado(){
+  const h = state.historial || {};
+  return Object.keys(h).sort().reverse().map(k=>({clave:k, datos:h[k]}));
+}
+
 function setOfficial(mo, cerrar){
   const mk = baselineMonthKey(mo);
   state.official = state.official || {};
-  if(cerrar){ snapshotBaseline(mo, true); state.official[mk] = new Date().toISOString(); }
-  else { delete state.official[mk]; }
+  if(cerrar){
+    snapshotBaseline(mo, true);
+    state.official[mk] = new Date().toISOString();
+    guardarHistorial(mo);                    // se archiva el cuadrante tal y como queda
+  }else{
+    delete state.official[mk];
+    borrarHistorial(mo);                     // al reabrirlo, se retira su copia
+  }
   save();
 }
 // Guarda la foto oficial del mes recién generado
@@ -476,6 +520,7 @@ function loadState(){
       state.traficoHoras = d.traficoHoras||{};
       state.diasLibres = d.diasLibres||{};
       state.bandeja = Array.isArray(d.bandeja) ? d.bandeja : [];
+      state.historial = d.historial||{};
       state.buzon = Object.assign({url:"",claveEnvio:"",claveCalendario:""}, d.buzon||{});
       state.rotantesLeyenda = Object.assign({R1:"",R2:"",R3:"",R4:"",R5:""}, d.rotantesLeyenda||{});
       state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
@@ -604,7 +649,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v95";
+const APP_VERSION = "v96";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1186,6 +1231,7 @@ function render(){
     else if(ui.tab==="rotantes") main.innerHTML = viewRotantes();
       else if(ui.tab==="traficos") main.innerHTML = viewTraficos();
     else if(ui.tab==="exportar") main.innerHTML = viewExportar();
+    else if(ui.tab==="historial") main.innerHTML = viewHistorial();
     else if(ui.tab==="solicitudes") main.innerHTML = viewSolicitudes();
     else main.innerHTML = viewAjustes();
   }catch(e){
@@ -2272,6 +2318,89 @@ function generarICS(pid, mo){
   return {texto: cab.concat(L).concat(["END:VCALENDAR"]).join("\r\n"), eventos: n, nombre: p.name};
 }
 
+// Dibuja el cuadrante guardado de un mes, en formato tabla imprimible
+function tablaHistorial(g){
+  const hset = {};
+  (g.holidays||[]).forEach(h=>hset[h.date]=h.name);
+  const dim = new Date(g.anio, g.mes+1, 0).getDate();
+  const dias = [];
+  for(let i=1;i<=dim;i++){
+    const dt = new Date(g.anio, g.mes, i);
+    const key = g.anio+"-"+pad(g.mes+1)+"-"+pad(i);
+    dias.push({n:i, key, dow:dt.getDay(), holiday:hset[key]||null});
+  }
+  let h = '<div class="gridbox"><table><thead><tr><th class="namecol">Facultativo</th>';
+  dias.forEach(d=>{
+    const cls = d.holiday?"fest":(d.dow===0||d.dow===6?"wknd":"");
+    h += '<th class="dayhead '+cls+'"><b>'+d.n+'</b><small>'+WD[d.dow]+'</small></th>';
+  });
+  h += '</tr></thead><tbody>';
+  (g.physicians||[]).forEach(p=>{
+    h += '<tr><td class="namecol"><b>'+esc(p.name)+'</b>'+(p.pct<100?' <span class="muted">('+p.pct+'%)</span>':'')+'</td>';
+    dias.forEach(d=>{
+      const a = g.assignments[p.id+"|"+d.key];
+      const base = d.holiday?"base-fest":(d.dow===0||d.dow===6?"base-wknd":"base-lab");
+      let inner;
+      if(!a){ inner = '<span class="full '+base+'"></span>'; }
+      else if(a.f){
+        const cls = a.f==="URG"?"k-urg":(a.f==="URGLV"?"k-urglv":(a.f==="URGF"?"k-urgf":((absInfo(a.f)||{cls:"k-P"}).cls)));
+        inner = '<span class="full '+cls+'">'+a.f+'</span>';
+      }else{
+        const half = (c)=> c && byCode[c]
+          ? '<span class="half '+byCode[c].cls+'">'+byCode[c].short+'</span>'
+          : '<span class="half '+base+'"></span>';
+        inner = half(a.m)+half(a.t);
+      }
+      h += '<td><span class="cell" style="display:block">'+inner+'</span></td>';
+    });
+    h += '</tr>';
+  });
+  return h + '</tbody></table></div>';
+}
+
+function viewHistorial(){
+  const lista = historialOrdenado();
+  const abierto = ui.histAbierto || "";
+  let h = '<div class="card no-print"><h2>Historial de cuadrantes oficiales</h2>'+
+    '<p class="muted" style="margin-top:2px;font-size:14px">Cada vez que marcas un mes como oficial se archiva una copia exacta. '+
+    'Si lo reabres, su copia se retira; al volver a marcarlo se guarda la versión nueva.</p>';
+  if(!lista.length){
+    h += '<p class="muted" style="margin-top:10px;font-size:14px">Todavía no hay ningún mes archivado. Marca un mes como oficial desde la pestaña Cuadrante.</p></div>';
+    return h;
+  }
+  h += '<div style="margin-top:10px">';
+  lista.forEach(it=>{
+    const g = it.datos;
+    const fecha = new Date(g.guardado);
+    const cuantos = Object.keys(g.assignments||{}).length;
+    const esteAbierto = (abierto === it.clave);
+    h += '<div style="border:1px solid var(--slate-200);border-radius:10px;padding:10px;margin-top:8px">'+
+      '<div class="row between" style="align-items:flex-start;gap:8px;flex-wrap:wrap">'+
+        '<div style="flex:1;min-width:0">'+
+          '<b style="font-size:15px">'+MONTHS[g.mes]+' '+g.anio+'</b>'+
+          '<span class="tiny" style="margin-left:8px;background:#065f46;color:#fff;padding:2px 8px;border-radius:999px">OFICIAL</span>'+
+          '<p class="tiny muted" style="margin-top:4px">Archivado el '+(isNaN(fecha)?"—":fecha.toLocaleString("es-ES"))+' · '+cuantos+' asignaciones · '+(g.physicians||[]).length+' facultativos</p>'+
+        '</div>'+
+        '<div class="row" style="gap:6px;flex-wrap:wrap;justify-content:flex-end">'+
+          '<button class="btn" data-action="hist-ver" data-mk="'+it.clave+'" style="padding:5px 10px">'+(esteAbierto?"Ocultar":"Ver")+'</button>'+
+          '<button class="btn" data-action="hist-imprimir" data-mk="'+it.clave+'" style="padding:5px 10px">Imprimir</button>'+
+          '<button class="btn" data-action="hist-descargar" data-mk="'+it.clave+'" style="padding:5px 10px">Descargar</button>'+
+        '</div>'+
+      '</div></div>';
+  });
+  h += '</div></div>';
+
+  if(abierto && state.historial[abierto]){
+    const g = state.historial[abierto];
+    h += '<div class="printhead">Cuadrante oficial · '+MONTHS[g.mes]+' '+g.anio+'</div>';
+    h += '<div class="card" style="margin-top:10px"><div class="row between no-print" style="align-items:center">'+
+      '<h2>'+MONTHS[g.mes]+' '+g.anio+'</h2>'+
+      '<span class="tiny muted">copia archivada, no editable</span></div>'+
+      tablaHistorial(g)+'</div>';
+  }
+  return h;
+}
+
 function viewExportar(){
   const pid = ui.expPid || (state.physicians[0]||{}).id || "";
   const mo  = (ui.expMes===undefined) ? ui.month : ui.expMes;
@@ -2591,7 +2720,7 @@ function viewSolicitudes(){
 }
 
 function renderNav(){
-  let tabs = [["cuadrante","Cuadrante"],["rotantes","Rotantes"],["traficos","Tráficos"],["solicitudes","Solicitudes"],["exportar","Exportar"],["equipo","Equipo"],["stats","Estadísticas"],["ajustes","Ajustes"]];
+  let tabs = [["cuadrante","Cuadrante"],["rotantes","Rotantes"],["traficos","Tráficos"],["solicitudes","Solicitudes"],["exportar","Exportar"],["equipo","Equipo"],["stats","Estadísticas"],["historial","Historial"],["ajustes","Ajustes"]];
   if(MODE==="viewer") tabs = tabs.filter(t=>t[0]==="cuadrante"||t[0]==="rotantes"||t[0]==="traficos"||t[0]==="solicitudes"||t[0]==="exportar"||t[0]==="stats");
   document.getElementById("nav").innerHTML = tabs.map(([id,l])=>
     '<button data-action="tab" data-tab="'+id+'" class="'+(ui.tab===id?"active":"")+'">'+l+'</button>').join("");
@@ -3329,6 +3458,7 @@ function importBackup(file){
       state.traficoHoras = d.traficoHoras||{};
       state.diasLibres = d.diasLibres||{};
       state.bandeja = Array.isArray(d.bandeja) ? d.bandeja : [];
+      state.historial = d.historial||{};
       state.buzon = Object.assign({url:"",claveEnvio:"",claveCalendario:""}, d.buzon||{});
       state.rotantesLeyenda = Object.assign({R1:"",R2:"",R3:"",R4:"",R5:""}, d.rotantesLeyenda||{});
       state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
@@ -4042,7 +4172,7 @@ document.addEventListener("click", e=>{
   const el = e.target.closest("[data-action]");
   if(!el){ return; }
   const act = el.dataset.action;
-  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-required","official-on","official-off","rot-cell","rot-set","rot-gen","rot-clear","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","buzon-recibir","buzon-guardar","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-required","official-on","official-off","rot-cell","rot-set","rot-gen","rot-clear","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","buzon-recibir","buzon-guardar","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
       ui.reqDraft = {}; ui.reqNote = "";
@@ -4101,6 +4231,42 @@ document.addEventListener("click", e=>{
     case "rot-toggleres": { rotToggleRes(el.dataset.date, el.dataset.code); renderModal(); render(); break; }
     case "rot-print": window.print(); break;
     case "traf-print": window.print(); break;
+    case "hist-ver": {
+      ui.histAbierto = (ui.histAbierto === el.dataset.mk) ? "" : el.dataset.mk;
+      render();
+      break;
+    }
+    case "hist-imprimir": {
+      ui.histAbierto = el.dataset.mk;
+      render();
+      setTimeout(()=>window.print(), 300);
+      break;
+    }
+    case "hist-descargar": {
+      const g = (state.historial||{})[el.dataset.mk];
+      if(!g){ window.alert("No se encuentra esa copia."); break; }
+      // Documento independiente: se abre en cualquier navegador y se puede imprimir o guardar como PDF
+      const estilos = document.querySelector("style") ? document.querySelector("style").textContent : "";
+      const doc = '<!doctype html><html lang="es"><head><meta charset="utf-8">'+
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'+
+        '<title>Cuadrante oficial · '+MONTHS[g.mes]+' '+g.anio+'</title>'+
+        '<style>'+estilos+'\nbody{padding:16px;background:#fff}\n.gridbox{overflow:visible}</style></head><body>'+
+        '<h1 style="font-size:20px;color:#0F5132;margin:0 0 4px">Servicio de Rehabilitación y Aparato Locomotor</h1>'+
+        '<p style="margin:0 0 12px;font-size:14px;color:#475569">Cuadrante oficial · <b>'+MONTHS[g.mes]+' '+g.anio+'</b>'+
+        ' · archivado el '+new Date(g.guardado).toLocaleString("es-ES")+'</p>'+
+        tablaHistorial(g)+
+        '</body></html>';
+      try{
+        const blob = new Blob([doc], {type:"text/html;charset=utf-8"});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = "cuadrante-oficial-"+el.dataset.mk+".html";
+        document.body.appendChild(a); a.click();
+        setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
+        setSave("✓ Copia descargada");
+      }catch(e){ window.alert("No se ha podido generar el archivo: "+e.message); }
+      break;
+    }
     case "exp-copiar": {
       const txt = el.dataset.url||"";
       try{
@@ -4760,6 +4926,7 @@ function applyPublished(d){
   state.traficoHoras = d.traficoHoras||{};
   state.diasLibres = d.diasLibres||{};
   state.bandeja = Array.isArray(d.bandeja) ? d.bandeja : [];
+      state.historial = d.historial||{};
   state.buzon = Object.assign({url:"",claveEnvio:"",claveCalendario:""}, d.buzon||{});
   state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
   state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
