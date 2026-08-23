@@ -74,6 +74,16 @@
   .rotcell{position:relative}
   .rotpick{display:inline-flex; gap:4px; flex-wrap:wrap}
   .printhead{display:none}
+  .histcard{border:1px solid var(--slate-200); border-radius:10px; padding:10px; margin-top:8px;
+            display:flex; align-items:flex-start; justify-content:space-between; gap:10px; flex-wrap:wrap}
+  .histinfo{flex:1 1 220px; min-width:0}
+  .histbtns{display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end}
+  .histbtns .btn{padding:6px 12px}
+  @media(max-width:640px){
+    .histcard{flex-direction:column; align-items:stretch}
+    .histbtns{justify-content:stretch}
+    .histbtns .btn{flex:1; text-align:center; padding:9px 8px}
+  }
   sup.libre{color:#b45309; font-weight:900; font-size:9px; margin-left:1px}
   .rotblock{background:repeating-linear-gradient(45deg,#e2e8f0,#e2e8f0 4px,#cbd5e1 4px,#cbd5e1 8px)!important; color:#475569!important}
   .dayhead.rotoff{background:#475569; color:#fff}
@@ -649,7 +659,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v96";
+const APP_VERSION = "v97";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2374,19 +2384,18 @@ function viewHistorial(){
     const fecha = new Date(g.guardado);
     const cuantos = Object.keys(g.assignments||{}).length;
     const esteAbierto = (abierto === it.clave);
-    h += '<div style="border:1px solid var(--slate-200);border-radius:10px;padding:10px;margin-top:8px">'+
-      '<div class="row between" style="align-items:flex-start;gap:8px;flex-wrap:wrap">'+
-        '<div style="flex:1;min-width:0">'+
-          '<b style="font-size:15px">'+MONTHS[g.mes]+' '+g.anio+'</b>'+
-          '<span class="tiny" style="margin-left:8px;background:#065f46;color:#fff;padding:2px 8px;border-radius:999px">OFICIAL</span>'+
-          '<p class="tiny muted" style="margin-top:4px">Archivado el '+(isNaN(fecha)?"—":fecha.toLocaleString("es-ES"))+' · '+cuantos+' asignaciones · '+(g.physicians||[]).length+' facultativos</p>'+
+    h += '<div class="histcard">'+
+        '<div class="histinfo">'+
+          '<div><b style="font-size:15px">'+MONTHS[g.mes]+' '+g.anio+'</b>'+
+          '<span class="tiny" style="margin-left:8px;background:#065f46;color:#fff;padding:2px 8px;border-radius:999px;white-space:nowrap">OFICIAL</span></div>'+
+          '<p class="tiny muted" style="margin-top:4px">Archivado el '+(isNaN(fecha)?"—":fecha.toLocaleString("es-ES"))+'<br>'+cuantos+' asignaciones · '+(g.physicians||[]).length+' facultativos</p>'+
         '</div>'+
-        '<div class="row" style="gap:6px;flex-wrap:wrap;justify-content:flex-end">'+
-          '<button class="btn" data-action="hist-ver" data-mk="'+it.clave+'" style="padding:5px 10px">'+(esteAbierto?"Ocultar":"Ver")+'</button>'+
-          '<button class="btn" data-action="hist-imprimir" data-mk="'+it.clave+'" style="padding:5px 10px">Imprimir</button>'+
-          '<button class="btn" data-action="hist-descargar" data-mk="'+it.clave+'" style="padding:5px 10px">Descargar</button>'+
+        '<div class="histbtns">'+
+          '<button class="btn" data-action="hist-ver" data-mk="'+it.clave+'">'+(esteAbierto?"Ocultar":"Ver")+'</button>'+
+          '<button class="btn" data-action="hist-imprimir" data-mk="'+it.clave+'">Imprimir</button>'+
+          '<button class="btn" data-action="hist-descargar" data-mk="'+it.clave+'">Descargar</button>'+
         '</div>'+
-      '</div></div>';
+      '</div>';
   });
   h += '</div></div>';
 
