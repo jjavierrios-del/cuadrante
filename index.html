@@ -659,7 +659,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v101";
+const APP_VERSION = "v102";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1289,6 +1289,60 @@ function resumenSolicitud(r){
     default:        return n(r.phys)+" · "+fmtDate(r.date);
   }
 }
+// Desglose de la solicitud, para confirmarla antes de enviarla
+function detalleSolicitud(r){
+  const L = [];
+  const fila = (etiqueta, valor)=> L.push('<div class="row between" style="gap:10px;padding:5px 0;border-bottom:1px solid var(--slate-100)">'+
+    '<span class="tiny muted" style="white-space:nowrap">'+etiqueta+'</span>'+
+    '<span style="font-size:14px;text-align:right"><b>'+valor+'</b></span></div>');
+  fila("Tipo", etiquetaTipo(r.type));
+  switch(r.type){
+    case "move":
+      fila("Facultativo", esc(r.phys||""));
+      fila("Consulta", esc(partLabel(r.part||"")));
+      fila("Del día", fmtDate(r.dateFrom));
+      fila("Al día", fmtDate(r.dateTo)+" · "+((r.slot||"m")==="m"?"mañana":"tarde"));
+      break;
+    case "swap":
+      fila("Entre", esc(r.physA||"")+" y "+esc(r.physB||""));
+      fila(esc(r.physA||"A")+" cede", fmtDate(r.dateA));
+      fila(esc(r.physB||"B")+" cede", fmtDate(r.dateB));
+      break;
+    case "doble":
+      fila("Entre", esc(r.physA||"")+" y "+esc(r.physB||""));
+      (r.pares||[]).forEach((par,i)=> fila("Intercambio "+(i+1), fmtDate(par.a)+"  ⇄  "+fmtDate(par.b)));
+      break;
+    case "ceder":
+      fila("Cede", esc(r.physA||"")+" → "+esc(r.physB||""));
+      fila("Consulta", esc(partLabel(r.part||"")));
+      fila("Día", fmtDate(r.date));
+      break;
+    case "urg2":
+      fila("Cede la guardia", esc(r.physA||"")+" · "+fmtDate(r.dateU));
+      fila("La asume", esc(r.physB||""));
+      fila("A cambio de", fmtDate(r.f1)+" y "+fmtDate(r.f2));
+      if(r.mov1) fila("Y se mueve", fmtDate(r.f1)+" → "+fmtDate(r.mov1));
+      if(r.mov2) fila("Y se mueve", fmtDate(r.f2)+" → "+fmtDate(r.mov2));
+      break;
+    case "trafico":
+      fila("Facultativo", esc(r.phys||""));
+      fila("Consulta", esc(r.code||""));
+      fila("Día", fmtDate(r.date)+" · "+((r.slot||"m")==="m"?"mañana":"tarde"));
+      fila("Hora de comienzo", esc(r.hora||"—"));
+      break;
+    case "libre":
+      fila("Facultativo", esc(r.phys||""));
+      fila("Días solicitados", (r.dias||[]).map(fmtDate).join("<br>"));
+      break;
+    default:
+      fila("Facultativo", esc(r.phys||""));
+      fila("Día", fmtDate(r.date));
+  }
+  if(r.by)   fila("Solicita", esc(r.by));
+  if(r.note) fila("Motivo", esc(r.note));
+  return L.join("");
+}
+
 function etiquetaTipo(t){
   const m = {swap:"Intercambio", move:"Mover consulta", doble:"Cambio doble", ceder:"Cesión",
              urg2:"Urgencia × 2", trafico:"Tráfico", libre:"No disponibilidad"};
@@ -3284,6 +3338,22 @@ function renderModal(){
       '</div></div>';
     return;
   }
+  // Confirmación antes de enviar una solicitud
+  if(ui.confirmEnvio){
+    const c = ui.confirmEnvio;
+    root.innerHTML = '<div class="overlay" data-action="envio-cancelar"><div class="modal" data-stop="1">'+
+      '<b style="font-size:17px">¿Confirmas esta solicitud?</b>'+
+      '<p class="muted" style="margin-top:6px;font-size:13px">Revisa los datos antes de enviarla.</p>'+
+      '<div style="margin-top:12px;padding:10px 12px;background:var(--slate-50);border-radius:10px">'+
+        detalleSolicitud(c.req)+
+      '</div>'+
+      (c.aviso?'<div class="warnbox" style="margin-top:10px">ℹ '+c.aviso+'</div>':'')+
+      '<div class="row" style="margin-top:14px;gap:8px">'+
+        '<button class="btn primary" style="flex:1" data-action="envio-aceptar">Aceptar y enviar</button>'+
+        '<button class="btn" style="flex:1" data-action="envio-cancelar">Cancelar</button>'+
+      '</div></div></div>';
+    return;
+  }
   if(ui.rotBlockDay){
     const dkey = ui.rotBlockDay;
     const conNombre = ROT_CODES.filter(rc=>((state.rotantesLeyenda||{})[rc]||"").trim());
@@ -4568,6 +4638,19 @@ document.addEventListener("click", e=>{
     }
     case "req-copy": case "req-send-mail": case "req-send-wa": {
       const txt = buildRequestText();
+      if(!txt) break;
+      // Correo y WhatsApp también piden confirmación previa; copiar el texto no la necesita
+      if(act!=="req-copy" && !ui.envioConfirmado){
+        const reqC = parseRequest(txt);
+        if(reqC){
+          ui.confirmEnvio = {req: reqC, texto: txt,
+                             via: (act==="req-send-mail" ? "correo" : "whatsapp"),
+                             aviso: AVISO_VOLUNTARIO||""};
+          renderModal();
+          break;
+        }
+      }
+      ui.envioConfirmado = false;
       try{ localStorage.setItem(KEY_REQNAME, (document.getElementById("rq-name")||{value:""}).value.trim()); }catch(e){}
       if(act==="req-copy"){
         (navigator.clipboard && navigator.clipboard.writeText ? navigator.clipboard.writeText(txt) : Promise.reject())
@@ -4654,6 +4737,35 @@ document.addEventListener("click", e=>{
       if(!txt) break;
       const req = parseRequest(txt);
       if(!req){ window.alert("No se ha podido preparar la solicitud."); break; }
+      // Primero se muestra el resumen para que lo confirme
+      ui.confirmEnvio = {req: req, texto: txt, via: "buzon", aviso: AVISO_VOLUNTARIO||""};
+      renderModal();
+      break;
+    }
+    case "envio-cancelar": {
+      ui.confirmEnvio = null;
+      renderModal();
+      setSave("Envío cancelado");
+      break;
+    }
+    case "envio-aceptar": {
+      const c = ui.confirmEnvio;
+      ui.confirmEnvio = null;
+      renderModal();
+      if(!c) break;
+      if(c.via === "correo"){
+        const asunto = encodeURIComponent("Solicitud de cambio de cuadrante");
+        window.location.href = "mailto:"+encodeURIComponent(state.settings.reqEmail||"")+"?subject="+asunto+"&body="+encodeURIComponent(c.texto);
+        setSave("✓ Preparada para enviar");
+        break;
+      }
+      if(c.via === "whatsapp"){
+        const tel = (state.settings.reqPhone||"").replace(/[^0-9]/g,"");
+        window.open("https://wa.me/"+tel+"?text="+encodeURIComponent(c.texto), "_blank");
+        setSave("✓ Preparada para enviar");
+        break;
+      }
+      const req = c.req, txt = c.texto;
       setSave("Enviando…");
       buzonEnviar(req, txt).then(err=>{
         if(err){ window.alert("No se ha podido enviar:\n\n"+err+"\n\nPuedes copiar el texto y mandarlo por el canal habitual."); setSave("⚠ No enviada"); }

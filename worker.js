@@ -15,8 +15,133 @@
  *   GH_REPO        → nombre del repositorio (p. ej. cuadrante)
  *   GH_BRANCH      → rama, opcional (por defecto main)
  *
+ * Para el calendario suscrito (opcional):
+ *   CLAVE_CALENDARIO → clave que se añade a la dirección del calendario
+ *
  * Y un almacén KV enlazado con el nombre:  BUZON
  */
+
+
+// ================= CALENDARIO SUSCRITO =================
+// Devuelve los turnos de un facultativo en formato de calendario, leyendo
+// siempre el cuadrante publicado. Al estar suscrito, el calendario del móvil
+// se actualiza solo cuando cambia el cuadrante.
+const HORARIO_CAL = {
+  manana:  { ini: "080000", fin: "150000" },
+  tarde:   { ini: "150000", fin: "200000" },
+  urgencia:{ ini: "090000", fin: "210000" },
+  traficoHoras: 4
+};
+const ABS_CAL = { V: "Vacaciones", B: "Baja / IT", P: "Permiso", L: "Libranza" };
+const esTraficoCal = (c) => !!c && /^TF[MT][123]$/.test(c);
+
+function nombreActividadCal(code) {
+  if (!code) return "";
+  // Las guardias se muestran siempre como URG, sea festivo o no
+  if (code === "URG" || code === "URGLV" || code === "URGF") return "URG";
+  // El resto conserva la misma nomenclatura del cuadrante
+  return code;
+}
+const escCal = (t) => String(t || "").replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
+const pad2 = (n) => String(n).padStart(2, "0");
+
+function sumarHorasCal(dkey, hhmmss, horas) {
+  const h = parseInt(hhmmss.slice(0, 2), 10), m = parseInt(hhmmss.slice(2, 4), 10);
+  const pr = dkey.split("-").map(Number);
+  const d = new Date(Date.UTC(pr[0], pr[1] - 1, pr[2], h + horas, m));
+  return {
+    fecha: d.getUTCFullYear() + "-" + pad2(d.getUTCMonth() + 1) + "-" + pad2(d.getUTCDate()),
+    hora: pad2(d.getUTCHours()) + pad2(d.getUTCMinutes()) + "00"
+  };
+}
+
+function construirICS(datos, pid, meses) {
+  const p = (datos.physicians || []).find((x) => x.id === pid || x.name === pid);
+  if (!p) return null;
+  const asg = datos.assignments || {};
+  const horasTf = datos.traficoHoras || {};
+  const libres = datos.diasLibres || {};
+  const year = datos.year || new Date().getFullYear();
+  const sello = new Date().toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
+  const L = [];
+  let n = 0;
+
+  const evento = (dk, ini, fin, titulo, finFecha) => {
+    n++;
+    L.push("BEGIN:VEVENT",
+      "UID:cuadrante-" + p.id + "-" + dk + "-" + n + "@rhb",
+      "DTSTAMP:" + sello,
+      "DTSTART;TZID=Europe/Madrid:" + dk.replace(/-/g, "") + "T" + ini,
+      "DTEND;TZID=Europe/Madrid:" + (finFecha || dk).replace(/-/g, "") + "T" + fin,
+      "SUMMARY:" + escCal(titulo),
+      "DESCRIPTION:Cuadrante del Servicio de Rehabilitación",
+      "END:VEVENT");
+  };
+  const eventoDia = (dk, titulo) => {
+    n++;
+    const sig = sumarHorasCal(dk, "120000", 24).fecha;
+    L.push("BEGIN:VEVENT",
+      "UID:cuadrante-" + p.id + "-" + dk + "-" + n + "@rhb",
+      "DTSTAMP:" + sello,
+      "DTSTART;VALUE=DATE:" + dk.replace(/-/g, ""),
+      "DTEND;VALUE=DATE:" + sig.replace(/-/g, ""),
+      "SUMMARY:" + escCal(titulo),
+      "TRANSP:TRANSPARENT",
+      "END:VEVENT");
+  };
+
+  for (const mo of meses) {
+    const dim = new Date(year, mo + 1, 0).getDate();
+    for (let d = 1; d <= dim; d++) {
+      const dk = year + "-" + pad2(mo + 1) + "-" + pad2(d);
+      // Los días de no disponibilidad no se exportan al calendario personal
+      const a = asg[p.id + "|" + dk];
+      if (!a) continue;
+      if (a.f) {
+        if (a.f === "URG" || a.f === "URGLV" || a.f === "URGF") {
+          evento(dk, HORARIO_CAL.urgencia.ini, HORARIO_CAL.urgencia.fin, nombreActividadCal(a.f));
+        } else if (ABS_CAL[a.f]) {
+          eventoDia(dk, ABS_CAL[a.f]);
+        }
+        continue;
+      }
+      if (a.m) {
+        if (esTraficoCal(a.m)) {
+          const h = ((horasTf[p.id + "|" + dk + "|m"] || "08:00").replace(":", "")) + "00";
+          const f = sumarHorasCal(dk, h, HORARIO_CAL.traficoHoras);
+          evento(dk, h, f.hora, nombreActividadCal(a.m), f.fecha);
+        } else {
+          evento(dk, HORARIO_CAL.manana.ini, HORARIO_CAL.manana.fin, nombreActividadCal(a.m));
+        }
+      }
+      if (a.t) {
+        if (esTraficoCal(a.t)) {
+          const h = ((horasTf[p.id + "|" + dk + "|t"] || "15:00").replace(":", "")) + "00";
+          const f = sumarHorasCal(dk, h, HORARIO_CAL.traficoHoras);
+          evento(dk, h, f.hora, nombreActividadCal(a.t), f.fecha);
+        } else {
+          evento(dk, HORARIO_CAL.tarde.ini, HORARIO_CAL.tarde.fin, nombreActividadCal(a.t));
+        }
+      }
+    }
+  }
+
+  return [
+    "BEGIN:VCALENDAR", "VERSION:2.0",
+    "PRODID:-//Servicio de Rehabilitacion y Aparato Locomotor//Cuadrante//ES",
+    "CALSCALE:GREGORIAN", "METHOD:PUBLISH",
+    "X-WR-CALNAME:" + escCal("Cuadrante " + p.name),
+    "X-WR-TIMEZONE:Europe/Madrid",
+    "REFRESH-INTERVAL;VALUE=DURATION:PT2H",
+    "X-PUBLISHED-TTL:PT2H",
+    "BEGIN:VTIMEZONE", "TZID:Europe/Madrid",
+    "BEGIN:DAYLIGHT", "TZOFFSETFROM:+0100", "TZOFFSETTO:+0200", "TZNAME:CEST",
+    "DTSTART:19700329T020000", "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU", "END:DAYLIGHT",
+    "BEGIN:STANDARD", "TZOFFSETFROM:+0200", "TZOFFSETTO:+0100", "TZNAME:CET",
+    "DTSTART:19701025T030000", "RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU", "END:STANDARD",
+    "END:VTIMEZONE"
+  ].concat(L).concat(["END:VCALENDAR"]).join("\r\n");
+}
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -101,6 +226,38 @@ export default {
           if (typeof id === "string" && id.startsWith("sol:")) await env.BUZON.delete(id);
         }
         return json({ ok: true, borradas: ids.length });
+      }
+
+      // ---------- Calendario suscrito (se actualiza solo) ----------
+      if (request.method === "GET" && ruta === "/calendario.ics") {
+        const pid = url.searchParams.get("pid") || "";
+        const clave = url.searchParams.get("k") || "";
+        if (env.CLAVE_CALENDARIO && clave !== env.CLAVE_CALENDARIO) {
+          return new Response("Clave incorrecta", { status: 403, headers: CORS });
+        }
+        if (!pid) return new Response("Falta el facultativo", { status: 400, headers: CORS });
+
+        const owner = env.GH_OWNER, repo = env.GH_REPO, rama = env.GH_BRANCH || "main";
+        if (!owner || !repo) return new Response("Destino no configurado", { status: 500, headers: CORS });
+
+        const crudo = "https://raw.githubusercontent.com/" + owner + "/" + repo + "/" + rama + "/data.json?t=" + Date.now();
+        const r = await fetch(crudo, { cf: { cacheTtl: 60 } });
+        if (!r.ok) return new Response("No se ha podido leer el cuadrante", { status: 502, headers: CORS });
+        const datos = await r.json().catch(() => null);
+        if (!datos) return new Response("Cuadrante ilegible", { status: 502, headers: CORS });
+
+        // Todo el año, para que el calendario tenga siempre el mes en curso y los siguientes
+        const meses = [0,1,2,3,4,5,6,7,8,9,10,11];
+        const ics = construirICS(datos, pid, meses);
+        if (!ics) return new Response("Facultativo no encontrado", { status: 404, headers: CORS });
+
+        return new Response(ics, {
+          headers: {
+            "Content-Type": "text/calendar; charset=utf-8",
+            "Cache-Control": "public, max-age=1800",
+            "Access-Control-Allow-Origin": "*"
+          }
+        });
       }
 
       // ---------- Comprobar si una contraseña sirve para publicar ----------
