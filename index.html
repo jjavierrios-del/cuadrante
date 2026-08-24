@@ -659,7 +659,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v99";
+const APP_VERSION = "v100";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -818,11 +818,16 @@ function bloqueaT(p, dow){
 }
 // Día completo: hace falta tener libres AMBOS turnos (una guardia ocupa todo el día)
 function bloqueaDia(p, dow){ return bloqueaM(p, dow) || bloqueaT(p, dow); }
+// Guardias: por defecto, un día de reducción de jornada también excluye la guardia.
+// Con «Guardia en días de reducción: Sí», el facultativo sigue entrando en el reparto
+// de urgencias esos días aunque no pase consulta (p. ej. reducción los viernes,
+// pero hace los viernes de guardia que le correspondan).
+function bloqueaGuardia(p, dow){ return p.urgEnReduccion ? false : bloqueaDia(p, dow); }
 // ¿Está bloqueado el turno que corresponda?
 function bloqueaTurno(p, dow, slot){
   if(slot === "t") return bloqueaT(p, dow);
   if(slot === "m") return bloqueaM(p, dow);
-  return bloqueaDia(p, dow);      // "f" = día completo
+  return bloqueaGuardia(p, dow);  // "f" = día completo (guardia)
 }
 // Alterna el bloqueo de un turno concreto
 function toggleBloqueo(p, dow, slot){
@@ -1961,7 +1966,7 @@ function simularUrg2(pidA, fechaU, pidB, f1, f2, mov1, slot1, mov2, slot2){
   if((guardia.f==="URG"||guardia.f==="URGLV") && pb.noUrg) return {error:esc(pb.name)+" no hace urgencias entre semana."};
   if(guardia.f==="URGF" && pb.noUrgf) return {error:esc(pb.name)+" no hace urgencias de festivo."};
   const dowU = new Date(fechaU).getDay();
-  if(bloqueaDia(pb, dowU)) return {error:esc(pb.name)+" no trabaja ese día (la guardia ocupa mañana y tarde)."};
+  if(bloqueaGuardia(pb, dowU)) return {error:esc(pb.name)+" no trabaja ese día (la guardia ocupa mañana y tarde)."};
   // Una guardia por semana y sin días seguidos
   const esU = x=>!!x&&(x.f==="URG"||x.f==="URGLV"||x.f==="URGF");
   const base = new Date(fechaU);
@@ -2919,7 +2924,7 @@ function viewEquipo(){
     return h+'</div></div>';
   }
   let html = '<div class="card"><h2>Equipo médico</h2>'+
-    '<p class="muted" style="margin-top:2px">Nombre, % de contrato, días bloqueados (reducciones de jornada), qué urgencias hace y consulta habitual. «URG (L-V)» son las guardias de días laborables y «URGF» las de festivos y fines de semana: se activan por separado, así que puede haber quien solo haga unas u otras. La consulta habitual se prioriza al generar.</p>'+
+    '<p class="muted" style="margin-top:2px">Nombre, % de contrato, días bloqueados (reducciones de jornada), qué urgencias hace y consulta habitual. «URG (L-V)» son las guardias de días laborables y «URGF» las de festivos y fines de semana: se activan por separado. «URG en reducción» permite que quien tenga reducción de jornada un día siga haciendo las guardias que le correspondan ese día. La consulta habitual se prioriza al generar.</p>'+
     '<div class="row" style="margin-top:14px">'+
     '<input type="text" id="new-name" placeholder="Nombre del facultativo" style="flex:1;min-width:160px">'+
     '<input type="number" id="new-pct" value="100" min="10" max="100" step="5" class="pctin">'+
@@ -2954,6 +2959,8 @@ function viewEquipo(){
       '<button class="dowbtn'+(p.noOrt?"":" on")+'" style="width:auto;padding:0 8px'+(p.noOrt?"":";background:var(--teal-700);border-color:var(--teal-700)")+'" data-action="toggle-ort" data-pid="'+p.id+'">'+(p.noOrt?"No":"Sí")+'</button>'+
       '<span class="tiny" style="margin-left:10px;margin-right:2px">RXINT:</span>'+
       '<button class="dowbtn'+(p.noRxint?"":" on")+'" style="width:auto;padding:0 8px'+(p.noRxint?"":";background:var(--teal-700);border-color:var(--teal-700)")+'" data-action="toggle-rxint" data-pid="'+p.id+'">'+(p.noRxint?"No":"Sí")+'</button>'+
+      '<span class="tiny" style="margin-left:10px;margin-right:2px" title="Si tiene reducción de jornada un día, ¿sigue entrando en el reparto de guardias ese día?">URG en reducción:</span>'+
+      '<button class="dowbtn'+(p.urgEnReduccion?" on":"")+'" style="width:auto;padding:0 8px'+(p.urgEnReduccion?";background:var(--teal-700);border-color:var(--teal-700)":"")+'" data-action="toggle-urgred" data-pid="'+p.id+'">'+(p.urgEnReduccion?"Sí":"No")+'</button>'+
       '<span class="tiny" style="margin-left:10px;margin-right:2px">Residente:</span>'+
       '<button class="dowbtn'+(p.noRes?"":" on")+'" style="width:auto;padding:0 8px'+(p.noRes?"":";background:var(--teal-700);border-color:var(--teal-700)")+'" data-action="toggle-res" data-pid="'+p.id+'">'+(p.noRes?"No":"Sí")+'</button>'+
       '<span class="tiny" style="margin-left:10px;margin-right:2px">Habitual:</span>'+
@@ -3858,7 +3865,7 @@ function generateMonth(mode){
     urgfDias.forEach(d=>{
       const has = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&(a.f==="URG"||a.f==="URGF");});
       if(has) return;   // ya asignado (por el generador o a mano): se respeta
-      const libres = state.physicians.filter(p=> !p.noUrgf && puedeUrgencia(p,d.key) && !bloqueaDia(p,d.dow) && notAbsent(p,d.key) && freeM(p,d.key) && freeT(p,d.key));
+      const libres = state.physicians.filter(p=> !p.noUrgf && puedeUrgencia(p,d.key) && !bloqueaGuardia(p,d.dow) && notAbsent(p,d.key) && freeM(p,d.key) && freeT(p,d.key));
       if(!libres.length){ missing_push(unfilled,d.key,"URGF"); return; }
       // Preferencia ABSOLUTA por quien aún no tiene ninguna URGF este mes.
       // Solo si no queda nadie sin URGF se permite repetir (más festivos que adjuntos disponibles).
@@ -4236,7 +4243,7 @@ document.addEventListener("click", e=>{
   const el = e.target.closest("[data-action]");
   if(!el){ return; }
   const act = el.dataset.action;
-  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-required","official-on","official-off","rot-cell","rot-set","rot-gen","rot-clear","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","buzon-recibir","buzon-guardar","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-urgred","toggle-required","official-on","official-off","rot-cell","rot-set","rot-gen","rot-clear","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","buzon-recibir","buzon-guardar","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
       ui.reqDraft = {}; ui.reqNote = "";
@@ -4888,6 +4895,11 @@ document.addEventListener("click", e=>{
     case "toggle-rxint": {
       const p = state.physicians.find(x=>x.id===el.dataset.pid); if(!p) break;
       p.noRxint = !p.noRxint;
+      save(); render(); break;
+    }
+    case "toggle-urgred": {
+      const p = state.physicians.find(x=>x.id===el.dataset.pid); if(!p) break;
+      p.urgEnReduccion = !p.urgEnReduccion;
       save(); render(); break;
     }
     case "toggle-res": {
