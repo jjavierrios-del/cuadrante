@@ -659,7 +659,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v97";
+const APP_VERSION = "v98";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2818,21 +2818,32 @@ function viewCuadrante(){
     html += '<tr><td class="namecol"><b>'+esc(p.name)+'</b>'+(p.pct<100?' <span class="muted">('+p.pct+'%)</span>':'')+'</td>';
     days.forEach(d=>{
       const a = state.assignments[p.id+"|"+d.key];
-      const blocked = (p.blocked||[]).includes(d.dow);
+      // Bloqueo por turno: cada mitad de la celda se sombrea por separado
+      const blocM = bloqueaM(p, d.dow), blocT = bloqueaT(p, d.dow);
+      const blocked = blocM || blocT;                 // el día tiene algún turno bloqueado
       const noDisp = esDiaLibre(p.id, d.key);
       const base = d.holiday?"base-fest":(d.dow===0||d.dow===6?"base-wknd":"base-lab");
       const conflict = a && [a.m,a.t,(a.f==="URG"||a.f==="URGLV"||a.f==="URGF")?a.f:null].some(c=>c&&(cmap[d.key][c]||[]).length>1);
       let inner;
       if(!a){
-        inner = noDisp ? '<span class="full nodisp" title="Día de no disponibilidad">ND</span>'
-              : (blocked?'<span class="full blockcell">×</span>':'<span class="full '+base+'"></span>');
+        if(noDisp){
+          inner = '<span class="full nodisp" title="Día de no disponibilidad">ND</span>';
+        }else if(blocM && blocT){
+          inner = '<span class="full blockcell" title="No trabaja este día">×</span>';
+        }else if(blocM || blocT){
+          // Solo un turno bloqueado: se sombrea esa mitad
+          inner = '<span class="half '+(blocM?"blockcell":base)+'" title="'+(blocM?"No trabaja esta mañana":"")+'">'+(blocM?"×":"")+'</span>'+
+                  '<span class="half '+(blocT?"blockcell":base)+'" title="'+(blocT?"No trabaja esta tarde":"")+'">'+(blocT?"×":"")+'</span>';
+        }else{
+          inner = '<span class="full '+base+'"></span>';
+        }
       }else if(a.f){
         const cls = a.f==="URG"?"k-urg":(a.f==="URGLV"?"k-urglv":(a.f==="URGF"?"k-urgf":((absInfo(a.f)||{cls:"k-P"}).cls)));
         inner = '<span class="full '+cls+'">'+a.f+'</span>';
       }else{
-        const half = (c)=>c?('<span class="half '+byCode[c].cls+'">'+byCode[c].short+'</span>')
-                          :('<span class="half '+(blocked?"blockcell":base)+'"></span>');
-        inner = half(a.m)+half(a.t);
+        const half = (c,bloq)=>c?('<span class="half '+byCode[c].cls+'">'+byCode[c].short+'</span>')
+                                :('<span class="half '+(bloq?"blockcell":base)+'"></span>');
+        inner = half(a.m, blocM)+half(a.t, blocT);
       }
       html += '<td class="'+(conflict?"conflict":"")+'"><button class="cell" data-action="cell" data-pid="'+p.id+'" data-date="'+d.key+'" data-blocked="'+(blocked?1:0)+'">'+inner+'</button></td>';
     });
