@@ -659,7 +659,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v100";
+const APP_VERSION = "v101";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1348,6 +1348,7 @@ function solicitudFormHTML(){
   const hasContact = !!(state.settings.reqEmail||state.settings.reqPhone);
   rq.type = rq.type || "mover";
   if(yo) rq.pid = yo.id;                 // el dispositivo identificado solo pide para sí
+  limpiarAvisos();
   let core;
   if(rq.type==="libre"){
     const d5 = ui.reqDraft || (ui.reqDraft={});
@@ -1400,7 +1401,8 @@ function solicitudFormHTML(){
         ui.reqBloqueo = motivo;
         return motivo
           ? '<div class="warnbox" style="margin-top:10px">⚠ <b>No se puede solicitar:</b><br>'+esc(motivo)+'</div>'
-          : '<p style="margin-top:10px;font-size:13px;color:var(--emerald-700)"><b>✓ Se puede solicitar.</b></p>';
+          : ('<p style="margin-top:10px;font-size:13px;color:var(--emerald-700)"><b>✓ Se puede solicitar.</b></p>'+
+             (AVISO_VOLUNTARIO?'<div class="warnbox" style="margin-top:8px">ℹ '+AVISO_VOLUNTARIO+'</div>':''));
       })();
   }else if(rq.type==="ceder"){
     if(!rq.pidB || !phys.find(x=>x.id===rq.pidB)){
@@ -1429,7 +1431,8 @@ function solicitudFormHTML(){
         ui.reqBloqueo = motivo;
         return motivo
           ? '<div class="warnbox" style="margin-top:10px">⚠ <b>No se puede ceder:</b><br>'+esc(motivo)+'</div>'
-          : '<p style="margin-top:10px;font-size:13px;color:var(--emerald-700)"><b>✓ La cesión es posible.</b></p>';
+          : ('<p style="margin-top:10px;font-size:13px;color:var(--emerald-700)"><b>✓ La cesión es posible.</b></p>'+
+             (AVISO_VOLUNTARIO?'<div class="warnbox" style="margin-top:8px">ℹ '+AVISO_VOLUNTARIO+'</div>':''));
       })();
   }else if(rq.type==="urg2"){
     if(!rq.pidB || !phys.find(x=>x.id===rq.pidB)){
@@ -1475,7 +1478,8 @@ function solicitudFormHTML(){
         ui.reqBloqueo = motivo;
         return motivo
           ? '<div class="warnbox" style="margin-top:10px">⚠ <b>No se puede hacer:</b><br>'+esc(motivo)+'</div>'
-          : '<p style="margin-top:10px;font-size:13px;color:var(--emerald-700)"><b>✓ El cambio es posible.</b></p>';
+          : ('<p style="margin-top:10px;font-size:13px;color:var(--emerald-700)"><b>✓ El cambio es posible.</b></p>'+
+             (AVISO_VOLUNTARIO?'<div class="warnbox" style="margin-top:8px">ℹ '+AVISO_VOLUNTARIO+'</div>':''));
       })();
   }else if(rq.type==="doble"){
     if(!rq.pidB || !phys.find(x=>x.id===rq.pidB)){
@@ -1544,7 +1548,8 @@ function solicitudFormHTML(){
         ui.reqBloqueo = motivo;
         return motivo
           ? '<div class="warnbox" style="margin-top:10px">⚠ <b>Este intercambio no se puede hacer:</b><br>'+esc(motivo)+'</div>'
-          : '<p style="margin-top:10px;font-size:13px;color:var(--emerald-700)"><b>✓ El intercambio es posible.</b></p>';
+          : ('<p style="margin-top:10px;font-size:13px;color:var(--emerald-700)"><b>✓ El intercambio es posible.</b></p>'+
+             (AVISO_VOLUNTARIO?'<div class="warnbox" style="margin-top:8px">ℹ '+AVISO_VOLUNTARIO+'</div>':''));
       })();
   }else{
     // MOVER una consulta de un día a otro (mismo facultativo)
@@ -1582,7 +1587,8 @@ function solicitudFormHTML(){
         ui.reqBloqueo = motivo;
         return motivo
           ? '<div class="warnbox" style="margin-top:10px">⚠ <b>No se puede solicitar este cambio:</b><br>'+esc(motivo)+'</div>'
-          : '<p style="margin-top:10px;font-size:13px;color:var(--emerald-700)"><b>✓ El cambio es posible.</b></p>';
+          : ('<p style="margin-top:10px;font-size:13px;color:var(--emerald-700)"><b>✓ El cambio es posible.</b></p>'+
+             (AVISO_VOLUNTARIO?'<div class="warnbox" style="margin-top:8px">ℹ '+AVISO_VOLUNTARIO+'</div>':''));
       })();
   }
   return '<p class="tiny" style="margin-top:10px">Tipo de solicitud</p>'+
@@ -1725,7 +1731,8 @@ function validarMovimiento(pid, dateFrom, part, dateTo, slot){
   const hmap = holidayMap();
   if(dow===0 || dow===6) return "El día de destino es fin de semana.";
   if(hmap[dateTo]) return "El día de destino es festivo ("+hmap[dateTo]+").";
-  if(bloqueaTurno(p, dow, slot)) return "No trabajas la "+(slot==="t"?"tarde":"mañana")+" de los "+["domingos","lunes","martes","miércoles","jueves","viernes","sábados"][dow]+".";
+  // Trabajar en un día de reducción es voluntario: se avisa, pero no se impide
+  if(bloqueaTurno(p, dow, slot)) avisarReduccion(p, dow, slot);
   // Las tardes de viernes se permiten en los cambios pactados (la regla solo rige al generar)
 
   const dest = state.assignments[pid+"|"+dateTo] || {};
@@ -1803,8 +1810,7 @@ function validarIntercambio(pidA, dateA, pidB, dateB){
         avisos.push("El "+fmtDate(fecha)+" ya están ocupadas las "+(state.settings.maxMorning||8)+" consultas físicas de mañana.");
     }
     const slotCelda = celda.f ? "f" : (celda.m ? "m" : "t");
-    if(bloqueaTurno(quien, dow, slotCelda))
-      avisos.push(esc(quien.name)+" no trabaja "+(slotCelda==="f"?"ese día":(slotCelda==="t"?"la tarde":"la mañana"))+" de los "+["domingos","lunes","martes","miércoles","jueves","viernes","sábados"][dow]+" ("+fmtDate(fecha)+").");
+    if(bloqueaTurno(quien, dow, slotCelda)) avisarReduccion(quien, dow, slotCelda);
     // Tardes de viernes y tardes sueltas: permitidas en cambios pactados
     // Consulta duplicada ese día
     ["m","t"].forEach(sl=>{
@@ -1870,13 +1876,24 @@ function codigoLibreEn(code, fecha, slot, ignorar, getter){
   return null;                                 // todas ocupadas
 }
 
+// Avisos que NO impiden la solicitud: informan de algo que conviene saber
+let AVISO_VOLUNTARIO = "";
+function limpiarAvisos(){ AVISO_VOLUNTARIO = ""; }
+function avisarReduccion(p, dow, slot){
+  const dias = ["domingos","lunes","martes","miércoles","jueves","viernes","sábados"];
+  AVISO_VOLUNTARIO = esc(p.name)+" tiene reducción de jornada "+
+    (slot==="f" ? "ese día" : ("la "+(slot==="t"?"tarde":"mañana")))+" de los "+dias[dow]+
+    ". El cambio se hace de forma voluntaria.";
+}
+
 function validarTrafico(pid, fecha, slot, code){
   const p = state.physicians.find(x=>x.id===pid);
   if(!p) return "Falta indicar el facultativo.";
   const dt = new Date(fecha), dow = dt.getDay();
   const hmap = holidayMap();
   if(dow===0||dow===6) return "Las consultas de Tráfico se hacen en días laborables.";
-  if(bloqueaTurno(p, dow, slot)) return "No trabajas la "+(slot==="t"?"tarde":"mañana")+" de los "+["domingos","lunes","martes","miércoles","jueves","viernes","sábados"][dow]+".";
+  // Trabajar en un día de reducción es voluntario: se avisa, pero no se impide
+  if(bloqueaTurno(p, dow, slot)) avisarReduccion(p, dow, slot);
   if(hmap[fecha]) return "Ese día es festivo ("+hmap[fecha]+").";
   const a = state.assignments[pid+"|"+fecha] || {};
   if(a.f) return "Ese día lo tienes ocupado con "+cellToText(a)+".";
@@ -1910,7 +1927,7 @@ function validarCesion(pidA, fecha, part, pidB){
     if(dest[slot]) return esc(pb.name)+" ya tiene "+dest[slot]+" en ese turno.";
   }
   const dow = new Date(fecha).getDay();
-  if(bloqueaTurno(pb, dow, slot)) return esc(pb.name)+" no trabaja "+(slot==="f"?"ese día":(slot==="t"?"la tarde":"la mañana"))+" de los "+["domingos","lunes","martes","miércoles","jueves","viernes","sábados"][dow]+".";
+  if(bloqueaTurno(pb, dow, slot)) avisarReduccion(pb, dow, slot);
   // Tarde sin mañana: permitida en cambios pactados
   // ¿puede hacerla?
   if((code==="RHB1"||code==="RHB2") && pb.noRhb) return esc(pb.name)+" no hace RHB.";
@@ -1984,7 +2001,7 @@ function simularUrg2(pidA, fechaU, pidB, f1, f2, mov1, slot1, mov2, slot2){
     const dt = new Date(dia), dow = dt.getDay();
     if(dow===0||dow===6) return "El "+fmtDate(dia)+" cae en fin de semana.";
     if(hmap[dia]) return "El "+fmtDate(dia)+" es festivo.";
-    if(bloqueaTurno(pa, dow, turno)) return esc(pa.name)+" no trabaja la "+(turno==="t"?"tarde":"mañana")+" de los "+["domingos","lunes","martes","miércoles","jueves","viernes","sábados"][dow]+".";
+    if(bloqueaTurno(pa, dow, turno)) avisarReduccion(pa, dow, turno);
     // Tardes de viernes permitidas en cambios pactados
     const act = get(pa.id, dia) || {};
     if(act.f) return esc(pa.name)+" ya tiene "+cellToText(act)+" el "+fmtDate(dia)+".";
@@ -2742,7 +2759,17 @@ function viewSolicitudes(){
         (r.note?'<p style="font-size:14px;margin-top:4px"><b>Motivo:</b> '+esc(r.note)+'</p>':'');
       }
     }
-    h += '<div class="card" style="margin-top:10px;background:var(--slate-50)">'+ficha+'</div>'+
+    // Aviso informativo: si el cambio implica trabajar en un día de reducción
+    limpiarAvisos();
+    try{
+      if(r.type==="move") validarMovimiento(r.pid, r.dateFrom, r.part, r.dateTo, r.slot);
+      else if(r.type==="ceder") validarCesion(r.pidA, r.date, r.part, r.pidB);
+      else if(r.type==="trafico") validarTrafico(r.pid, r.date, r.slot, r.code);
+      else if(r.type==="swap") validarIntercambio(r.pidA, r.dateA, r.pidB, r.dateB);
+    }catch(e){}
+    const avisoVol = AVISO_VOLUNTARIO
+      ? '<div class="warnbox" style="margin-top:8px">ℹ '+AVISO_VOLUNTARIO+'</div>' : '';
+    h += '<div class="card" style="margin-top:10px;background:var(--slate-50)">'+ficha+avisoVol+'</div>'+
       (rv.err?'<p style="color:var(--rose-700);font-size:13px;margin-top:8px">'+esc(rv.err)+'</p>':'')+
       '<div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">'+
       '<button class="btn primary" data-action="reviewt-apply">Aprobar y aplicar</button>'+
