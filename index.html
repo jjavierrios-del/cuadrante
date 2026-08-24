@@ -659,7 +659,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v98";
+const APP_VERSION = "v99";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -863,6 +863,21 @@ function loadStatsView(){
     }
   }catch(e){}
 }
+// ---------- Quién usa este dispositivo ----------
+// Se elige una vez y se guarda solo aquí. Sirve para que las solicitudes salgan
+// siempre a nombre de la persona correcta y no haya equivocaciones.
+const KEY_YO = "cuadrante-yo-v1";
+function miPid(){ try{ return localStorage.getItem(KEY_YO)||""; }catch(e){ return ""; } }
+function setMiPid(v){ try{ if(v) localStorage.setItem(KEY_YO, v); else localStorage.removeItem(KEY_YO); }catch(e){} }
+function miFacultativo(){
+  const id = miPid();
+  return id ? (state.physicians.find(x=>x.id===id) || null) : null;
+}
+// ¿Hay que pedir la identificación? Solo en modo consulta y con equipo cargado
+function faltaIdentificarse(){
+  return MODE==="viewer" && state.physicians.length > 0 && !miFacultativo();
+}
+
 const KEY_REQNAME = "cuadrante-reqname-v1";
 const KEY_REQLOG = "cuadrante-reqlog-v1";
 const KEY_APPLIEDLOG = "cuadrante-appliedlog-v1";
@@ -1314,10 +1329,20 @@ function solicitudFormHTML(){
   let name = ui.reqName;
   if(name===undefined){ try{ name = localStorage.getItem(KEY_REQNAME)||""; }catch(e){ name=""; } ui.reqName=name; }
   const selOpts = (list, val)=>'<option value="">—</option>'+list.map(c=>'<option value="'+c.code+'"'+(val===c.code?" selected":"")+'>'+c.code+'</option>').join("");
-  const physSel = (field, val)=>'<select data-field="'+field+'" style="flex:1;padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
+  const yo = miFacultativo();
+  const physSel = (field, val)=>{
+    // Si este dispositivo ya sabe quién lo usa, su propio nombre no se puede cambiar:
+    // así ninguna solicitud sale a nombre de otro por error.
+    if(yo && field==="rq-phys"){
+      return '<div style="flex:1;padding:9px 10px;border:1px solid var(--slate-300);border-radius:8px;background:var(--slate-50);font-size:14px">'+
+             '<b>'+esc(yo.name)+'</b> <span class="tiny muted">· tú</span></div>';
+    }
+    return '<select data-field="'+field+'" style="flex:1;padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
       phys.map(x=>'<option value="'+x.id+'"'+(val===x.id?" selected":"")+'>'+esc(x.name)+'</option>').join("")+'</select>';
+  };
   const hasContact = !!(state.settings.reqEmail||state.settings.reqPhone);
   rq.type = rq.type || "mover";
+  if(yo) rq.pid = yo.id;                 // el dispositivo identificado solo pide para sí
   let core;
   if(rq.type==="libre"){
     const d5 = ui.reqDraft || (ui.reqDraft={});
@@ -1566,7 +1591,7 @@ function solicitudFormHTML(){
       '<option value="libre"'+(rq.type==="libre"?" selected":"")+'>Pedir días de no disponibilidad</option>'+
     '</select>'+
     core+
-    '<input type="text" id="rq-name" placeholder="Tu nombre" value="'+esc(name)+'" data-field="rq-name" style="width:100%;padding:8px;margin-top:10px;border:1px solid var(--slate-300);border-radius:8px">'+
+    '<input type="text" id="rq-name" placeholder="Tu nombre" value="'+esc(name || (miFacultativo()?miFacultativo().name:""))+'" data-field="rq-name" style="width:100%;padding:8px;margin-top:10px;border:1px solid var(--slate-300);border-radius:8px">'+
     '<textarea id="rq-note" placeholder="Motivo (opcional)" style="width:100%;height:64px;padding:8px;margin-top:8px;border:1px solid var(--slate-300);border-radius:8px;font-family:inherit;font-size:14px">'+esc(ui.reqNote||"")+'</textarea>'+
     '<div class="row" style="margin-top:12px">'+
       (buzonConfigurado()?'<button class="btn primary" style="flex:1" data-action="req-enviar-buzon">Enviar</button>':'')+
@@ -2538,7 +2563,12 @@ function viewSolicitudes(){
       ui.reqDraft = ui.reqDraft || {};
     }
     let log=[]; try{ log = JSON.parse(localStorage.getItem(KEY_REQLOG)||"[]"); }catch(e){}
-    let h = '<div class="card"><h2>Solicitar un cambio</h2>'+
+    const yoV = miFacultativo();
+    let h = '<div class="card">'+
+      (yoV ? '<div class="row between" style="align-items:center;padding:7px 10px;background:var(--slate-50);border-radius:8px;margin-bottom:10px;gap:8px;flex-wrap:wrap">'+
+             '<span style="font-size:13px">Solicitando como <b>'+esc(yoV.name)+'</b></span>'+
+             '<button class="btn" data-action="yo-cambiar" style="padding:4px 10px;font-size:13px">No soy yo</button></div>' : '')+
+      '<h2>Solicitar un cambio</h2>'+
       '<p class="muted" style="margin-top:2px">Elige facultativo, fecha y tu propuesta; la solicitud le llegará al coordinador para su autorización.</p>'+
       solicitudFormHTML()+'</div>';
     if(log.length){
@@ -3206,6 +3236,20 @@ function viewAjustes(){
 // ------------------ Modales ------------------
 function renderModal(){
   const root = document.getElementById("modal-root");
+  // Identificación inicial del dispositivo (solo modo consulta)
+  if(faltaIdentificarse()){
+    root.innerHTML = '<div class="overlay"><div class="modal" data-stop="1">'+
+      '<b style="font-size:17px">¿Quién eres?</b>'+
+      '<p class="muted" style="margin-top:6px;font-size:14px">Elige tu nombre para que las solicitudes de cambio salgan siempre a tu nombre. '+
+      'Solo hay que hacerlo una vez en este dispositivo.</p>'+
+      '<div style="margin-top:12px;max-height:50vh;overflow:auto">'+
+        state.physicians.map(p=>'<button class="btn" style="width:100%;margin-top:6px;justify-content:flex-start;padding:11px 12px;font-size:15px" '+
+          'data-action="yo-elegir" data-pid="'+p.id+'">'+esc(p.name)+'</button>').join("")+
+      '</div>'+
+      '<p class="muted" style="font-size:12px;margin-top:12px">Podrás cambiarlo cuando quieras desde la pestaña Solicitudes.</p>'+
+      '</div></div>';
+    return;
+  }
   if(ui.rotBlockDay){
     const dkey = ui.rotBlockDay;
     const conNombre = ROT_CODES.filter(rc=>((state.rotantesLeyenda||{})[rc]||"").trim());
@@ -3361,7 +3405,7 @@ function renderModal(){
         '<span style="flex:1"><span class="tiny">Tarde</span><select data-field="rq-t" '+(d.f?"disabled":"")+' style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+selOpts(AFTERNOON,d.t)+'</select></span>'+
       '</div>'+
       '<p class="muted" style="font-size:12px;margin-top:4px">Propuesto: <b>'+cellToText(draftToCell(d))+'</b> (todo vacío = solicitar que se libere el día)</p>'+
-      '<input type="text" id="rq-name" placeholder="Tu nombre" value="'+esc(name)+'" data-field="rq-name" style="width:100%;padding:8px;margin-top:10px;border:1px solid var(--slate-300);border-radius:8px">'+
+      '<input type="text" id="rq-name" placeholder="Tu nombre" value="'+esc(name || (miFacultativo()?miFacultativo().name:""))+'" data-field="rq-name" style="width:100%;padding:8px;margin-top:10px;border:1px solid var(--slate-300);border-radius:8px">'+
       '<textarea id="rq-note" placeholder="Motivo (opcional)" style="width:100%;height:64px;padding:8px;margin-top:8px;border:1px solid var(--slate-300);border-radius:8px;font-family:inherit;font-size:14px"></textarea>'+
       '<div class="row" style="margin-top:12px">'+
         (buzonConfigurado()?'<button class="btn primary" style="flex:1" data-action="req-enviar-buzon">Enviar</button>':'')+
@@ -4423,6 +4467,24 @@ document.addEventListener("click", e=>{
       }
       ui.editCell = null;
       render(); renderModal();
+      break;
+    }
+    case "yo-elegir": {
+      setMiPid(el.dataset.pid);
+      const yo2 = miFacultativo();
+      if(yo2){
+        // El nombre para firmar las solicitudes se rellena solo
+        try{ localStorage.setItem(KEY_REQNAME, yo2.name); }catch(e){}
+        if(ui.reqModal) ui.reqModal.pid = yo2.id;
+      }
+      renderModal(); render();
+      break;
+    }
+    case "yo-cambiar": {
+      if(window.confirm("Vas a cambiar el facultativo de este dispositivo.\n\n¿Continuar?")){
+        setMiPid("");
+        renderModal(); render();
+      }
       break;
     }
     case "req-sub-revisar": ui.reqSub = "revisar"; render(); break;
