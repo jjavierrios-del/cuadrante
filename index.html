@@ -512,6 +512,7 @@ function anotarCambioAdmvo(pid, fechaOrig, consultaOrig, fechaNueva, consultaNue
   state.cambiosAdm = state.cambiosAdm || {};
   state.cambiosAdm[mk] = state.cambiosAdm[mk] || [];
   state.cambiosAdm[mk].push({
+    id: "c"+Date.now().toString(36)+Math.random().toString(36).slice(2,6),
     at: new Date().toISOString(),
     phys: p ? p.name : "",
     origenDia: fechaOrig || "",
@@ -519,6 +520,16 @@ function anotarCambioAdmvo(pid, fechaOrig, consultaOrig, fechaNueva, consultaNue
     destinoDia: fechaNueva || "",
     destinoConsulta: consultaNueva || ""
   });
+}
+
+// El administrativo marca que ya ha reajustado las citas de ese cambio
+function marcarEjecutado(mk, id, quien){
+  const lista = (state.cambiosAdm||{})[mk] || [];
+  const c = lista.find(x=>x.id===id);
+  if(!c) return;
+  if(c.ejecutado){ delete c.ejecutado; delete c.ejecutadoAt; }
+  else { c.ejecutado = true; c.ejecutadoAt = new Date().toISOString(); }
+  save();
 }
 
 function historialOrdenado(){
@@ -593,6 +604,75 @@ function loadState(){
   }catch(e){ setSave("⚠ Sin guardado en esta vista"); }
 }
 let saveT=null;
+// ---------- Deshacer el último cambio ----------
+// Se guarda una foto del estado antes de cada acción importante.
+// Vive solo en memoria: es una red de seguridad para la sesión, no un historial.
+let PILA_DESHACER = [];
+const MAX_DESHACER = 20;
+// ---------- Novedades desde la última visita ----------
+const KEY_VISTO = "cuadrante-visto-v1";
+function ultimaVisita(){ try{ return localStorage.getItem(KEY_VISTO)||""; }catch(e){ return ""; } }
+function marcarVisitado(){ try{ localStorage.setItem(KEY_VISTO, new Date().toISOString()); }catch(e){} }
+// Cambios que afectan a un facultativo desde su última visita, en meses ya oficiales
+function novedadesDe(pid){
+  if(!pid) return [];
+  const desde = ultimaVisita();
+  const out = [];
+  Object.entries(state.cambiosAdm||{}).forEach(([mk, lista])=>{
+    // Solo meses cerrados como oficiales: antes el cuadrante aún se ajusta
+    if(!isOfficialMonthKey(mk)) return;
+    const p = state.physicians.find(x=>x.id===pid);
+    if(!p) return;
+    (lista||[]).forEach(c=>{
+      if(c.phys !== p.name) return;
+      if(desde && c.at <= desde) return;      // ya lo había visto
+      out.push(c);
+    });
+  });
+  return out.sort((a,b)=> (b.at||"").localeCompare(a.at||""));
+}
+
+function marcarDeshacer(descripcion){
+  try{
+    PILA_DESHACER.push({
+      desc: descripcion || "último cambio",
+      at: new Date().toISOString(),
+      datos: JSON.stringify({
+        assignments: state.assignments,
+        diasLibres: state.diasLibres,
+        rotantes: state.rotantes,
+        traficoHoras: state.traficoHoras,
+        official: state.official,
+        baseline: state.baseline,
+        cambiosAdm: state.cambiosAdm,
+        cerradoAdm: state.cerradoAdm,
+        physicians: state.physicians
+      })
+    });
+    if(PILA_DESHACER.length > MAX_DESHACER) PILA_DESHACER.shift();
+  }catch(e){}
+}
+function hayDeshacer(){ return PILA_DESHACER.length > 0; }
+function ultimoDeshacer(){ return PILA_DESHACER.length ? PILA_DESHACER[PILA_DESHACER.length-1] : null; }
+function deshacer(){
+  const paso = PILA_DESHACER.pop();
+  if(!paso) return false;
+  try{
+    const d = JSON.parse(paso.datos);
+    state.assignments = d.assignments || {};
+    state.diasLibres  = d.diasLibres || {};
+    state.rotantes    = d.rotantes || {};
+    state.traficoHoras= d.traficoHoras || {};
+    state.official    = d.official || {};
+    state.baseline    = d.baseline || {};
+    state.cambiosAdm  = d.cambiosAdm || {};
+    state.cerradoAdm  = d.cerradoAdm || {};
+    state.physicians  = d.physicians || state.physicians;
+    save();
+    return true;
+  }catch(e){ return false; }
+}
+
 function save(){
   if(MODE==="viewer"){ setSave("Solo consulta"); return; }
   state.updatedAt = new Date().toISOString();
@@ -663,6 +743,7 @@ function reqAfternoon(){ return AFTERNOON.filter(c=>state.settings.required[c.co
 
 // ------------------ Mutaciones ------------------
 function applyCode(pid, dateKey, code){
+  marcarDeshacer("edición del cuadrante");
   if(code==="URG"){
     const pr = dateKey.split("-").map(Number);
     const dw = new Date(pr[0],pr[1]-1,pr[2]).getDay();
@@ -705,7 +786,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v104";
+const APP_VERSION = "v105";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1138,6 +1219,7 @@ function parseRequest(txt){
   return r;
 }
 function applyRequest(r){
+  marcarDeshacer("solicitud aplicada");
   if(r.type==="libre"){
     const p = state.physicians.find(x=>x.id===r.pid) || state.physicians.find(x=>x.name===r.phys);
     if(!p) return "No se encuentra al facultativo.";
@@ -2678,7 +2760,11 @@ function viewCambiosAdmvo(mo){
   const lista = ((state.cambiosAdm||{})[mk]||[]).slice().reverse();
   const desde = fechaCierreAdmvo(mo);
   let h = '<div class="printhead">Cambios tras el cierre · '+MONTHS[mo]+' '+state.year+'</div>';
-  h += '<div class="card"><h2>Cambios realizados tras el cierre</h2>'+
+  const pendientesAdm = lista.filter(c=>!c.ejecutado).length;
+  h += '<div class="card"><div class="row between" style="align-items:center;gap:8px;flex-wrap:wrap">'+
+    '<h2>Cambios realizados tras el cierre</h2>'+
+    (lista.length?'<span class="tiny" style="background:'+(pendientesAdm?'#b45309':'#065f46')+';color:#fff;padding:3px 9px;border-radius:999px">'+
+      (pendientesAdm? pendientesAdm+' por reajustar' : 'todo reajustado')+'</span>':'')+'</div>'+
     '<p class="muted" style="margin-top:2px;font-size:13px">Desde el '+
       (desde ? new Date(desde).toLocaleString("es-ES") : "—")+'. Son los cambios que afectan a citaciones ya dadas.</p>';
   if(!lista.length){
@@ -2687,15 +2773,20 @@ function viewCambiosAdmvo(mo){
   }
   h += '<div style="overflow-x:auto;margin-top:10px"><table class="stats" style="min-width:640px">'+
     '<thead><tr><th style="text-align:left">Facultativo</th><th>Consulta original</th><th>Día original</th>'+
-    '<th>Consulta nueva</th><th>Día nuevo</th><th>Anotado</th></tr></thead><tbody>';
+    '<th>Consulta nueva</th><th>Día nuevo</th><th>Anotado</th><th>Citas reajustadas</th></tr></thead><tbody>';
   lista.forEach(c=>{
-    h += '<tr>'+
+    h += '<tr style="'+(c.ejecutado?'opacity:.55':'')+'">'+
       '<td style="text-align:left"><b>'+esc(c.phys)+'</b></td>'+
       '<td>'+esc(c.origenConsulta||"—")+'</td>'+
       '<td>'+(c.origenDia?fmtDate(c.origenDia):"—")+'</td>'+
       '<td>'+esc(c.destinoConsulta||"—")+'</td>'+
       '<td>'+(c.destinoDia?fmtDate(c.destinoDia):"—")+'</td>'+
       '<td class="tiny muted">'+new Date(c.at).toLocaleString("es-ES",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})+'</td>'+
+      '<td>'+(c.ejecutado
+        ? '<button class="btn" data-action="admvo-ejecutado" data-mk="'+mk+'" data-id="'+c.id+'" '+
+          'style="padding:3px 9px;font-size:12px;background:#065f46;color:#fff;border-color:#065f46" '+
+          'title="Marcado el '+(c.ejecutadoAt?new Date(c.ejecutadoAt).toLocaleString("es-ES"):"")+'">✓ Hecho</button>'
+        : '<button class="btn" data-action="admvo-ejecutado" data-mk="'+mk+'" data-id="'+c.id+'" style="padding:3px 9px;font-size:12px">Marcar</button>')+'</td>'+
     '</tr>';
   });
   h += '</tbody></table></div></div>';
@@ -3099,11 +3190,31 @@ function viewCuadrante(){
     (isOfficial(ui.month)
       ? '<button class="btn" data-action="official-off" title="'+(officialStamp(ui.month)?'Marcado como oficial el '+officialStamp(ui.month)+'. ':'')+'Pulsa para reabrirlo y que los cambios vuelvan a contar" style="background:#065f46;color:#fff;border-color:#065f46">🔒 Cuadrante oficial</button>'
       : '<button class="btn" data-action="official-on" title="Cerrar el mes: a partir de ahora los cambios no contarán en las estadísticas">Marcar como oficial</button>'))+
+    (hayDeshacer()
+      ? '<button class="btn" data-action="deshacer" title="Deshacer: '+esc((ultimoDeshacer()||{}).desc||"")+'">↶ Deshacer</button>'
+      : '')+
     '<button class="btn" data-action="editor-refresh" title="Comprobar si hay una versión publicada más reciente" style="padding:6px 9px">⟳</button>'+
     '<button class="btn" data-action="print">Imprimir</button>'+
     '<button class="btn" data-action="export-csv">Exportar '+state.year+' (CSV)</button></div></div>';
 
   if(MODE==="viewer"){
+    // Novedades propias desde la última visita (solo en meses ya oficiales)
+    const yoV = miFacultativo();
+    const nov = yoV ? novedadesDe(yoV.id) : [];
+    if(nov.length){
+      html += '<div class="card no-print" style="margin-bottom:10px;border-color:#b45309;background:#fffbeb">'+
+        '<div class="row between" style="align-items:center;gap:8px;flex-wrap:wrap">'+
+          '<b style="font-size:15px;color:#b45309">Han cambiado '+nov.length+' turno'+(nov.length>1?'s':'')+' tuyo'+(nov.length>1?'s':'')+'</b>'+
+          '<button class="btn" data-action="novedades-visto" style="padding:4px 10px;font-size:13px">Enterado</button>'+
+        '</div>'+
+        '<div style="margin-top:8px">'+
+          nov.slice(0,8).map(c=>'<div style="font-size:14px;padding:4px 0;border-bottom:1px solid #fde68a">'+
+            esc(c.origenConsulta||"—")+' del <b>'+fmtDate(c.origenDia)+'</b>'+
+            ' → '+esc(c.destinoConsulta||"—")+' del <b>'+fmtDate(c.destinoDia)+'</b></div>').join("")+
+        '</div>'+
+        (nov.length>8?'<p class="tiny muted" style="margin-top:6px">y '+(nov.length-8)+' más</p>':'')+
+        '</div>';
+    }
     html += '<p class="muted no-print" style="font-size:12px;margin:0 0 8px">La <b style="color:#b45309">L</b> junto al número del día indica que ese día quedan consultas de mañana libres.</p>';
   }
   if(MODE!=="viewer") html += '<div class="palette"><div class="row"><span class="tiny lbl">Mañana</span>'+
@@ -3891,6 +4002,7 @@ function carryBalance(p, beforeMonth, fromMonth){
 }
 
 function generateMonth(mode){
+  marcarDeshacer(mode==="regen" ? "generación del mes" : "relleno del mes");
   const strictMode = state.settings.strictQuota===true;
   const allDays = monthDays();
   const hset = new Set(state.holidays.map(h=>h.date));
@@ -4543,7 +4655,8 @@ document.addEventListener("click", e=>{
   const el = e.target.closest("[data-action]");
   if(!el){ return; }
   const act = el.dataset.action;
-  if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-urgred","toggle-required","official-on","official-off","admvo-cerrar","admvo-abrir","rot-cell","rot-set","rot-gen","rot-clear","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","buzon-recibir","buzon-guardar","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+  if(act==="admvo-ejecutado" && (MODE!=="viewer" || esAdministrativo())){ /* permitido */ }
+  else if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-urgred","toggle-required","official-on","official-off","admvo-cerrar","admvo-abrir","deshacer","rot-cell","rot-set","rot-gen","rot-clear","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","buzon-recibir","buzon-guardar","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
       ui.reqDraft = {}; ui.reqNote = "";
@@ -4561,6 +4674,20 @@ document.addEventListener("click", e=>{
       const d = JSON.parse(JSON.stringify(state));
       d.publishedAt = new Date().toISOString();
       download("data.json", JSON.stringify(d), "application/json");
+      break;
+    }
+    case "novedades-visto": { marcarVisitado(); render(); break; }
+    case "admvo-ejecutado": {
+      marcarEjecutado(el.dataset.mk, el.dataset.id, "");
+      render();
+      break;
+    }
+    case "deshacer": {
+      const paso = ultimoDeshacer();
+      if(!paso){ setSave("Nada que deshacer"); break; }
+      if(!window.confirm("Deshacer «"+paso.desc+"»\n\nSe recuperará el cuadrante tal y como estaba antes de esa acción.\n\n¿Continuar?")) break;
+      if(deshacer()){ setSave("↶ Deshecho"); render(); }
+      else setSave("⚠ No se ha podido deshacer");
       break;
     }
     case "editor-refresh": {
