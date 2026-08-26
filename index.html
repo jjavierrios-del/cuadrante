@@ -918,7 +918,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v110";
+const APP_VERSION = "v111";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -5676,6 +5676,10 @@ document.addEventListener("click", e=>{
             const ahora = new Date().toISOString();
             let entry;
             switch(rq0.type){
+              case "consultas":
+                entry = {at:ahora, by:rq0.by||"", phys:(rq0.physA||"")+" ⇄ "+(rq0.physB||""), date:rq0.fA,
+                         prop:"Intercambio de consultas: "+fmtDate(rq0.fA)+" ("+((rq0.slotA||"m")==="m"?"mañana":"tarde")+")"+
+                              " ⇄ "+fmtDate(rq0.fB)+" ("+((rq0.slotB||"m")==="m"?"mañana":"tarde")+")"}; break;
               case "swap":
                 entry = {at:ahora, by:rq0.by||"", phys:(rq0.physA||"")+" ⇄ "+(rq0.physB||""), date:rq0.dateA,
                          prop:"Intercambio "+fmtDate(rq0.dateA)+" / "+fmtDate(rq0.dateB)}; break;
