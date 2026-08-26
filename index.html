@@ -918,7 +918,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v109";
+const APP_VERSION = "v110";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2483,8 +2483,16 @@ function simularIntercambioConsultas(pidA, fA, slotA, pidB, fB, slotB, moverDesp
   const celdaA = get(pa.id, fA), celdaB = get(pb.id, fB);
   const codA = celdaA ? celdaA[slotA] : null;
   const codB = celdaB ? celdaB[slotB] : null;
-  if(!codA) return {error:esc(pa.name)+" no tiene consulta esa "+(slotA==="t"?"tarde":"mañana")+" del "+fmtDate(fA)+"."};
-  if(!codB) return {error:esc(pb.name)+" no tiene consulta esa "+(slotB==="t"?"tarde":"mañana")+" del "+fmtDate(fB)+"."};
+  // Mensaje detallado: indica qué tiene realmente ese día, para localizar el desajuste
+  const queTiene = (celda, slotPedido)=>{
+    if(!celda) return "ese día no tiene nada asignado";
+    if(celda.f) return "ese día tiene "+celda.f+" (día completo)";
+    const otro = slotPedido==="m" ? celda.t : celda.m;
+    if(otro) return "ese día solo tiene "+otro+" por la "+(slotPedido==="m"?"tarde":"mañana");
+    return "ese día no tiene nada asignado";
+  };
+  if(!codA) return {error:esc(pa.name)+" no tiene consulta de "+(slotA==="t"?"tarde":"mañana")+" el "+fmtDate(fA)+": "+queTiene(celdaA, slotA)+"."};
+  if(!codB) return {error:esc(pb.name)+" no tiene consulta de "+(slotB==="t"?"tarde":"mañana")+" el "+fmtDate(fB)+": "+queTiene(celdaB, slotB)+"."};
 
   // Se vacían las dos consultas que se intercambian
   set(pa.id, fA, quitar(celdaA, slotA));
