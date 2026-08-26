@@ -918,7 +918,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v108";
+const APP_VERSION = "v109";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1280,6 +1280,23 @@ function buildRequestText(){
       (note?("Motivo: "+note+"\n"):"")+
       "\n[SOLICITUD]"+JSON.stringify(payload);
   }
+  if(rq.type==="consultas"){
+    const pa = state.physicians.find(x=>x.id===rq.pid);
+    const pb = state.physicians.find(x=>x.id===rq.pidB);
+    const d8 = ui.reqDraft||{};
+    const cA = state.assignments[(rq.pid||"")+"|"+rq.date];
+    const cB = state.assignments[(rq.pidB||"")+"|"+rq.dateB];
+    const payload = {v:8, type:"consultas", by:name, note:note,
+      pidA:rq.pid, physA:pa?pa.name:"", fA:rq.date, slotA:d8.slotA||"m",
+      pidB:rq.pidB, physB:pb?pb.name:"", fB:rq.dateB, slotB:d8.slotB||"m",
+      desplaza: d8.moverDesplazada!==false};
+    return "Solicitud de INTERCAMBIO DE CONSULTAS\n"+
+      "Solicitante: "+(name||"(sin nombre)")+"\n"+
+      (pa?pa.name:"")+" cede "+((cA&&cA[d8.slotA||"m"])||"—")+" del "+fmtDate(rq.date)+"\n"+
+      (pb?pb.name:"")+" cede "+((cB&&cB[d8.slotB||"m"])||"—")+" del "+fmtDate(rq.dateB)+"\n"+
+      (note?("Motivo: "+note+"\n"):"")+
+      "\n[SOLICITUD]"+JSON.stringify(payload);
+  }
   if(rq.type==="doble"){
     const pa = state.physicians.find(x=>x.id===rq.pid);
     const pb = state.physicians.find(x=>x.id===rq.pidB);
@@ -1356,6 +1373,10 @@ function parseRequest(txt){
     if(!r.dateU || !r.f1 || !r.f2 || (!r.pidA && !r.physA) || (!r.pidB && !r.physB)) return null;
     return r;
   }
+  if(r.type==="consultas"){
+    if(!r.fA || !r.fB || (!r.pidA && !r.physA) || (!r.pidB && !r.physB)) return null;
+    return r;
+  }
   if(r.type==="doble"){
     if(!r.pares || !r.pares.length || (!r.pidA && !r.physA) || (!r.pidB && !r.physB)) return null;
     return r;
@@ -1373,6 +1394,18 @@ function parseRequest(txt){
 }
 function applyRequest(r){
   marcarDeshacer("solicitud aplicada");
+  if(r.type==="consultas"){
+    const pa = state.physicians.find(x=>x.id===r.pidA) || state.physicians.find(x=>x.name===r.physA);
+    const pb = state.physicians.find(x=>x.id===r.pidB) || state.physicians.find(x=>x.name===r.physB);
+    if(!pa || !pb) return "No se encuentra a alguno de los facultativos.";
+    const sim = simularIntercambioConsultas(pa.id, r.fA, r.slotA||"m", pb.id, r.fB, r.slotB||"m", r.desplaza!==false);
+    if(sim.error) return sim.error;
+    Object.entries(sim.cambios).forEach(([k,celda])=>{
+      if(celda) state.assignments[k] = celda; else delete state.assignments[k];
+    });
+    save();
+    return null;
+  }
   if(r.type==="libre"){
     const p = state.physicians.find(x=>x.id===r.pid) || state.physicians.find(x=>x.name===r.phys);
     if(!p) return "No se encuentra al facultativo.";
@@ -1586,6 +1619,7 @@ function render(){
 function resumenSolicitud(r){
   const n = x => esc(x||"");
   switch(r.type){
+    case "consultas": return n(r.physA)+" ⇄ "+n(r.physB)+" · consultas del "+fmtDate(r.fA)+" y "+fmtDate(r.fB);
     case "swap":    return n(r.physA)+" ⇄ "+n(r.physB)+" · "+fmtDate(r.dateA)+" / "+fmtDate(r.dateB);
     case "move":    return n(r.phys)+" · mueve "+esc(partLabel(r.part||""))+" del "+fmtDate(r.dateFrom)+" al "+fmtDate(r.dateTo);
     case "doble":   return n(r.physA)+" ⇄ "+n(r.physB)+" · cambio doble ("+(r.pares||[]).length+" intercambios)";
@@ -1651,7 +1685,7 @@ function detalleSolicitud(r){
 }
 
 function etiquetaTipo(t){
-  const m = {swap:"Intercambio", move:"Mover consulta", doble:"Cambio doble", ceder:"Cesión",
+  const m = {consultas:"Intercambio de consultas", swap:"Intercambio", move:"Mover consulta", doble:"Cambio doble", ceder:"Cesión",
              urg2:"Urgencia × 2", trafico:"Tráfico", libre:"No disponibilidad"};
   return m[t] || "Cambio";
 }
@@ -1711,7 +1745,44 @@ function solicitudFormHTML(){
   if(yo) rq.pid = yo.id;                 // el dispositivo identificado solo pide para sí
   limpiarAvisos();
   let core;
-  if(rq.type==="libre"){
+  if(rq.type==="consultas"){
+    if(!rq.pidB || !phys.find(x=>x.id===rq.pidB)){
+      const alt = phys.find(x=>!p || x.id!==p.id) || p; rq.pidB = alt ? alt.id : null;
+    }
+    rq.dateB = rq.dateB || rq.date;
+    const d8 = ui.reqDraft || (ui.reqDraft={});
+    d8.slotA = d8.slotA || "m"; d8.slotB = d8.slotB || "m";
+    if(d8.moverDesplazada===undefined) d8.moverDesplazada = true;
+    const pb8 = phys.find(x=>x.id===rq.pidB) || null;
+    const cA = p   ? state.assignments[p.id+"|"+rq.date]    : null;
+    const cB = pb8 ? state.assignments[pb8.id+"|"+rq.dateB] : null;
+    const verTurno = (celda, slot)=> (celda && celda[slot]) ? celda[slot] : "—";
+    core = '<p class="tiny" style="margin-top:10px">Cede</p>'+
+      '<div class="row" style="margin-top:4px;gap:8px;flex-wrap:wrap">'+physSel("rq-phys", p?p.id:"")+
+        '<input type="date" value="'+rq.date+'" data-field="rq-date" style="padding:7px;flex:1;min-width:130px">'+
+        '<select data-field="rq-slota" style="padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
+          '<option value="m"'+(d8.slotA==="m"?" selected":"")+'>Mañana</option>'+
+          '<option value="t"'+(d8.slotA==="t"?" selected":"")+'>Tarde</option></select></div>'+
+      '<p class="muted" style="margin-top:4px;font-size:13px">Cede: <b>'+verTurno(cA, d8.slotA)+'</b> · ese día tiene: '+cellToText(cA)+'</p>'+
+      '<p class="tiny" style="margin-top:12px">Recibe a cambio</p>'+
+      '<div class="row" style="margin-top:4px;gap:8px;flex-wrap:wrap">'+physSel("rq-physb", pb8?pb8.id:"")+
+        '<input type="date" value="'+rq.dateB+'" data-field="rq-dateb" style="padding:7px;flex:1;min-width:130px">'+
+        '<select data-field="rq-slotb" style="padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
+          '<option value="m"'+(d8.slotB==="m"?" selected":"")+'>Mañana</option>'+
+          '<option value="t"'+(d8.slotB==="t"?" selected":"")+'>Tarde</option></select></div>'+
+      '<p class="muted" style="margin-top:4px;font-size:13px">Recibe: <b>'+verTurno(cB, d8.slotB)+'</b> · ese día tiene: '+cellToText(cB)+'</p>'+
+      '<label class="row" style="margin-top:12px;font-size:13px;cursor:pointer;align-items:flex-start;gap:8px">'+
+        '<input type="checkbox" data-field="rq-desplaza" '+(d8.moverDesplazada?"checked":"")+' style="width:16px;height:16px;margin-top:2px;accent-color:var(--teal-700)"> '+
+        '<span>Si el turno que recibe ya está ocupado, esa consulta pasa al hueco que queda libre</span></label>'+
+      (function(){
+        const motivo = validarIntercambioConsultas(rq.pid, rq.date, d8.slotA, rq.pidB, rq.dateB, d8.slotB);
+        ui.reqBloqueo = motivo;
+        return motivo
+          ? '<div class="warnbox" style="margin-top:10px">⚠ <b>No se puede hacer:</b><br>'+esc(motivo)+'</div>'
+          : ('<p style="margin-top:10px;font-size:13px;color:var(--emerald-700)"><b>✓ El intercambio es posible.</b></p>'+
+             (AVISO_VOLUNTARIO?'<div class="warnbox" style="margin-top:8px">ℹ '+AVISO_VOLUNTARIO+'</div>':''));
+      })();
+  }else if(rq.type==="libre"){
     const d5 = ui.reqDraft || (ui.reqDraft={});
     d5.libres = Array.isArray(d5.libres) ? d5.libres : [];
     const total = d5.libres.length;
@@ -1956,6 +2027,7 @@ function solicitudFormHTML(){
     '<select data-field="rq-type" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+
       '<option value="mover"'+(rq.type==="mover"?" selected":"")+'>Mover una consulta de día</option>'+
       '<option value="intercambio"'+(rq.type==="intercambio"?" selected":"")+'>Intercambio de días entre facultativos</option>'+
+      '<option value="consultas"'+(rq.type==="consultas"?" selected":"")+'>Intercambio de consultas concretas</option>'+
       '<option value="doble"'+(rq.type==="doble"?" selected":"")+'>Cambio doble (dos intercambios a la vez)</option>'+
       '<option value="ceder"'+(rq.type==="ceder"?" selected":"")+'>Ceder una consulta a otro facultativo</option>'+
       '<option value="urg2"'+(rq.type==="urg2"?" selected":"")+'>Cambiar una urgencia por dos consultas</option>'+
@@ -2388,6 +2460,83 @@ function validarUrg2(pidA, fechaU, pidB, f1, f2){
   return r.error || null;
 }
 
+// Intercambio de CONSULTAS concretas (no del día entero).
+// Cada uno cede una consulta suya de un día; el resto de su jornada no se toca.
+// Si al recibirla el turno está ocupado, la consulta desplazada pasa al hueco que deja el otro.
+function simularIntercambioConsultas(pidA, fA, slotA, pidB, fB, slotB, moverDesplazada){
+  const pa = state.physicians.find(x=>x.id===pidA);
+  const pb = state.physicians.find(x=>x.id===pidB);
+  if(!pa || !pb) return {error:"Faltan facultativos."};
+  if(pa.id===pb.id) return {error:"Elige dos facultativos distintos."};
+
+  const A = {};
+  const get = (pid,dk)=> (A.hasOwnProperty(pid+"|"+dk) ? A[pid+"|"+dk] : state.assignments[pid+"|"+dk]) || null;
+  const set = (pid,dk,c)=>{ A[pid+"|"+dk] = c; };
+  const quitar = (celda, slot)=>{
+    const c = Object.assign({}, celda||{}); c[slot] = null;
+    return (!c.m && !c.t && !c.f) ? null : c;
+  };
+  const poner = (celda, slot, cod)=>{
+    const c = Object.assign({m:null,t:null,f:null}, celda||{}); c[slot] = cod; return c;
+  };
+
+  const celdaA = get(pa.id, fA), celdaB = get(pb.id, fB);
+  const codA = celdaA ? celdaA[slotA] : null;
+  const codB = celdaB ? celdaB[slotB] : null;
+  if(!codA) return {error:esc(pa.name)+" no tiene consulta esa "+(slotA==="t"?"tarde":"mañana")+" del "+fmtDate(fA)+"."};
+  if(!codB) return {error:esc(pb.name)+" no tiene consulta esa "+(slotB==="t"?"tarde":"mañana")+" del "+fmtDate(fB)+"."};
+
+  // Se vacían las dos consultas que se intercambian
+  set(pa.id, fA, quitar(celdaA, slotA));
+  set(pb.id, fB, quitar(celdaB, slotB));
+
+  // B recibe la consulta de A, en el mismo día y turno en que estaba
+  let destB = get(pb.id, fA);
+  if(destB && destB.f) return {error:esc(pb.name)+" tiene "+cellToText(destB)+" el "+fmtDate(fA)+"."};
+  if(destB && destB[slotA]){
+    // Ese turno lo tiene ocupado: su consulta se traslada al hueco que deja B
+    if(!moverDesplazada) return {error:esc(pb.name)+" ya tiene "+destB[slotA]+" esa "+(slotA==="t"?"tarde":"mañana")+" del "+fmtDate(fA)+"."};
+    const desplazada = destB[slotA];
+    const huecoDia = fB, huecoSlot = slotB;
+    let destino = get(pb.id, huecoDia);
+    if(destino && destino[huecoSlot]) return {error:"No hay hueco para "+desplazada+": el "+fmtDate(huecoDia)+" ya está ocupado."};
+    const codDesp = codigoLibreEn(desplazada, huecoDia, huecoSlot, [pa.id, pb.id], get);
+    if(!codDesp) return {error:"La consulta "+desplazada+" no cabe el "+fmtDate(huecoDia)+"."};
+    set(pb.id, huecoDia, poner(get(pb.id,huecoDia), huecoSlot, codDesp));
+    destB = quitar(get(pb.id, fA), slotA);
+  }
+  const codParaB = codigoLibreEn(codA, fA, slotA, [pa.id, pb.id], get);
+  if(!codParaB) return {error:"La consulta "+codA+" no cabe el "+fmtDate(fA)+"."};
+  set(pb.id, fA, poner(get(pb.id, fA), slotA, codParaB));
+
+  // A recibe la consulta de B
+  const destA = get(pa.id, fB);
+  if(destA && destA.f) return {error:esc(pa.name)+" tiene "+cellToText(destA)+" el "+fmtDate(fB)+"."};
+  if(destA && destA[slotB]) return {error:esc(pa.name)+" ya tiene "+destA[slotB]+" esa "+(slotB==="t"?"tarde":"mañana")+" del "+fmtDate(fB)+"."};
+  const codParaA = codigoLibreEn(codB, fB, slotB, [pa.id, pb.id], get);
+  if(!codParaA) return {error:"La consulta "+codB+" no cabe el "+fmtDate(fB)+"."};
+  set(pa.id, fB, poner(get(pa.id, fB), slotB, codParaA));
+
+  // Comprobaciones de disponibilidad
+  const hmap = holidayMap();
+  const revisar = (quien, dk, slot)=>{
+    const dow = new Date(dk).getDay();
+    if(dow===0||dow===6) return "El "+fmtDate(dk)+" cae en fin de semana.";
+    if(hmap[dk]) return "El "+fmtDate(dk)+" es festivo.";
+    if(bloqueaTurno(quien, dow, slot)) avisarReduccion(quien, dow, slot);
+    return null;
+  };
+  const e1 = revisar(pb, fA, slotA); if(e1) return {error:e1};
+  const e2 = revisar(pa, fB, slotB); if(e2) return {error:e2};
+
+  return {ok:true, cambios:A};
+}
+function validarIntercambioConsultas(pidA, fA, slotA, pidB, fB, slotB){
+  const d = ui.reqDraft||{};
+  const r = simularIntercambioConsultas(pidA, fA, slotA, pidB, fB, slotB, d.moverDesplazada!==false);
+  return r.error || null;
+}
+
 function viewRotantes(){
   const days = monthDays();
   const admin = (MODE!=="viewer");
@@ -2484,6 +2633,7 @@ function fechaRelevante(r){
   const f = [];
   const meter = x => { if(x && typeof x==="string" && x.indexOf("-")>0) f.push(x); };
   switch(r.type){
+    case "consultas": meter(r.fA); meter(r.fB); break;
     case "swap":    meter(r.dateA); meter(r.dateB); break;
     case "move":    meter(r.dateFrom); meter(r.dateTo); break;
     case "doble":   (r.pares||[]).forEach(par=>{ meter(par.a); meter(par.b); }); break;
@@ -3219,6 +3369,11 @@ function viewSolicitudes(){
           '<p style="font-size:14px;margin-top:4px">'+(r.dias||[]).map(fmtDate).join(" · ")+'</p>'+
           (r.note?'<p style="font-size:14px;margin-top:4px"><b>Motivo:</b> '+esc(r.note)+'</p>':'')+
           '<p style="font-size:12px;margin-top:6px" class="muted">Al autorizarlo, esos días quedan libres y no contarán como jornada pendiente.</p>';
+      }else if(r.type==="consultas"){
+        ficha = '<p style="font-size:14px"><b>Solicitante:</b> '+esc(r.by||"(sin nombre)")+' · <b>INTERCAMBIO DE CONSULTAS</b></p>'+
+          '<p style="font-size:14px;margin-top:4px"><b>'+esc(r.physA||"")+'</b> cede su consulta del '+fmtDate(r.fA)+' ('+((r.slotA||"m")==="m"?"mañana":"tarde")+')</p>'+
+          '<p style="font-size:14px;margin-top:4px"><b>'+esc(r.physB||"")+'</b> cede su consulta del '+fmtDate(r.fB)+' ('+((r.slotB||"m")==="m"?"mañana":"tarde")+')</p>'+
+          (r.note?'<p style="font-size:14px;margin-top:4px"><b>Motivo:</b> '+esc(r.note)+'</p>':'');
       }else if(r.type==="trafico"){
         ficha = '<p style="font-size:14px"><b>Solicitante:</b> '+esc(r.by||"(sin nombre)")+' · <b>CONSULTA DE TRÁFICO</b></p>'+
           '<p style="font-size:14px;margin-top:4px"><b>'+esc(r.phys||"")+'</b> · '+fmtDate(r.date)+'</p>'+
@@ -3841,6 +3996,23 @@ function renderModal(){
           'data-action="yo-elegir" data-pid="'+PERFIL_ADMVO+'">Administrativo</button>'+
       '</div>'+
       '<p class="muted" style="font-size:12px;margin-top:12px">Podrás cambiarlo cuando quieras desde la pestaña Solicitudes.</p>'+
+      '</div></div>';
+    return;
+  }
+  // Recordatorio de copia de seguridad al cerrar un mes
+  if(ui.avisoCopia){
+    const hayServidor = !!((state.buzon||{}).url && buzonClaveAdmin());
+    root.innerHTML = '<div class="overlay" data-action="copia-cerrar"><div class="modal" data-stop="1">'+
+      '<b style="font-size:17px">Haz una copia de seguridad</b>'+
+      '<p class="muted" style="margin-top:6px;font-size:14px">Acabas de cerrar <b>'+esc(ui.avisoCopia)+'</b> para administración. '+
+      'Es buen momento para guardar una copia del cuadrante, por si hubiera que volver atrás.</p>'+
+      '<div style="margin-top:14px">'+
+        '<button class="btn primary" style="width:100%;padding:11px" data-action="copia-descargar">Descargar copia (archivo JSON)</button>'+
+        (hayServidor
+          ? '<button class="btn" style="width:100%;margin-top:8px;padding:11px" data-action="copia-servidor">Guardar copia en el servidor</button>'
+          : '<p class="muted" style="font-size:12px;margin-top:8px">Para guardarla en el servidor, configura el buzón y su clave de administración en Ajustes.</p>')+
+      '</div>'+
+      '<div class="row" style="margin-top:14px"><button class="btn" style="flex:1" data-action="copia-cerrar">Ahora no</button></div>'+
       '</div></div>';
     return;
   }
@@ -4850,7 +5022,7 @@ document.addEventListener("click", e=>{
   if(!el){ return; }
   const act = el.dataset.action;
   if(act==="admvo-ejecutado" && (MODE!=="viewer" || esAdministrativo())){ /* permitido */ }
-  else if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-urgred","toggle-required","official-on","official-off","admvo-cerrar","admvo-abrir","deshacer","rot-cell","rot-set","rot-gen","rot-clear","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","buzon-recibir","buzon-guardar","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+  else if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-urgred","toggle-required","official-on","official-off","admvo-cerrar","admvo-abrir","deshacer","copia-descargar","copia-servidor","rot-cell","rot-set","rot-gen","rot-clear","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","buzon-recibir","buzon-guardar","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
       ui.reqDraft = {}; ui.reqNote = "";
@@ -4858,7 +5030,7 @@ document.addEventListener("click", e=>{
     }
     return;
   }
-  if(act==="close-modal"){ if(stop && !el.closest(".modal")) return; ui.editCell=null; ui.dayDetail=null; ui.genModal=false; ui.genReport=null; ui.resetMonthModal=false; ui.reqModal=null; ui.reviewModal=null; ui.rotCell=null; ui.rotBlockDay=null; renderModal(); return; }
+  if(act==="close-modal"){ if(stop && !el.closest(".modal")) return; ui.editCell=null; ui.dayDetail=null; ui.genModal=false; ui.genReport=null; ui.resetMonthModal=false; ui.reqModal=null; ui.reviewModal=null; ui.rotCell=null; ui.rotBlockDay=null; ui.avisoCopia=null; renderModal(); return; }
   switch(act){
     case "tab": ui.tab = el.dataset.tab; ui.confirmReset=false; render(); break;
     case "prev-month": if(ui.month===0){ui.month=11; state.year--;} else ui.month--; save(); render(); break;
@@ -5289,14 +5461,52 @@ document.addEventListener("click", e=>{
     case "admvo-print": window.print(); break;
     case "admvo-cerrar": {
       if(window.confirm("Cerrar "+MONTHS[ui.month]+" "+state.year+" para los administrativos.\n\n"+
-        "A partir de ahora, cualquier cambio que hagas en ese mes quedará registrado en la pestaña Administrativo, "+
-        "para que sepan qué citaciones hay que reajustar.\n\n¿Continuar?")){
+        "A partir de ahora, los cambios que hagas en ese mes NO se aplicarán al cuadrante hasta que administración "+
+        "confirme que ha reajustado las citas.\n\n¿Continuar?")){
         setCerradoAdmvo(ui.month, true);
         setSave("🔒 Cerrado para administrativos");
-        render();
+        ui.avisoCopia = MONTHS[ui.month]+" "+state.year;   // recordar la copia de seguridad
+        render(); renderModal();
       }
       break;
     }
+    case "copia-descargar": {
+      try{
+        const datos = JSON.parse(JSON.stringify(state));
+        datos.exportadoEl = new Date().toISOString();
+        const blob = new Blob([JSON.stringify(datos, null, 1)], {type:"application/json;charset=utf-8"});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        const hoy = new Date();
+        a.href = url;
+        a.download = "cuadrante-copia-"+hoy.getFullYear()+pad(hoy.getMonth()+1)+pad(hoy.getDate())+".json";
+        document.body.appendChild(a); a.click();
+        setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
+        setSave("✓ Copia descargada");
+      }catch(e){ window.alert("No se ha podido generar la copia: "+e.message); }
+      break;
+    }
+    case "copia-servidor": {
+      const b = state.buzon||{};
+      const admin = buzonClaveAdmin();
+      if(!b.url){ window.alert("El servidor no está configurado (Ajustes → Buzón de solicitudes)."); break; }
+      if(!admin){ window.alert("Falta la clave de administración del buzón (Ajustes → Buzón de solicitudes)."); break; }
+      setSave("Guardando copia…");
+      fetch(b.url.replace(/\/+$/,"")+"/copia", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({admin: admin, datos: JSON.stringify(state)})
+      }).then(r=>r.json()).then(d=>{
+        if(d && d.ok){
+          window.alert("Copia guardada en el servidor.\n\nSe conserva 180 días. Puedes recuperarla desde Ajustes si algún día hiciera falta.");
+          setSave("✓ Copia guardada");
+        }else{
+          window.alert("No se ha podido guardar: "+((d&&d.error)||"error desconocido"));
+          setSave("⚠ No guardada");
+        }
+      }).catch(()=>{ window.alert("Sin conexión con el servidor."); setSave("⚠ Sin conexión"); });
+      break;
+    }
+    case "copia-cerrar": { ui.avisoCopia = null; renderModal(); break; }
     case "admvo-abrir": {
       if(window.confirm("Reabrir "+MONTHS[ui.month]+" "+state.year+" para los administrativos.\n\n"+
         "Se borrará el registro de cambios de ese mes.\n\n¿Continuar?")){
@@ -5695,6 +5905,9 @@ document.addEventListener("change", e=>{
     else if(fld==="rq-tfhora"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.tfHora=el.value; rqRefresh(); }
     else if(fld==="rq-cedepart"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.cedePart=el.value; rqRefresh(); }
     else if(fld==="rq-libredia"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.nuevoDia=el.value; }
+    else if(fld==="rq-slota"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.slotA=el.value; rqRefresh(); }
+    else if(fld==="rq-slotb"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.slotB=el.value; rqRefresh(); }
+    else if(fld==="rq-desplaza"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.moverDesplazada=el.checked; rqRefresh(); }
     else if(fld==="rq-u2mov1"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.mov1=el.value; rqRefresh(); }
     else if(fld==="rq-u2mov2"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.mov2=el.value; rqRefresh(); }
     else if(fld==="rq-u2slot1"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.slot1=el.value; rqRefresh(); }
