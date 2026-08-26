@@ -918,7 +918,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v107";
+const APP_VERSION = "v108";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -937,7 +937,7 @@ function setClaveAdmvo(v){ try{ if(v) localStorage.setItem(KEY_ADMVO_PASS, v); e
 // porque en modo consulta la aplicación no publica por su cuenta.
 async function marcarEjecutadoServidor(mk, id, valor){
   const b = state.buzon||{};
-  if(!b.url) return "El buzón no está configurado: avisa al coordinador.";
+  if(!b.url) return "SIN_BUZON";
   const clave = claveAdmvo();
   if(!clave) return "FALTA_CLAVE";
   try{
@@ -4891,6 +4891,13 @@ document.addEventListener("click", e=>{
             hacerlo();
             return;
           }
+          if(err === "SIN_BUZON"){
+            window.alert("Todavía no se puede guardar desde este perfil.\n\n"+
+              "El coordinador debe configurar el servidor (Ajustes → Buzón de solicitudes) "+
+              "y facilitarte la contraseña de administrativo.");
+            setSave("Solo consulta");
+            return;
+          }
           if(err){
             window.alert("No se ha podido guardar:\n\n"+err);
             if(err.indexOf("incorrecta")>=0) setClaveAdmvo("");
@@ -4898,8 +4905,13 @@ document.addEventListener("click", e=>{
             return;
           }
           // Se aplica también en pantalla, para verlo al momento
-          if(nuevoValor){ c.ejecutado = true; c.ejecutadoAt = new Date().toISOString(); }
-          else { delete c.ejecutado; delete c.ejecutadoAt; }
+          if(nuevoValor){
+            if(c.pendiente) aplicarEnEspera(mkE, idE);      // el cambio entra en el cuadrante
+            c.ejecutado = true; c.ejecutadoAt = new Date().toISOString();
+          }else{
+            delete c.ejecutado; delete c.ejecutadoAt;
+            if(Array.isArray(c.previas)) revertirEnEspera(mkE, idE);
+          }
           setSave("✓ Guardado");
           render();
         });
