@@ -505,13 +505,90 @@ function setCerradoAdmvo(mo, cerrar){
   save();
 }
 // Anota un cambio posterior al cierre, para que los administrativos lo vean
+// ---------- Cambios en espera del administrativo ----------
+// En un mes cerrado para administrativos, los cambios NO se aplican al cuadrante:
+// quedan guardados hasta que el administrativo confirma que ha reajustado las citas.
+// Se detectan comparando el cuadrante antes y después de cada operación.
+function fotoAsignaciones(){ return JSON.parse(JSON.stringify(state.assignments||{})); }
+
+function diferirSiCerrado(fn){
+  const antes = fotoAsignaciones();
+  const resultado = fn();
+  const despues = state.assignments || {};
+  const enEspera = [];
+  const claves = new Set(Object.keys(antes).concat(Object.keys(despues)));
+  claves.forEach(k=>{
+    const dk = k.slice(k.indexOf("|")+1);
+    const mk = dk.slice(0,7);
+    if(!cerradoAdmvoPorClave(mk)) return;              // mes abierto: se aplica sin más
+    const a = JSON.stringify(antes[k]||null);
+    const b = JSON.stringify(despues[k]||null);
+    if(a === b) return;
+    enEspera.push({clave:k, antes: antes[k]||null, despues: despues[k]||null});
+  });
+  if(!enEspera.length) return resultado;
+
+  // Se revierte lo que afecta a meses cerrados y se guarda en espera
+  enEspera.forEach(c=>{
+    if(c.antes) state.assignments[c.clave] = JSON.parse(JSON.stringify(c.antes));
+    else delete state.assignments[c.clave];
+  });
+  const mk = enEspera[0].clave.slice(enEspera[0].clave.indexOf("|")+1).slice(0,7);
+  const pid = enEspera[0].clave.slice(0, enEspera[0].clave.indexOf("|"));
+  const p = state.physicians.find(x=>x.id===pid);
+  const txtCelda = (c)=> !c ? "(libre)" : [c.m,c.t,c.f].filter(Boolean).join(" / ");
+  const dias = enEspera.map(c=>c.clave.slice(c.clave.indexOf("|")+1));
+  state.cambiosAdm = state.cambiosAdm || {};
+  state.cambiosAdm[mk] = state.cambiosAdm[mk] || [];
+  state.cambiosAdm[mk].push({
+    id: "c"+Date.now().toString(36)+Math.random().toString(36).slice(2,6),
+    at: new Date().toISOString(),
+    phys: p ? p.name : "",
+    origenDia: dias[0] || "",
+    origenConsulta: txtCelda(enEspera[0].antes),
+    destinoDia: dias[dias.length-1] || "",
+    destinoConsulta: txtCelda(enEspera[enEspera.length-1].despues),
+    celdas: enEspera                                   // lo que se aplicará al confirmarlo
+  });
+  save();
+  return resultado;
+}
+
+// Aplica de verdad al cuadrante un cambio que estaba en espera
+function aplicarCambioEnEspera(mk, id){
+  const c = ((state.cambiosAdm||{})[mk]||[]).find(x=>x.id===id);
+  if(!c || !Array.isArray(c.celdas)) return false;
+  c.celdas.forEach(x=>{
+    if(x.despues) state.assignments[x.clave] = JSON.parse(JSON.stringify(x.despues));
+    else delete state.assignments[x.clave];
+  });
+  return true;
+}
+// Y lo revierte si se desmarca
+function revertirCambioEnEspera(mk, id){
+  const c = ((state.cambiosAdm||{})[mk]||[]).find(x=>x.id===id);
+  if(!c || !Array.isArray(c.celdas)) return false;
+  c.celdas.forEach(x=>{
+    if(x.antes) state.assignments[x.clave] = JSON.parse(JSON.stringify(x.antes));
+    else delete state.assignments[x.clave];
+  });
+  return true;
+}
+function pendientesAdmvo(){
+  const out = [];
+  Object.entries(state.cambiosAdm||{}).forEach(([mk,lista])=>{
+    (lista||[]).forEach(c=>{ if(!c.ejecutado) out.push({mk, c}); });
+  });
+  return out.sort((a,b)=> (a.c.at||"").localeCompare(b.c.at||""));
+}
+
 function anotarCambioAdmvo(pid, fechaOrig, consultaOrig, fechaNueva, consultaNueva){
   const mk = (fechaOrig||fechaNueva||"").slice(0,7);
   if(!mk || !cerradoAdmvoPorClave(mk)) return;
   const p = state.physicians.find(x=>x.id===pid);
   state.cambiosAdm = state.cambiosAdm || {};
   state.cambiosAdm[mk] = state.cambiosAdm[mk] || [];
-  state.cambiosAdm[mk].push({
+  const entrada = {
     id: "c"+Date.now().toString(36)+Math.random().toString(36).slice(2,6),
     at: new Date().toISOString(),
     phys: p ? p.name : "",
@@ -519,7 +596,46 @@ function anotarCambioAdmvo(pid, fechaOrig, consultaOrig, fechaNueva, consultaNue
     origenConsulta: consultaOrig || "",
     destinoDia: fechaNueva || "",
     destinoConsulta: consultaNueva || ""
+  };
+  state.cambiosAdm[mk].push(entrada);
+  return entrada;
+}
+
+// ---------- Cambios en espera ----------
+// Con el mes cerrado para administrativos, los cambios NO se aplican al cuadrante
+// hasta que administración confirme que ha reajustado las citas.
+function guardarEnEspera(entrada, celdas, previas){
+  if(!entrada) return;
+  entrada.pendiente = true;
+  entrada.celdas = celdas;      // cómo quedará el cuadrante al ejecutarlo
+  entrada.previas = previas;    // cómo está ahora
+}
+function aplicarEnEspera(mk, id){
+  const c = ((state.cambiosAdm||{})[mk]||[]).find(x=>x.id===id);
+  if(!c || !c.pendiente || !Array.isArray(c.celdas)) return false;
+  c.celdas.forEach(x=>{
+    if(x.valor) state.assignments[x.k] = JSON.parse(JSON.stringify(x.valor));
+    else delete state.assignments[x.k];
   });
+  delete c.pendiente;
+  return true;
+}
+function revertirEnEspera(mk, id){
+  const c = ((state.cambiosAdm||{})[mk]||[]).find(x=>x.id===id);
+  if(!c || !Array.isArray(c.previas)) return false;
+  c.previas.forEach(x=>{
+    if(x.valor) state.assignments[x.k] = JSON.parse(JSON.stringify(x.valor));
+    else delete state.assignments[x.k];
+  });
+  c.pendiente = true;
+  return true;
+}
+function cambiosEnEspera(){
+  const out = [];
+  Object.entries(state.cambiosAdm||{}).forEach(([mk,lista])=>{
+    (lista||[]).forEach(c=>{ if(c.pendiente) out.push({mk, c}); });
+  });
+  return out.sort((a,b)=>(a.c.at||"").localeCompare(b.c.at||""));
 }
 
 // El administrativo marca que ya ha reajustado las citas de ese cambio
@@ -527,8 +643,15 @@ function marcarEjecutado(mk, id, quien){
   const lista = (state.cambiosAdm||{})[mk] || [];
   const c = lista.find(x=>x.id===id);
   if(!c) return;
-  if(c.ejecutado){ delete c.ejecutado; delete c.ejecutadoAt; }
-  else { c.ejecutado = true; c.ejecutadoAt = new Date().toISOString(); }
+  if(c.ejecutado){
+    // Se deshace: el cuadrante vuelve a como estaba y queda de nuevo en espera
+    delete c.ejecutado; delete c.ejecutadoAt;
+    if(Array.isArray(c.previas)) revertirEnEspera(mk, id);
+  }else{
+    // Se ejecuta: ahora sí se aplica al cuadrante
+    if(c.pendiente) aplicarEnEspera(mk, id);
+    c.ejecutado = true; c.ejecutadoAt = new Date().toISOString();
+  }
   save();
 }
 
@@ -768,11 +891,20 @@ function applyCode(pid, dateKey, code){
     else next = {f:null, m:a.f?null:a.m, t:a.t===code?null:code};
   }
   // Registro para administrativos: qué había y qué queda
-  try{
-    const anteriorTxt = [a.m,a.t,a.f].filter(Boolean).join(" / ");
-    const nuevoTxt = [next.m,next.t,next.f].filter(Boolean).join(" / ");
-    if(anteriorTxt !== nuevoTxt) anotarCambioAdmvo(pid, dateKey, anteriorTxt||"(libre)", dateKey, nuevoTxt||"(libre)");
-  }catch(e){}
+  const mkEdit = dateKey.slice(0,7);
+  const anteriorTxt = [a.m,a.t,a.f].filter(Boolean).join(" / ");
+  const nuevoTxt = [next.m,next.t,next.f].filter(Boolean).join(" / ");
+  if(cerradoAdmvoPorClave(mkEdit) && anteriorTxt !== nuevoTxt){
+    // El mes está cerrado: el cambio espera a que administración reajuste las citas
+    const entrada = anotarCambioAdmvo(pid, dateKey, anteriorTxt||"(libre)", dateKey, nuevoTxt||"(libre)");
+    guardarEnEspera(entrada,
+      [{k:k, valor: isEmptyA(next) ? null : next}],
+      [{k:k, valor: isEmptyA(a) ? null : JSON.parse(JSON.stringify(a))}]);
+    save();
+    setSave("⏳ En espera de administración");
+    return;                      // el cuadrante NO se modifica todavía
+  }
+  try{ if(anteriorTxt !== nuevoTxt) anotarCambioAdmvo(pid, dateKey, anteriorTxt||"(libre)", dateKey, nuevoTxt||"(libre)"); }catch(e){}
   if(isEmptyA(next)) delete state.assignments[k]; else state.assignments[k]=next;
   // Tus ediciones como jefe de servicio SÍ son oficiales: actualizan también el cuadrante oficial.
   // (Los cambios autorizados a petición de un compañero pasan por applyRequest y NO lo tocan.)
@@ -786,7 +918,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v105";
+const APP_VERSION = "v107";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -797,6 +929,27 @@ const DEVICE_ID = (function(){
 })();
 const KEY_BUZON_ADMIN = "cuadrante-buzon-admin-v1";
 const KEY_BUZON_PUB = "cuadrante-buzon-publicar-v1";
+const KEY_ADMVO_PASS = "cuadrante-admvo-pass-v1";
+function claveAdmvo(){ try{ return localStorage.getItem(KEY_ADMVO_PASS)||""; }catch(e){ return ""; } }
+function setClaveAdmvo(v){ try{ if(v) localStorage.setItem(KEY_ADMVO_PASS, v); else localStorage.removeItem(KEY_ADMVO_PASS); }catch(e){} }
+
+// El administrativo marca un cambio como reajustado. Se guarda en el servidor,
+// porque en modo consulta la aplicación no publica por su cuenta.
+async function marcarEjecutadoServidor(mk, id, valor){
+  const b = state.buzon||{};
+  if(!b.url) return "El buzón no está configurado: avisa al coordinador.";
+  const clave = claveAdmvo();
+  if(!clave) return "FALTA_CLAVE";
+  try{
+    const r = await fetch(b.url.replace(/\/+$/,"")+"/ejecutado", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({clave: clave, mk: mk, id: id, valor: valor})
+    });
+    const d = await r.json().catch(()=>null);
+    if(!r.ok || !d || !d.ok) return (d && d.error) ? d.error : "No se ha podido guardar.";
+    return null;
+  }catch(e){ return "Sin conexión con el servidor."; }
+}
 function buzonClavePublicar(){ try{ return localStorage.getItem(KEY_BUZON_PUB)||""; }catch(e){ return ""; } }
 function setBuzonClavePublicar(v){ try{ if(v) localStorage.setItem(KEY_BUZON_PUB, v); else localStorage.removeItem(KEY_BUZON_PUB); }catch(e){} }
 // ¿Se publica a través del servidor en lugar de con el token de GitHub?
@@ -1348,10 +1501,24 @@ function applyRequest(r){
     if(!codFinal) return "La consulta "+code+" ya la pasa otro compañero el "+fmtDate(r.dateTo)+" y no queda ninguna equivalente libre.";
     dest2[slotDest] = codFinal;
     // Registro para administrativos: consulta y día de origen → consulta y día definitivos
-    try{
-      const marcaTurno = (c,sl)=> c + (sl==="t" ? " (tarde)" : (sl==="m" ? " (mañana)" : ""));
-      anotarCambioAdmvo(p.id, r.dateFrom, marcaTurno(code, slotOrig), r.dateTo, marcaTurno(codFinal, slotDest));
-    }catch(e){}
+    const marcaTurno = (c,sl)=> c + (sl==="t" ? " (tarde)" : (sl==="m" ? " (mañana)" : ""));
+    const mkMov = (r.dateTo||"").slice(0,7);
+    if(cerradoAdmvoPorClave(mkMov)){
+      // Queda en espera: se anota cómo quedaría y se deja el cuadrante como estaba
+      const entrada = anotarCambioAdmvo(p.id, r.dateFrom, marcaTurno(code, slotOrig), r.dateTo, marcaTurno(codFinal, slotDest));
+      const celdaOrigFinal = (function(){
+        const c2 = Object.assign({}, orig); c2[slotOrig] = null;
+        return (!c2.m && !c2.t && !c2.f) ? null : c2;
+      })();
+      guardarEnEspera(entrada,
+        [{k:kFrom, valor: celdaOrigFinal},
+         {k:kTo,   valor: {m:dest2.m||null, t:dest2.t||null, f:null}}],
+        [{k:kFrom, valor: JSON.parse(JSON.stringify(orig))},
+         {k:kTo,   valor: state.assignments[kTo] ? JSON.parse(JSON.stringify(state.assignments[kTo])) : null}]);
+      save();
+      return null;               // el cuadrante NO se modifica todavía
+    }
+    try{ anotarCambioAdmvo(p.id, r.dateFrom, marcaTurno(code, slotOrig), r.dateTo, marcaTurno(codFinal, slotDest)); }catch(e){}
     state.assignments[kTo] = {m:dest2.m||null, t:dest2.t||null, f:null};
     save();
     return null;
@@ -3161,6 +3328,14 @@ function viewCuadrante(){
       '<button class="btn" data-action="viewer-refresh" title="Se actualiza sola; púlsalo solo si quieres comprobarlo ahora mismo" style="padding:6px 9px">⟳</button>'+
       '<button class="btn" data-action="viewer-edit" title="Solo administración" style="padding:6px 9px">⚙</button></span></div>';
   }
+  if(MODE==="editor"){
+    const espera = cambiosEnEspera();
+    if(espera.length){
+      html += '<div class="warnbox no-print" style="margin-bottom:10px">⏳ <b>'+espera.length+' cambio'+(espera.length>1?'s':'')+
+        ' en espera de administración.</b> No se aplicarán al cuadrante hasta que los marquen como reajustados '+
+        '(pestaña Administrativo → Cambios realizados).</div>';
+    }
+  }
   if(MODE==="editor" && (state.buzon||{}).url && !buzonClavePublicar() && !(SYNC.owner && SYNC.repo && SYNC.token)){
     html += '<div class="warnbox no-print" style="margin-bottom:10px">⚠ <b>Los cambios no se publicarán.</b> '+
       'Este dispositivo no tiene contraseña de publicación. Puedes introducirla en '+
@@ -3197,6 +3372,25 @@ function viewCuadrante(){
     '<button class="btn" data-action="print">Imprimir</button>'+
     '<button class="btn" data-action="export-csv">Exportar '+state.year+' (CSV)</button></div></div>';
 
+  if(esAdministrativo()){
+    const espera = cambiosEnEspera();
+    if(espera.length){
+      html += '<div class="card no-print" style="margin-bottom:10px;border-color:#b45309;background:#fffbeb">'+
+        '<div class="row between" style="align-items:center;gap:8px;flex-wrap:wrap">'+
+          '<b style="font-size:15px;color:#b45309">Tienes '+espera.length+' cambio'+(espera.length>1?'s':'')+' por reajustar</b>'+
+          '<button class="btn primary" data-action="ir-admvo" style="padding:5px 12px;font-size:13px">Ver y marcar</button>'+
+        '</div>'+
+        '<p class="muted" style="font-size:13px;margin-top:6px">Estos cambios <b>aún no están en el cuadrante</b>. '+
+        'Se aplicarán cuando los marques como hechos, tras reajustar las citas.</p>'+
+        '<div style="margin-top:8px">'+
+          espera.slice(0,6).map(x=>'<div style="font-size:14px;padding:4px 0;border-bottom:1px solid #fde68a">'+
+            '<b>'+esc(x.c.phys)+'</b> · '+esc(x.c.origenConsulta||"—")+' del '+fmtDate(x.c.origenDia)+
+            ' → '+esc(x.c.destinoConsulta||"—")+' del '+fmtDate(x.c.destinoDia)+'</div>').join("")+
+        '</div>'+
+        (espera.length>6?'<p class="tiny muted" style="margin-top:6px">y '+(espera.length-6)+' más</p>':'')+
+        '</div>';
+    }
+  }
   if(MODE==="viewer"){
     // Novedades propias desde la última visita (solo en meses ya oficiales)
     const yoV = miFacultativo();
@@ -4677,9 +4871,40 @@ document.addEventListener("click", e=>{
       break;
     }
     case "novedades-visto": { marcarVisitado(); render(); break; }
+    case "ir-admvo": { ui.tab = "administrativo"; ui.admvoSub = "cambios"; render(); break; }
     case "admvo-ejecutado": {
-      marcarEjecutado(el.dataset.mk, el.dataset.id, "");
-      render();
+      const mkE = el.dataset.mk, idE = el.dataset.id;
+      // El coordinador edita y publica con normalidad
+      if(MODE !== "viewer"){ marcarEjecutado(mkE, idE, ""); render(); break; }
+      // El administrativo lo guarda a través del servidor
+      const lista = (state.cambiosAdm||{})[mkE]||[];
+      const c = lista.find(x=>x.id===idE);
+      if(!c) break;
+      const nuevoValor = !c.ejecutado;
+      const hacerlo = ()=>{
+        setSave("Guardando…");
+        marcarEjecutadoServidor(mkE, idE, nuevoValor).then(err=>{
+          if(err === "FALTA_CLAVE"){
+            const cl = window.prompt("Contraseña de administrativo\n\nIntrodúcela una vez para poder marcar los cambios como reajustados. Te la facilita el coordinador.");
+            if(!cl){ setSave("Solo consulta"); return; }
+            setClaveAdmvo(cl);
+            hacerlo();
+            return;
+          }
+          if(err){
+            window.alert("No se ha podido guardar:\n\n"+err);
+            if(err.indexOf("incorrecta")>=0) setClaveAdmvo("");
+            setSave("⚠ No guardado");
+            return;
+          }
+          // Se aplica también en pantalla, para verlo al momento
+          if(nuevoValor){ c.ejecutado = true; c.ejecutadoAt = new Date().toISOString(); }
+          else { delete c.ejecutado; delete c.ejecutadoAt; }
+          setSave("✓ Guardado");
+          render();
+        });
+      };
+      hacerlo();
       break;
     }
     case "deshacer": {
