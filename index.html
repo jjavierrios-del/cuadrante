@@ -74,6 +74,7 @@
   .rotcell{position:relative}
   .rotpick{display:inline-flex; gap:4px; flex-wrap:wrap}
   .printhead{display:none}
+  .cambiofila{border:1px solid var(--slate-200); border-radius:10px; padding:10px 12px; margin-bottom:8px; background:#fff}
   .histcard{border:1px solid var(--slate-200); border-radius:10px; padding:10px; margin-top:8px;
             display:flex; align-items:flex-start; justify-content:space-between; gap:10px; flex-wrap:wrap}
   .histinfo{flex:1 1 220px; min-width:0}
@@ -918,7 +919,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v113";
+const APP_VERSION = "v115";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1602,6 +1603,7 @@ function render(){
     else if(ui.tab==="exportar") main.innerHTML = viewExportar();
     else if(ui.tab==="historial") main.innerHTML = viewHistorial();
     else if(ui.tab==="administrativo") main.innerHTML = viewAdministrativo();
+    else if(ui.tab==="vacaciones") main.innerHTML = viewVacaciones();
     else if(ui.tab==="solicitudes") main.innerHTML = viewSolicitudes();
     else main.innerHTML = viewAjustes();
   }catch(e){
@@ -3041,6 +3043,153 @@ function listaDias(dias){
     'border:1px solid var(--slate-200);border-radius:6px;padding:2px 5px;margin:2px 3px 0 0;font-size:13px;font-weight:600">'+d+'</span>').join("");
 }
 
+// ---------- Planificación anual de vacaciones ----------
+// Semanas ISO del año, con los días laborables de cada una
+function semanasDelAnio(){
+  const out = [];
+  for(let mo=0; mo<12; mo++){
+    const dim = new Date(state.year, mo+1, 0).getDate();
+    for(let d=1; d<=dim; d++){
+      const dt = new Date(state.year, mo, d);
+      const dow = dt.getDay();
+      if(dow===0 || dow===6) continue;                 // solo laborables
+      const key = keyOf(state.year, mo, d);
+      // lunes de esa semana
+      const lun = new Date(dt); lun.setDate(dt.getDate() - ((dow+6)%7));
+      const idSem = keyOf(lun.getFullYear(), lun.getMonth(), lun.getDate());
+      let sem = out.find(x=>x.id===idSem);
+      if(!sem){ sem = {id:idSem, lunes:lun, mes:lun.getMonth(), dias:[]}; out.push(sem); }
+      sem.dias.push({key, mo, d, dow});
+    }
+  }
+  return out.sort((a,b)=>a.id.localeCompare(b.id));
+}
+// Días de ausencia de un facultativo en una semana
+function ausenciaEnSemana(pid, sem){
+  let n = 0, tipo = "";
+  sem.dias.forEach(d=>{
+    const a = state.assignments[pid+"|"+d.key];
+    if(a && a.f && absInfo(a.f)){ n++; if(!tipo) tipo = a.f; }
+  });
+  return {n, tipo, total: sem.dias.length};
+}
+// Cuántos facultativos quedan realmente disponibles cada día de la semana
+function coberturaSemana(sem){
+  const hmap = holidayMap();
+  let peor = 99, diaPeor = null;
+  sem.dias.forEach(d=>{
+    if(hmap[d.key]) return;                       // festivo: no cuenta
+    let libres = 0;
+    state.physicians.forEach(p=>{
+      const a = state.assignments[p.id+"|"+d.key];
+      if(a && a.f && absInfo(a.f)) return;         // de vacaciones
+      if(bloqueaM(p, d.dow)) return;               // no trabaja esa mañana
+      if(esDiaLibre(p.id, d.key)) return;          // día de no disponibilidad
+      libres++;
+    });
+    if(libres < peor){ peor = libres; diaPeor = d.key; }
+  });
+  return {peor: peor===99?null:peor, diaPeor};
+}
+
+function viewVacaciones(){
+  const sems = semanasDelAnio();
+  const minimo = state.settings.minMorning || 5;
+  const d = ui.vacDraft || (ui.vacDraft = {});
+
+  let h = '<div class="card no-print"><h2>Planificación anual de vacaciones · '+state.year+'</h2>'+
+    '<p class="muted" style="margin-top:2px;font-size:14px">Cada columna es una semana. El número indica los días de ausencia. '+
+    'La fila inferior avisa cuando el servicio se queda por debajo de '+minimo+' facultativos disponibles algún día.</p>'+
+
+    '<div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap;align-items:flex-end">'+
+      '<span style="flex:2;min-width:150px"><span class="tiny">Facultativo</span>'+
+        '<select data-field="vac-pid" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
+          state.physicians.map(p=>'<option value="'+p.id+'"'+((d.pid||state.physicians[0]&&state.physicians[0].id)===p.id?" selected":"")+'>'+esc(p.name)+'</option>').join("")+
+        '</select></span>'+
+      '<span style="flex:1;min-width:120px"><span class="tiny">Desde</span>'+
+        '<input type="date" data-field="vac-desde" value="'+esc(d.desde||"")+'" style="width:100%;padding:7px;border:1px solid var(--slate-300);border-radius:8px"></span>'+
+      '<span style="flex:1;min-width:120px"><span class="tiny">Hasta</span>'+
+        '<input type="date" data-field="vac-hasta" value="'+esc(d.hasta||"")+'" style="width:100%;padding:7px;border:1px solid var(--slate-300);border-radius:8px"></span>'+
+      '<span style="flex:1;min-width:110px"><span class="tiny">Tipo</span>'+
+        '<select data-field="vac-tipo" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
+          '<option value="V"'+((d.tipo||"V")==="V"?" selected":"")+'>Vacaciones</option>'+
+          '<option value="B"'+(d.tipo==="B"?" selected":"")+'>Baja / IT</option>'+
+          '<option value="P"'+(d.tipo==="P"?" selected":"")+'>Permiso</option>'+
+        '</select></span>'+
+    '</div>'+
+    '<div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">'+
+      '<button class="btn primary" data-action="vac-marcar">Marcar periodo</button>'+
+      '<button class="btn" data-action="vac-quitar">Quitar periodo</button>'+
+    '</div>'+
+    (d.aviso?'<div class="warnbox" style="margin-top:10px">'+d.aviso+'</div>':'')+
+    '</div>';
+
+  // ---- Rejilla anual ----
+  h += '<div class="printhead">Vacaciones '+state.year+'</div>';
+  h += '<div class="card" style="margin-top:10px"><div class="gridbox"><table><thead><tr>'+
+    '<th class="namecol">Facultativo</th>';
+  let mesPrev = -1;
+  sems.forEach(sem=>{
+    const nuevoMes = sem.mes !== mesPrev; mesPrev = sem.mes;
+    h += '<th class="dayhead" style="min-width:30px'+(nuevoMes?';border-left:2px solid var(--slate-300)':'')+'">'+
+      '<b>'+(sem.lunes.getDate())+'</b><small>'+MONTHS[sem.mes].slice(0,3)+'</small></th>';
+  });
+  h += '</tr></thead><tbody>';
+
+  state.physicians.forEach(p=>{
+    h += '<tr><td class="namecol"><b>'+esc(p.name)+'</b>'+(p.pct<100?' <span class="muted">('+p.pct+'%)</span>':'')+'</td>';
+    sems.forEach(sem=>{
+      const a = ausenciaEnSemana(p.id, sem);
+      if(!a.n){ h += '<td><span class="cell" style="display:block"><span class="full base-lab"></span></span></td>'; return; }
+      const completa = a.n >= a.total;
+      const cls = (absInfo(a.tipo)||{cls:"k-V"}).cls;
+      h += '<td><span class="cell" style="display:block">'+
+        '<span class="full '+cls+'" title="'+esc(p.name)+' · '+a.n+' de '+a.total+' días" style="'+(completa?'':'opacity:.65')+'">'+
+        (completa ? a.tipo : a.n)+'</span></span></td>';
+    });
+    h += '</tr>';
+  });
+
+  // ---- Fila de cobertura ----
+  h += '<tr><td class="namecol"><b>Disponibles</b></td>';
+  sems.forEach(sem=>{
+    const c = coberturaSemana(sem);
+    if(c.peor===null){ h += '<td><span class="cell" style="display:block"><span class="full base-fest"></span></span></td>'; return; }
+    const flojo = c.peor < minimo;
+    h += '<td><span class="cell" style="display:block">'+
+      '<span class="full" title="Mínimo de la semana: '+c.peor+' disponibles ('+fmtDate(c.diaPeor)+')" '+
+      'style="background:'+(flojo?'#fee2e2':'#ecfdf5')+';color:'+(flojo?'#b91c1c':'#065f46')+';font-weight:700">'+c.peor+'</span></span></td>';
+  });
+  h += '</tr></tbody></table></div>';
+
+  // ---- Resumen ----
+  const flojas = sems.filter(sem=>{ const c=coberturaSemana(sem); return c.peor!==null && c.peor<minimo; });
+  h += '<p class="muted" style="margin-top:10px;font-size:13px">'+
+    (flojas.length
+      ? '⚠ <b>'+flojas.length+' semana'+(flojas.length>1?'s':'')+'</b> por debajo de '+minimo+' facultativos disponibles: '+
+        flojas.slice(0,10).map(s=>fmtDate(keyOf(s.lunes.getFullYear(),s.lunes.getMonth(),s.lunes.getDate())).slice(0,5)).join(", ")+
+        (flojas.length>10?'…':'')
+      : '✓ Todas las semanas mantienen al menos '+minimo+' facultativos disponibles.')+
+    '</p></div>';
+
+  // ---- Totales por facultativo ----
+  h += '<div class="card" style="margin-top:10px"><h2>Días de ausencia por facultativo</h2>'+
+    '<div style="overflow-x:auto;margin-top:8px"><table class="stats" style="min-width:420px"><thead><tr>'+
+    '<th style="text-align:left">Facultativo</th><th>Vacaciones</th><th>Baja</th><th>Permiso</th><th>Total</th></tr></thead><tbody>';
+  state.physicians.forEach(p=>{
+    const c = {V:0,B:0,P:0};
+    sems.forEach(sem=>sem.dias.forEach(dd=>{
+      const a = state.assignments[p.id+"|"+dd.key];
+      if(a && a.f && c.hasOwnProperty(a.f)) c[a.f]++;
+    }));
+    const tot = c.V+c.B+c.P;
+    h += '<tr><td style="text-align:left"><b>'+esc(p.name)+'</b></td>'+
+      '<td>'+(c.V||"—")+'</td><td>'+(c.B||"—")+'</td><td>'+(c.P||"—")+'</td><td><b>'+(tot||"—")+'</b></td></tr>';
+  });
+  h += '</tbody></table></div></div>';
+  return h;
+}
+
 function viewAdministrativo(){
   const sub = ui.admvoSub || "consulta";
   const mo = ui.month;
@@ -3115,25 +3264,33 @@ function viewCambiosAdmvo(mo){
     h += '<p class="muted" style="margin-top:10px;font-size:14px">No se ha modificado nada desde el cierre.</p></div>';
     return h;
   }
-  h += '<div style="overflow-x:auto;margin-top:10px"><table class="stats" style="min-width:640px">'+
-    '<thead><tr><th style="text-align:left">Facultativo</th><th>Consulta original</th><th>Día original</th>'+
-    '<th>Consulta nueva</th><th>Día nuevo</th><th>Anotado</th><th>Citas reajustadas</th></tr></thead><tbody>';
+  // Fichas apiladas: la tabla no cabe en el móvil y las columnas se solapaban
+  h += '<div style="margin-top:10px">';
   lista.forEach(c=>{
-    h += '<tr style="'+(c.ejecutado?'opacity:.55':'')+'">'+
-      '<td style="text-align:left"><b>'+esc(c.phys)+'</b></td>'+
-      '<td>'+esc(c.origenConsulta||"—")+'</td>'+
-      '<td>'+(c.origenDia?fmtDate(c.origenDia):"—")+'</td>'+
-      '<td>'+esc(c.destinoConsulta||"—")+'</td>'+
-      '<td>'+(c.destinoDia?fmtDate(c.destinoDia):"—")+'</td>'+
-      '<td class="tiny muted">'+new Date(c.at).toLocaleString("es-ES",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})+'</td>'+
-      '<td>'+(c.ejecutado
-        ? '<button class="btn" data-action="admvo-ejecutado" data-mk="'+mk+'" data-id="'+c.id+'" '+
-          'style="padding:3px 9px;font-size:12px;background:#065f46;color:#fff;border-color:#065f46" '+
-          'title="Marcado el '+(c.ejecutadoAt?new Date(c.ejecutadoAt).toLocaleString("es-ES"):"")+'">✓ Hecho</button>'
-        : '<button class="btn" data-action="admvo-ejecutado" data-mk="'+mk+'" data-id="'+c.id+'" style="padding:3px 9px;font-size:12px">Marcar</button>')+'</td>'+
-    '</tr>';
+    const hecho = !!c.ejecutado;
+    h += '<div class="cambiofila" style="'+(hecho?'opacity:.6;':'')+'">'+
+      '<div class="row between" style="align-items:flex-start;gap:8px;flex-wrap:wrap">'+
+        '<div style="flex:1;min-width:0">'+
+          '<b style="font-size:15px">'+esc(c.phys)+'</b>'+
+          (c.pendiente?'<span class="tiny" style="margin-left:8px;background:#b45309;color:#fff;padding:2px 8px;border-radius:999px">en espera</span>':'')+
+        '</div>'+
+        '<button class="btn'+(hecho?' hechoBtn':'')+'" data-action="admvo-ejecutado" data-mk="'+mk+'" data-id="'+c.id+'" '+
+          'style="padding:5px 12px;font-size:13px'+(hecho?';background:#065f46;color:#fff;border-color:#065f46':'')+'">'+
+          (hecho?'✓ Hecho':'Marcar')+'</button>'+
+      '</div>'+
+      '<div style="margin-top:6px;font-size:14px;line-height:1.5">'+
+        '<div><span class="tiny muted">Antes:</span> <b>'+esc(c.origenConsulta||"—")+'</b>'+
+          (c.origenDia?' · '+fmtDate(c.origenDia):'')+'</div>'+
+        '<div><span class="tiny muted">Ahora:</span> <b>'+esc(c.destinoConsulta||"—")+'</b>'+
+          (c.destinoDia?' · '+fmtDate(c.destinoDia):'')+'</div>'+
+      '</div>'+
+      '<div class="tiny muted" style="margin-top:4px">Anotado el '+
+        new Date(c.at).toLocaleString("es-ES",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})+
+        (hecho && c.ejecutadoAt ? ' · reajustado el '+new Date(c.ejecutadoAt).toLocaleString("es-ES",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}) : '')+
+      '</div>'+
+    '</div>';
   });
-  h += '</tbody></table></div></div>';
+  h += '</div></div>';
   return h;
 }
 
@@ -3476,7 +3633,7 @@ function viewSolicitudes(){
 }
 
 function renderNav(){
-  let tabs = [["cuadrante","Cuadrante"],["rotantes","Rotantes"],["traficos","Tráficos"],["administrativo","Administrativo"],["solicitudes","Solicitudes"],["exportar","Exportar"],["equipo","Equipo"],["stats","Estadísticas"],["historial","Historial"],["ajustes","Ajustes"]];
+  let tabs = [["cuadrante","Cuadrante"],["rotantes","Rotantes"],["traficos","Tráficos"],["administrativo","Administrativo"],["solicitudes","Solicitudes"],["exportar","Exportar"],["equipo","Equipo"],["stats","Estadísticas"],["vacaciones","Vacaciones"],["historial","Historial"],["ajustes","Ajustes"]];
   if(MODE==="viewer"){
     const permitidas = esAdministrativo()
       ? ["cuadrante","rotantes","traficos","administrativo","stats"]      // el administrativo no pide cambios
@@ -5049,7 +5206,7 @@ document.addEventListener("click", e=>{
   if(!el){ return; }
   const act = el.dataset.action;
   if(act==="admvo-ejecutado" && (MODE!=="viewer" || esAdministrativo())){ /* permitido */ }
-  else if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-urgred","toggle-required","official-on","official-off","admvo-cerrar","admvo-abrir","deshacer","copia-descargar","copia-servidor","rot-cell","rot-set","rot-gen","rot-clear","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","buzon-recibir","buzon-guardar","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+  else if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-urgred","toggle-required","official-on","official-off","admvo-cerrar","admvo-abrir","deshacer","vac-marcar","vac-quitar","copia-descargar","copia-servidor","rot-cell","rot-set","rot-gen","rot-clear","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","buzon-recibir","buzon-guardar","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
       ui.reqDraft = {}; ui.reqNote = "";
@@ -5070,6 +5227,47 @@ document.addEventListener("click", e=>{
       break;
     }
     case "novedades-visto": { marcarVisitado(); render(); break; }
+    case "vac-marcar": case "vac-quitar": {
+      const d = ui.vacDraft || {};
+      const pid = d.pid || (state.physicians[0]||{}).id;
+      const p = state.physicians.find(x=>x.id===pid);
+      if(!p){ break; }
+      if(!d.desde || !d.hasta){ d.aviso = "Indica las fechas de inicio y fin."; render(); break; }
+      if(d.hasta < d.desde){ d.aviso = "La fecha de fin es anterior a la de inicio."; render(); break; }
+      const tipo = d.tipo || "V";
+      const quitar = (act === "vac-quitar");
+      // Recorrer el periodo día a día
+      let n = 0, saltados = 0;
+      const ini = new Date(d.desde), fin = new Date(d.hasta);
+      if((fin - ini) / 86400000 > 200){ d.aviso = "El periodo es demasiado largo (máximo 200 días)."; render(); break; }
+      marcarDeshacer(quitar ? "quitar ausencias" : "marcar ausencias");
+      for(let dt = new Date(ini); dt <= fin; dt.setDate(dt.getDate()+1)){
+        const key = keyOf(dt.getFullYear(), dt.getMonth(), dt.getDate());
+        const k = pid+"|"+key;
+        if(quitar){
+          const a = state.assignments[k];
+          if(a && a.f && absInfo(a.f)){ delete state.assignments[k]; n++; }
+        }else{
+          const dow = dt.getDay();
+          if(dow===0 || dow===6){ continue; }                 // los fines de semana no se marcan
+          const a = state.assignments[k];
+          if(a && a.f && !absInfo(a.f)){ saltados++; continue; }   // no pisar una guardia
+          state.assignments[k] = {m:null, t:null, f:tipo};
+          n++;
+        }
+      }
+      save();
+      // Comprobar la cobertura resultante
+      const sems = semanasDelAnio();
+      const minimo = state.settings.minMorning || 5;
+      const flojas = sems.filter(sem=>{ const c = coberturaSemana(sem); return c.peor!==null && c.peor < minimo; });
+      d.aviso = (quitar ? n+" días liberados." : n+" días marcados como "+(absInfo(tipo)||{label:tipo}).label+".")+
+        (saltados ? "  ("+saltados+" días conservan su guardia y no se han tocado)" : "")+
+        (flojas.length ? "  ⚠ Ahora hay "+flojas.length+" semana"+(flojas.length>1?"s":"")+" por debajo de "+minimo+" disponibles." : "");
+      setSave(quitar ? "✓ Ausencias quitadas" : "✓ Ausencias marcadas");
+      render();
+      break;
+    }
     case "ir-admvo": { ui.tab = "administrativo"; ui.admvoSub = "cambios"; render(); break; }
     case "admvo-ejecutado": {
       const mkE = el.dataset.mk, idE = el.dataset.id;
@@ -5962,6 +6160,10 @@ document.addEventListener("change", e=>{
   else if(field==="urgreq"){ state.settings.urgRequired = el.checked; save(); }
   else if(field==="minmorning"){ state.settings.minMorning = Math.min(20,Math.max(0,Number(el.value)||0)); save(); }
   else if(field==="maxmorning"){ state.settings.maxMorning = Math.min(20,Math.max(1,Number(el.value)||8)); save(); }
+  else if(field==="vac-pid"){ (ui.vacDraft=ui.vacDraft||{}).pid = el.value; return; }
+  else if(field==="vac-desde"){ (ui.vacDraft=ui.vacDraft||{}).desde = el.value; return; }
+  else if(field==="vac-hasta"){ (ui.vacDraft=ui.vacDraft||{}).hasta = el.value; return; }
+  else if(field==="vac-tipo"){ (ui.vacDraft=ui.vacDraft||{}).tipo = el.value; return; }
   else if(field==="exp-pid"){ ui.expPid = el.value; render(); return; }
   else if(field==="exp-mes"){ ui.expMes = Number(el.value); render(); return; }
   else if(field==="traf-hora"){
