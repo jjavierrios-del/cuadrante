@@ -918,7 +918,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v111";
+const APP_VERSION = "v112";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2289,10 +2289,17 @@ function validarIntercambio(pidA, dateA, pidB, dateB){
 // Si al mover una consulta el código concreto ya está ocupado ese día (p. ej. AL2),
 // se busca otro equivalente libre (AL1, AL3…) siempre que quede hueco físico.
 // Solo se sustituyen las consultas genéricas: AL1–AL7 y ALT1–ALT3.
+// Consultas genéricas que cambian de nombre según el turno:
+// las AL de mañana pasan a ALT si van a la tarde, y al revés.
+const FAM_AL  = ["AL1","AL2","AL3","AL4","AL5","AL6","AL7"];
+const FAM_ALT = ["ALT1","ALT2","ALT3"];
+const FAM_RHB = ["RHB1","RHB2"];
 function familiaDe(code, slot){
-  if(slot==="m" && /^AL[1-7]$/.test(code)) return ["AL1","AL2","AL3","AL4","AL5","AL6","AL7"];
-  if(slot==="t" && /^ALT[1-3]$/.test(code)) return ["ALT1","ALT2","ALT3"];
-  return null;   // RHB, ALINTER, ALRU, ORT, RXINT, ADM y Tráfico no se sustituyen
+  // Alta resolución: la familia depende del TURNO de destino, no del código de origen
+  if(/^AL[1-7]$/.test(code) || /^ALT[1-3]$/.test(code)) return (slot==="t") ? FAM_ALT : FAM_AL;
+  // Rehabilitación: RHB1/RHB2 por la mañana, RHBT por la tarde
+  if(/^RHB[12]$/.test(code) || code==="RHBT") return (slot==="t") ? ["RHBT"] : FAM_RHB;
+  return null;   // ALINTER, ALRU, ORT, RXINT, ADM y Tráfico no se sustituyen
 }
 // getter opcional para trabajar sobre una simulación en curso
 function codigoLibreEn(code, fecha, slot, ignorar, getter){
@@ -2302,8 +2309,9 @@ function codigoLibreEn(code, fecha, slot, ignorar, getter){
     const x = leer(q.id, fecha);
     return x && x[slot]===cod;
   });
-  if(!ocupado(code)) return code;              // el original está libre
   const fam = familiaDe(code, slot);
+  // Si el código ya vale para ese turno y está libre, se conserva
+  if((!fam || fam.indexOf(code) >= 0) && !ocupado(code)) return code;
   if(!fam) return null;                        // no admite sustituto
   for(const c of fam){ if(!ocupado(c)) return c; }
   return null;                                 // todas ocupadas
