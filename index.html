@@ -918,7 +918,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v112";
+const APP_VERSION = "v113";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1842,8 +1842,14 @@ function solicitudFormHTML(){
     }
     const pb3 = phys.find(x=>x.id===rq.pidB) || null;
     const d4 = ui.reqDraft || (ui.reqDraft={});
-    if(d4.cedePart===undefined){
-      d4.cedePart = cur ? (cur.f ? "f:"+cur.f : (cur.m ? "m:"+cur.m : (cur.t ? "t:"+cur.t : ""))) : "";
+    // Opciones válidas para el día elegido
+    const disponibles = [];
+    if(cur && cur.f) disponibles.push("f:"+cur.f);
+    if(cur && cur.m) disponibles.push("m:"+cur.m);
+    if(cur && cur.t) disponibles.push("t:"+cur.t);
+    // Si no hay elección, o la que había ya no existe en este día, se toma la primera
+    if(d4.cedePart===undefined || disponibles.indexOf(d4.cedePart) < 0){
+      d4.cedePart = disponibles.length ? disponibles[0] : "";
     }
     let opts = '';
     if(cur && cur.f) opts += '<option value="f:'+cur.f+'"'+(d4.cedePart==="f:"+cur.f?" selected":"")+'>'+partLabel("f:"+cur.f)+'</option>';
@@ -1988,8 +1994,13 @@ function solicitudFormHTML(){
     rq.dateB = rq.dateB || rq.date;
     const destino = state.assignments[(rq.pid||"")+"|"+rq.dateB];
     // Consultas que tiene ese día en el origen
-    if(d.movePart===undefined){
-      d.movePart = cur ? (cur.m ? "m:"+cur.m : (cur.t ? "t:"+cur.t : (cur.f ? "f:"+cur.f : ""))) : "";
+    // Opciones válidas para el día elegido; si la anterior ya no existe, se toma la primera
+    const dispMov = [];
+    if(cur && cur.m) dispMov.push("m:"+cur.m);
+    if(cur && cur.t) dispMov.push("t:"+cur.t);
+    if(cur && cur.f) dispMov.push("f:"+cur.f);
+    if(d.movePart===undefined || dispMov.indexOf(d.movePart) < 0){
+      d.movePart = dispMov.length ? dispMov[0] : "";
     }
     let origenOpts = '';
     if(cur && cur.m) origenOpts += '<option value="m:'+cur.m+'"'+(d.movePart==="m:"+cur.m?" selected":"")+'>'+partLabel("m:"+cur.m)+'</option>';
