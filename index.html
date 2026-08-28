@@ -936,7 +936,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v120";
+const APP_VERSION = "v122";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1120,7 +1120,16 @@ function bloqueaDia(p, dow){ return bloqueaM(p, dow) || bloqueaT(p, dow); }
 // Con «Guardia en días de reducción: Sí», el facultativo sigue entrando en el reparto
 // de urgencias esos días aunque no pase consulta (p. ej. reducción los viernes,
 // pero hace los viernes de guardia que le correspondan).
-function bloqueaGuardia(p, dow){ return p.urgEnReduccion ? false : bloqueaDia(p, dow); }
+function bloqueaGuardia(p, dow){
+  // Días en los que no hace guardias, aunque sí trabaje en consulta
+  if(((p.noUrgDows)||[]).indexOf(dow) >= 0) return true;
+  return p.urgEnReduccion ? false : bloqueaDia(p, dow);
+}
+function toggleNoUrgDow(p, dow){
+  p.noUrgDows = p.noUrgDows || [];
+  const i = p.noUrgDows.indexOf(dow);
+  if(i>=0) p.noUrgDows.splice(i,1); else p.noUrgDows.push(dow);
+}
 // ¿Está bloqueado el turno que corresponda?
 function bloqueaTurno(p, dow, slot){
   if(slot === "t") return bloqueaT(p, dow);
@@ -4222,6 +4231,12 @@ function viewEquipo(){
       '<button class="dowbtn'+(p.noOrt?"":" on")+'" style="width:auto;padding:0 8px'+(p.noOrt?"":";background:var(--teal-700);border-color:var(--teal-700)")+'" data-action="toggle-ort" data-pid="'+p.id+'">'+(p.noOrt?"No":"Sí")+'</button>'+
       '<span class="tiny" style="margin-left:10px;margin-right:2px">RXINT:</span>'+
       '<button class="dowbtn'+(p.noRxint?"":" on")+'" style="width:auto;padding:0 8px'+(p.noRxint?"":";background:var(--teal-700);border-color:var(--teal-700)")+'" data-action="toggle-rxint" data-pid="'+p.id+'">'+(p.noRxint?"No":"Sí")+'</button>'+
+      '<span class="tiny" style="margin-left:10px;margin-right:3px" title="Días de la semana en los que no se le asignan guardias, aunque sí pase consulta">Sin guardia:</span>'+
+      [1,2,3,4,5,6,0].map(dw=>'<button class="dowbtn'+(((p.noUrgDows)||[]).indexOf(dw)>=0?" on":"")+'" '+
+        'style="'+(((p.noUrgDows)||[]).indexOf(dw)>=0?'background:#b91c1c;border-color:#b91c1c;color:#fff':'')+'" '+
+        'data-action="toggle-nourgdow" data-pid="'+p.id+'" data-dow="'+dw+'">'+WD[dw]+'</button>').join("")+
+      '<span class="tiny" style="margin-left:10px;margin-right:2px" title="Exime de la regla de una guardia por semana. Mantiene el resto: nunca días seguidos y máximo 2 en 6 días. Útil para quien tiene guardia fija un día concreto.">Sin tope semanal:</span>'+
+      '<button class="dowbtn'+(p.sinTopeSemanal?" on":"")+'" style="width:auto;padding:0 8px'+(p.sinTopeSemanal?";background:#7c3aed;border-color:#7c3aed":"")+'" data-action="toggle-topesem" data-pid="'+p.id+'">'+(p.sinTopeSemanal?"Sí":"No")+'</button>'+
       '<span class="tiny" style="margin-left:10px;margin-right:2px" title="¿Puede tener tarde sin consulta esa mañana?">Tarde suelta:</span>'+
       '<button class="dowbtn'+(p.tardeSuelta?" on":"")+'" style="width:auto;padding:0 8px'+(p.tardeSuelta?";background:var(--teal-700);border-color:var(--teal-700)":"")+'" data-action="toggle-tsuelta" data-pid="'+p.id+'">'+(p.tardeSuelta?"Sí":"No")+'</button>'+
       '<span class="tiny" style="margin-left:10px;margin-right:2px" title="Día de la semana en que prefiere quedarse por la tarde">Tarde pref.:</span>'+
@@ -5019,7 +5034,18 @@ function generateMonth(mode){
     }
     return false;
   };
-  const puedeUrgencia = (p, dkey)=> urgEnSemana(p.id, dkey)===0 && !urgDiaContiguo(p.id, dkey) && !excedeVentana(p.id, dkey);
+  // Con «sin tope semanal» se exceptúa la regla de una guardia por semana.
+  // Se mantienen las otras dos: nunca en días seguidos, y máximo 2 en 6 días.
+  // Así, quien tenga guardia fija un día concreto sigue sin poder hacer el día
+  // anterior ni el siguiente, pero recupera viernes, fines de semana y festivos.
+  const puedeUrgencia = (p, dkey)=>{
+    const pr = dkey.split("-").map(Number);
+    const dw = new Date(pr[0], pr[1]-1, pr[2]).getDay();
+    if(((p.noUrgDows)||[]).indexOf(dw) >= 0) return false;   // ese día no hace guardias
+    return (p.sinTopeSemanal ? true : urgEnSemana(p.id, dkey)===0) &&
+    !urgDiaContiguo(p.id, dkey) &&
+    !excedeVentana(p.id, dkey);
+  };
   // Víspera de festivo: el día siguiente es festivo. Funciona como un viernes → cuenta como URGLV.
   const esPrefestivo = (dkey)=>{
     const pr = dkey.split("-").map(Number);
@@ -5617,7 +5643,7 @@ document.addEventListener("click", e=>{
   if(!el){ return; }
   const act = el.dataset.action;
   if(act==="admvo-ejecutado" && (MODE!=="viewer" || esAdministrativo())){ /* permitido */ }
-  else if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-urgred","toggle-tsuelta","toggle-required","official-on","official-off","admvo-cerrar","admvo-abrir","deshacer","vac-marcar","vac-quitar","copia-descargar","copia-servidor","rot-cell","rot-set","rot-gen","rot-clear","puerta-toggle","guardia-dia","rot-guardia-res","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","buzon-recibir","buzon-guardar","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+  else if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-urgred","toggle-tsuelta","toggle-topesem","toggle-nourgdow","toggle-required","official-on","official-off","admvo-cerrar","admvo-abrir","deshacer","vac-marcar","vac-quitar","copia-descargar","copia-servidor","rot-cell","rot-set","rot-gen","rot-clear","puerta-toggle","guardia-dia","rot-guardia-res","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","buzon-recibir","buzon-guardar","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
       ui.reqDraft = {}; ui.reqNote = "";
@@ -6499,6 +6525,16 @@ document.addEventListener("click", e=>{
     case "toggle-rxint": {
       const p = state.physicians.find(x=>x.id===el.dataset.pid); if(!p) break;
       p.noRxint = !p.noRxint;
+      save(); render(); break;
+    }
+    case "toggle-nourgdow": {
+      const p = state.physicians.find(x=>x.id===el.dataset.pid); if(!p) break;
+      toggleNoUrgDow(p, Number(el.dataset.dow));
+      save(); render(); break;
+    }
+    case "toggle-topesem": {
+      const p = state.physicians.find(x=>x.id===el.dataset.pid); if(!p) break;
+      p.sinTopeSemanal = !p.sinTopeSemanal;
       save(); render(); break;
     }
     case "toggle-tsuelta": {
