@@ -227,7 +227,9 @@ const CONSULTAS = [
   {code:"ALRU",short:"ALRU",group:"M",cls:"k-alru"},
   {code:"ORT",short:"ORT",group:"M",cls:"k-ort"},
   {code:"ALT1",short:"ALT1",group:"T",cls:"k-alt"},{code:"ALT2",short:"ALT2",group:"T",cls:"k-alt"},
-  {code:"ALT3",short:"ALT3",group:"T",cls:"k-alt"},
+  {code:"ALT3",short:"ALT3",group:"T",cls:"k-alt"},{code:"ALT4",short:"ALT4",group:"T",cls:"k-alt"},
+  {code:"ALT5",short:"ALT5",group:"T",cls:"k-alt"},
+  {code:"RHBT1",short:"RHT1",group:"T",cls:"k-rhbt"},{code:"RHBT2",short:"RHT2",group:"T",cls:"k-rhbt"},
   {code:"RHBT",short:"RHT",group:"T",cls:"k-rhbt"},
   {code:"ADM",short:"ADM",group:"M",cls:"k-adm"},
   {code:"ADMT",short:"ADMT",group:"T",cls:"k-adm"},
@@ -934,7 +936,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v118";
+const APP_VERSION = "v119";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2188,7 +2190,7 @@ function objetivoRotante(){
 }
 
 const RES_MANANA = (c)=> !!c && /^AL[1-7]$/.test(c);
-const RES_TARDE  = (c)=> !!c && /^ALT[1-3]$/.test(c);
+const RES_TARDE  = (c)=> !!c && /^ALT[1-5]$/.test(c);
 
 // ---------- Marcar guardias de puerta ----------
 function viewGuardiasPuerta(){
@@ -2632,13 +2634,14 @@ function validarIntercambio(pidA, dateA, pidB, dateB){
 // Consultas genéricas que cambian de nombre según el turno:
 // las AL de mañana pasan a ALT si van a la tarde, y al revés.
 const FAM_AL  = ["AL1","AL2","AL3","AL4","AL5","AL6","AL7"];
-const FAM_ALT = ["ALT1","ALT2","ALT3"];
+const FAM_ALT = ["ALT1","ALT2","ALT3","ALT4","ALT5"];
 const FAM_RHB = ["RHB1","RHB2"];
+const FAM_RHBT = ["RHBT1","RHBT2"];
 function familiaDe(code, slot){
   // Alta resolución: la familia depende del TURNO de destino, no del código de origen
-  if(/^AL[1-7]$/.test(code) || /^ALT[1-3]$/.test(code)) return (slot==="t") ? FAM_ALT : FAM_AL;
-  // Rehabilitación: RHB1/RHB2 por la mañana, RHBT por la tarde
-  if(/^RHB[12]$/.test(code) || code==="RHBT") return (slot==="t") ? ["RHBT"] : FAM_RHB;
+  if(/^AL[1-7]$/.test(code) || /^ALT[1-5]$/.test(code)) return (slot==="t") ? FAM_ALT : FAM_AL;
+  // Rehabilitación: RHB1/RHB2 por la mañana, RHBT1/RHBT2 por la tarde
+  if(/^RHB[12]$/.test(code) || /^RHBT[12]?$/.test(code)) return (slot==="t") ? FAM_RHBT : FAM_RHB;
   return null;   // ALINTER, ALRU, ORT, RXINT, ADM y Tráfico no se sustituyen
 }
 // getter opcional para trabajar sobre una simulación en curso
@@ -3335,7 +3338,7 @@ function viewHistorial(){
 
 // ---------- Pestaña Administrativo ----------
 // Muestra qué agendas están abiertas cada día, para poder citar pacientes.
-const AGENDAS_CONSULTA = ["AL1","AL2","AL3","AL4","AL5","AL6","AL7","ALT1","ALT2","ALT3","ALRU"];
+const AGENDAS_CONSULTA = ["AL1","AL2","AL3","AL4","AL5","AL6","AL7","ALT1","ALT2","ALT3","ALT4","ALT5","ALRU"];
 
 // Días del mes en que una consulta concreta está abierta (la pase quien la pase)
 function diasDeConsulta(codigo, mo){
@@ -3368,7 +3371,7 @@ function diasDeFacultativo(pid, grupo, mo){
     else if(grupo==="ALRU")    hay = (a.m==="ALRU");
     else if(grupo==="RHB1")    hay = (a.m==="RHB1");
     else if(grupo==="RHB2")    hay = (a.m==="RHB2");
-    else if(grupo==="RHBT")    hay = (a.t==="RHBT");
+    else if(grupo==="RHBT")    hay = /^RHBT[12]?$/.test(a.t||"");
     if(hay) out.push(d);
   }
   return out;
@@ -4219,6 +4222,21 @@ function viewEquipo(){
       '<button class="dowbtn'+(p.noOrt?"":" on")+'" style="width:auto;padding:0 8px'+(p.noOrt?"":";background:var(--teal-700);border-color:var(--teal-700)")+'" data-action="toggle-ort" data-pid="'+p.id+'">'+(p.noOrt?"No":"Sí")+'</button>'+
       '<span class="tiny" style="margin-left:10px;margin-right:2px">RXINT:</span>'+
       '<button class="dowbtn'+(p.noRxint?"":" on")+'" style="width:auto;padding:0 8px'+(p.noRxint?"":";background:var(--teal-700);border-color:var(--teal-700)")+'" data-action="toggle-rxint" data-pid="'+p.id+'">'+(p.noRxint?"No":"Sí")+'</button>'+
+      '<span class="tiny" style="margin-left:10px;margin-right:2px" title="Día de la semana en que prefiere quedarse por la tarde">Tarde pref.:</span>'+
+      '<select data-field="tarde-pref" data-pid="'+p.id+'" style="padding:3px 6px;border:1px solid var(--slate-300);border-radius:8px;font-size:12px">'+
+        '<option value="">—</option>'+
+        [1,2,3,4].map(dw=>'<option value="'+dw+'"'+(Number(p.tardePref||0)===dw?" selected":"")+'>'+WD[dw]+'</option>').join("")+
+      '</select>'+
+      (p.tardePref ? (function(){
+        let tot=0, ok=0;
+        monthDays().forEach(d=>{
+          const a=state.assignments[p.id+"|"+d.key];
+          if(a && a.t && !esTrafico(a.t)){ tot++; if(Number(p.tardePref)===d.dow) ok++; }
+        });
+        if(!tot) return '';
+        return '<span class="tiny" title="Tardes de este mes en su día preferido" style="margin-left:5px;color:'+
+          (ok===tot?'var(--emerald-700)':(ok?'#b45309':'#b91c1c'))+';font-weight:700">'+ok+'/'+tot+'</span>';
+      })() : '')+
       '<span class="tiny" style="margin-left:10px;margin-right:2px" title="Si tiene reducción de jornada un día, ¿sigue entrando en el reparto de guardias ese día?">URG en reducción:</span>'+
       '<button class="dowbtn'+(p.urgEnReduccion?" on":"")+'" style="width:auto;padding:0 8px'+(p.urgEnReduccion?";background:var(--teal-700);border-color:var(--teal-700)":"")+'" data-action="toggle-urgred" data-pid="'+p.id+'">'+(p.urgEnReduccion?"Sí":"No")+'</button>'+
       '<span class="tiny" style="margin-left:10px;margin-right:2px">Residente:</span>'+
@@ -4911,6 +4929,20 @@ function carryBalance(p, beforeMonth, fromMonth){
   return done - due;   // + = de más ; - = de menos
 }
 
+// ¿Este día es el que prefiere para su tarde?
+function tardePreferida(p, dow){ return Number(p.tardePref||0) === dow; }
+// Cuántas tardes lleva ya en su día preferido este mes
+function tardesEnPreferido(pid){
+  const p = state.physicians.find(x=>x.id===pid); if(!p || !p.tardePref) return 0;
+  let n=0;
+  monthDays().forEach(d=>{
+    if(d.dow !== Number(p.tardePref)) return;
+    const a = state.assignments[pid+"|"+d.key];
+    if(a && a.t && !esTrafico(a.t)) n++;
+  });
+  return n;
+}
+
 function generateMonth(mode){
   marcarDeshacer(mode==="regen" ? "generación del mes" : "relleno del mes");
   const strictMode = state.settings.strictQuota===true;
@@ -5440,9 +5472,19 @@ function generateMonth(mode){
         // Entre válidos: menos tardes en el mes, luego mayor déficit de jornadas, luego azar.
         cand.sort((x,y)=>{
           // Consulta habitual primero (p. ej. RHBT para quien tiene RHB1/RHB2)
-          const px = (x.pref===c || (c==="RHBT" && esRHB(x))) ? 0 : 1;
-          const py = (y.pref===c || (c==="RHBT" && esRHB(y))) ? 0 : 1;
+          const esRhbt = /^RHBT[12]?$/.test(c);
+          const px = (x.pref===c || (esRhbt && esRHB(x))) ? 0 : 1;
+          const py = (y.pref===c || (esRhbt && esRHB(y))) ? 0 : 1;
           if(px!==py) return px-py;
+          // Día de tarde preferido: quien lo tenga hoy va primero.
+          // Entre ellos, el que menos veces lo ha visto cumplido este mes.
+          const fx = tardePreferida(x, d.dow) ? 0 : 1;
+          const fy = tardePreferida(y, d.dow) ? 0 : 1;
+          if(fx!==fy) return fx-fy;
+          if(fx===0){
+            const cx = tardesEnPreferido(x.id), cy = tardesEnPreferido(y.id);
+            if(cx!==cy) return cx-cy;
+          }
           if(tardeTotal[x.id]!==tardeTotal[y.id]) return tardeTotal[x.id]-tardeTotal[y.id];
           const dd = deficit(y)-deficit(x);
           if(Math.abs(dd)>1e-9) return dd;
@@ -5503,8 +5545,12 @@ function generateMonth(mode){
           }
         }
         if(done) break;
-        // 2ª vuelta: tardes, respetando el tope de 1 tarde por semana
-        for(const d of labDays){
+        // 2ª vuelta: tardes, respetando el tope de 1 tarde por semana.
+        // Se prueban primero los días que el facultativo tiene como preferidos.
+        const diasTarde = p.tardePref
+          ? labDays.slice().sort((a,b)=> (tardePreferida(p,b.dow)?1:0) - (tardePreferida(p,a.dow)?1:0))
+          : labDays;
+        for(const d of diasTarde){
           if(d.dow===5) continue;                    // nunca viernes
           if(blockedOn(p,d,"t")) continue;
           const a=getA(p.id,d.key);
@@ -6537,6 +6583,11 @@ document.addEventListener("change", e=>{
   else if(field==="urgreq"){ state.settings.urgRequired = el.checked; save(); }
   else if(field==="minmorning"){ state.settings.minMorning = Math.min(20,Math.max(0,Number(el.value)||0)); save(); }
   else if(field==="maxmorning"){ state.settings.maxMorning = Math.min(20,Math.max(1,Number(el.value)||8)); save(); }
+  else if(field==="tarde-pref"){
+    const p = state.physicians.find(x=>x.id===el.dataset.pid);
+    if(p){ p.tardePref = el.value ? Number(el.value) : 0; save(); render(); }
+    return;
+  }
   else if(field==="vac-pid"){ (ui.vacDraft=ui.vacDraft||{}).pid = el.value; return; }
   else if(field==="vac-desde"){ (ui.vacDraft=ui.vacDraft||{}).desde = el.value; return; }
   else if(field==="vac-hasta"){ (ui.vacDraft=ui.vacDraft||{}).hasta = el.value; return; }
