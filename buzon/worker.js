@@ -17,6 +17,7 @@
  *
  * Para el calendario suscrito (opcional):
  *   CLAVE_CALENDARIO → clave que se añade a la dirección del calendario
+ *   CLAVE_ADMVO      → contraseña de los administrativos para marcar cambios reajustados
  *
  * Y un almacén KV enlazado con el nombre:  BUZON
  */
@@ -267,6 +268,173 @@ export default {
         if (!cuerpo) return json({ error: "Petición mal formada." }, 400);
         const vale = !!env.CLAVE_PUBLICAR && cuerpo.clave === env.CLAVE_PUBLICAR;
         return json({ ok: true, valida: vale });
+      }
+
+      // ---------- Copias de seguridad guardadas en el servidor ----------
+      if (request.method === "POST" && ruta === "/copia") {
+        const cuerpo = await request.json().catch(() => null);
+        if (!cuerpo) return json({ error: "Petición mal formada." }, 400);
+        if (!env.CLAVE_ADMIN || cuerpo.admin !== env.CLAVE_ADMIN) {
+          return json({ error: "Clave de administración incorrecta." }, 403);
+        }
+        if (!cuerpo.datos) return json({ error: "Faltan los datos." }, 400);
+        const texto = typeof cuerpo.datos === "string" ? cuerpo.datos : JSON.stringify(cuerpo.datos);
+        if (texto.length > 20 * 1024 * 1024) return json({ error: "Copia demasiado grande." }, 413);
+        const id = "copia:" + new Date().toISOString().replace(/[:.]/g, "-");
+        // Se conservan 180 días
+        await env.BUZON.put(id, texto, { expirationTtl: 60 * 60 * 24 * 180 });
+        return json({ ok: true, id: id, tamano: texto.length });
+      }
+      if (request.method === "GET" && ruta === "/copias") {
+        const clave = url.searchParams.get("admin") || "";
+        if (!env.CLAVE_ADMIN || clave !== env.CLAVE_ADMIN) {
+          return json({ error: "Clave de administración incorrecta." }, 403);
+        }
+        const lista = await env.BUZON.list({ prefix: "copia:" });
+        const ids = lista.keys.map(k => k.name).sort().reverse();
+        // Si se pide una concreta, se devuelve entera
+        const pedir = url.searchParams.get("id");
+        if (pedir) {
+          const v = await env.BUZON.get(pedir);
+          if (!v) return json({ error: "No se encuentra esa copia." }, 404);
+          return new Response(v, { headers: { "Content-Type": "application/json; charset=utf-8", ...CORS } });
+        }
+        return json({ ok: true, total: ids.length, copias: ids });
+      }
+
+      // ---------- Copias de seguridad guardadas en el servidor ----------
+      if (request.method === "POST" && ruta === "/copia") {
+        const cuerpo = await request.json().catch(() => null);
+        if (!cuerpo) return json({ error: "Petición mal formada." }, 400);
+        if (!env.CLAVE_PUBLICAR || cuerpo.clave !== env.CLAVE_PUBLICAR) {
+          return json({ error: "Contraseña incorrecta." }, 403);
+        }
+        if (!cuerpo.datos) return json({ error: "Faltan los datos." }, 400);
+        const sello = new Date().toISOString().replace(/[:.]/g, "-");
+        const id = "copia:" + sello;
+        const texto = JSON.stringify(cuerpo.datos);
+        if (texto.length > 3000000) return json({ error: "Copia demasiado grande." }, 413);
+        // Se conservan 180 días
+        await env.BUZON.put(id, texto, { expirationTtl: 60 * 60 * 24 * 180 });
+        await env.BUZON.put("copia-info:" + sello, JSON.stringify({
+          fecha: new Date().toISOString(),
+          nota: String(cuerpo.nota || "").slice(0, 200),
+          bytes: texto.length
+        }), { expirationTtl: 60 * 60 * 24 * 180 });
+        return json({ ok: true, id: id, bytes: texto.length });
+      }
+
+      // Listado de copias guardadas
+      if (request.method === "GET" && ruta === "/copias") {
+        const clave = url.searchParams.get("clave") || "";
+        if (!env.CLAVE_PUBLICAR || clave !== env.CLAVE_PUBLICAR) {
+          return json({ error: "Contraseña incorrecta." }, 403);
+        }
+        const lista = await env.BUZON.list({ prefix: "copia-info:" });
+        const copias = [];
+        for (const k of lista.keys) {
+          const v = await env.BUZON.get(k.name, "json");
+          if (v) copias.push({ id: "copia:" + k.name.slice("copia-info:".length), ...v });
+        }
+        copias.sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+        return json({ ok: true, total: copias.length, copias: copias.slice(0, 60) });
+      }
+
+      // Descargar una copia concreta
+      if (request.method === "GET" && ruta === "/copia") {
+        const clave = url.searchParams.get("clave") || "";
+        const id = url.searchParams.get("id") || "";
+        if (!env.CLAVE_PUBLICAR || clave !== env.CLAVE_PUBLICAR) {
+          return json({ error: "Contraseña incorrecta." }, 403);
+        }
+        if (!id.startsWith("copia:")) return json({ error: "Identificador no válido." }, 400);
+        const datos = await env.BUZON.get(id);
+        if (!datos) return json({ error: "No se encuentra esa copia." }, 404);
+        return new Response(datos, {
+          headers: { "Content-Type": "application/json; charset=utf-8", ...CORS }
+        });
+      }
+
+      // ---------- Los administrativos marcan un cambio como reajustado ----------
+      // Solo tocan ese indicador: el resto del cuadrante queda intacto.
+      if (request.method === "POST" && ruta === "/ejecutado") {
+        const cuerpo = await request.json().catch(() => null);
+        if (!cuerpo) return json({ error: "Petición mal formada." }, 400);
+        if (!env.CLAVE_ADMVO || cuerpo.clave !== env.CLAVE_ADMVO) {
+          return json({ error: "Contraseña de administrativo incorrecta." }, 403);
+        }
+        if (!env.GITHUB_TOKEN || !env.GH_OWNER || !env.GH_REPO) {
+          return json({ error: "El servidor no tiene configurado el destino en GitHub." }, 500);
+        }
+        const mk = String(cuerpo.mk || ""), id = String(cuerpo.id || "");
+        if (!mk || !id) return json({ error: "Faltan datos del cambio." }, 400);
+
+        const rama = env.GH_BRANCH || "main";
+        const api = "https://api.github.com/repos/" + env.GH_OWNER + "/" + env.GH_REPO + "/contents/data.json";
+        const cabeceras = {
+          "Authorization": "Bearer " + env.GITHUB_TOKEN,
+          "Accept": "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "buzon-cuadrante"
+        };
+
+        // Leer el cuadrante publicado
+        const actual = await fetch(api + "?ref=" + encodeURIComponent(rama), { headers: cabeceras });
+        if (!actual.ok) return json({ error: "No se ha podido leer el cuadrante." }, 502);
+        const meta = await actual.json();
+        let datos;
+        try {
+          const bin = atob(String(meta.content || "").replace(/\n/g, ""));
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          datos = JSON.parse(new TextDecoder().decode(bytes));
+        } catch (e) { return json({ error: "Cuadrante ilegible." }, 502); }
+
+        // Marcar SOLO ese cambio
+        const lista = (datos.cambiosAdm || {})[mk] || [];
+        const c = lista.find(x => x && x.id === id);
+        if (!c) return json({ error: "No se encuentra ese cambio." }, 404);
+        if (cuerpo.valor === false) {
+          // Se deshace: el cuadrante vuelve a como estaba y queda de nuevo en espera
+          delete c.ejecutado; delete c.ejecutadoAt;
+          if (Array.isArray(c.previas)) {
+            datos.assignments = datos.assignments || {};
+            c.previas.forEach(x => {
+              if (x && x.k) { if (x.valor) datos.assignments[x.k] = x.valor; else delete datos.assignments[x.k]; }
+            });
+            c.pendiente = true;
+          }
+        } else {
+          // Se ejecuta: ahora sí se aplica al cuadrante
+          if (c.pendiente && Array.isArray(c.celdas)) {
+            datos.assignments = datos.assignments || {};
+            c.celdas.forEach(x => {
+              if (x && x.k) { if (x.valor) datos.assignments[x.k] = x.valor; else delete datos.assignments[x.k]; }
+            });
+            delete c.pendiente;
+          }
+          c.ejecutado = true; c.ejecutadoAt = new Date().toISOString();
+        }
+        datos.publishedAt = new Date().toISOString();
+        datos.publishedBy = "administrativo";
+
+        // Guardar de vuelta
+        const texto = JSON.stringify(datos);
+        const bytes2 = new TextEncoder().encode(texto);
+        let binario = "";
+        for (const b of bytes2) binario += String.fromCharCode(b);
+        const guardar = await fetch(api, {
+          method: "PUT",
+          headers: { ...cabeceras, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: "Administrativo: cambio " + (cuerpo.valor === false ? "pendiente" : "reajustado"),
+            content: btoa(binario),
+            branch: rama,
+            sha: meta.sha
+          })
+        });
+        if (!guardar.ok) return json({ error: "No se ha podido guardar (" + guardar.status + ")." }, 502);
+        return json({ ok: true, ejecutado: cuerpo.valor !== false });
       }
 
       // ---------- Publicar el cuadrante en GitHub ----------

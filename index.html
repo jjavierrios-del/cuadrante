@@ -152,11 +152,14 @@
   .updown button:hover{color:var(--slate-800)}
 
   /* Estadísticas */
-  .stats{min-width:900px; border-collapse:collapse}
+  .stats{min-width:1120px; border-collapse:collapse; table-layout:fixed}
   .stats td,.stats th{white-space:nowrap; box-sizing:border-box}
-  .stats th:not(:first-child),.stats td:not(:first-child){min-width:56px; padding-left:6px; padding-right:6px}
+  .stats th:not(:first-child),.stats td:not(:first-child){width:58px; min-width:58px; padding-left:6px; padding-right:6px}
   @media(max-width:700px){
-    .stats th:not(:first-child),.stats td:not(:first-child){min-width:50px; font-size:12px}
+    .stats th:not(:first-child),.stats td:not(:first-child){width:52px; min-width:52px; font-size:12px}
+    .stats th:nth-child(2),.stats td:nth-child(2){width:120px; min-width:120px}
+    .stats th:nth-child(3),.stats td:nth-child(3){width:88px;  min-width:88px}
+    .stats{min-width:1020px}
   }
   .stats th{text-align:center; font-size:11px; color:var(--slate-500); padding:6px 8px}
   .stats th:first-child,.stats td:first-child{text-align:left; width:150px; min-width:150px; max-width:150px; overflow:hidden; text-overflow:ellipsis;
@@ -936,7 +939,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v123";
+const APP_VERSION = "v124";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
