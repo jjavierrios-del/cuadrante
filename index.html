@@ -936,7 +936,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v122";
+const APP_VERSION = "v123";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -4231,6 +4231,11 @@ function viewEquipo(){
       '<button class="dowbtn'+(p.noOrt?"":" on")+'" style="width:auto;padding:0 8px'+(p.noOrt?"":";background:var(--teal-700);border-color:var(--teal-700)")+'" data-action="toggle-ort" data-pid="'+p.id+'">'+(p.noOrt?"No":"Sí")+'</button>'+
       '<span class="tiny" style="margin-left:10px;margin-right:2px">RXINT:</span>'+
       '<button class="dowbtn'+(p.noRxint?"":" on")+'" style="width:auto;padding:0 8px'+(p.noRxint?"":";background:var(--teal-700);border-color:var(--teal-700)")+'" data-action="toggle-rxint" data-pid="'+p.id+'">'+(p.noRxint?"No":"Sí")+'</button>'+
+      '<span class="tiny" style="margin-left:10px;margin-right:2px" title="Le asigna guardia todos los días de la semana elegidos, salvo vacaciones, permisos y festivos. No cuenta para las reglas de separación.">Guardia fija:</span>'+
+      '<select data-field="guardia-fija" data-pid="'+p.id+'" style="padding:3px 6px;border:1px solid var(--slate-300);border-radius:8px;font-size:12px'+(p.guardiaFija?';background:#fef3c7;font-weight:700':'')+'">'+
+        '<option value="">—</option>'+
+        [1,2,3,4,5].map(dw=>'<option value="'+dw+'"'+(Number(p.guardiaFija||0)===dw?" selected":"")+'>'+WD[dw]+'</option>').join("")+
+      '</select>'+
       '<span class="tiny" style="margin-left:10px;margin-right:3px" title="Días de la semana en los que no se le asignan guardias, aunque sí pase consulta">Sin guardia:</span>'+
       [1,2,3,4,5,6,0].map(dw=>'<button class="dowbtn'+(((p.noUrgDows)||[]).indexOf(dw)>=0?" on":"")+'" '+
         'style="'+(((p.noUrgDows)||[]).indexOf(dw)>=0?'background:#b91c1c;border-color:#b91c1c;color:#fff':'')+'" '+
@@ -4991,12 +4996,25 @@ function generateMonth(mode){
   // ---- Una sola urgencia por semana y facultativo ----
   const esUrgencia = (a)=> !!a && (a.f==="URG" || a.f==="URGLV" || a.f==="URGF");
   // Urgencias que ya tiene en la semana ISO (lunes a DOMINGO) de esa fecha, aunque cruce de mes
+  // Una guardia FIJA (p. ej. todos los martes) no cuenta para las reglas de
+  // separación: ni para el tope semanal, ni para días seguidos, ni para la
+  // ventana de 6 días. Así el facultativo sigue compitiendo por viernes y
+  // festivos en igualdad con el resto.
+  const esFijaDe = (pid, dkey)=>{
+    const p = state.physicians.find(x=>x.id===pid);
+    if(!p || !p.guardiaFija) return false;
+    const pr = dkey.split("-").map(Number);
+    const dt = new Date(pr[0], pr[1]-1, pr[2]);
+    if(dt.getDay() !== Number(p.guardiaFija)) return false;
+    if(holidayMap()[dkey]) return false;              // los festivos no son fijos
+    return esUrgencia(state.assignments[pid+"|"+dkey]);
+  };
   const urgEnSemana = (pid, dkey)=>{
     const monday = mondayOf(dkey); let n=0;
     for(let i=0;i<7;i++){
       const d = new Date(monday); d.setDate(monday.getDate()+i);
       const key = keyOf(d.getFullYear(), d.getMonth(), d.getDate());
-      if(esUrgencia(state.assignments[pid+"|"+key])) n++;
+      if(esUrgencia(state.assignments[pid+"|"+key]) && !esFijaDe(pid, key)) n++;
     }
     return n;
   };
@@ -5028,7 +5046,7 @@ function generateMonth(mode){
         const d = new Date(ini); d.setDate(ini.getDate()+i);
         const key = keyOf(d.getFullYear(), d.getMonth(), d.getDate());
         if(key===dkey) continue;                  // ya contada
-        if(esUrgencia(state.assignments[pid+"|"+key])) n++;
+        if(esUrgencia(state.assignments[pid+"|"+key]) && !esFijaDe(pid, key)) n++;
       }
       if(n > VENTANA_MAX) return true;
     }
@@ -5238,6 +5256,30 @@ function generateMonth(mode){
   };
 
   // =========================================================
+  // FASE 0 · Guardias FIJAS (p. ej. todos los martes de un facultativo).
+  // Se saltan vacaciones, permisos, bajas, días de no disponibilidad y festivos.
+  // =========================================================
+  if(urgReq){
+    state.physicians.forEach(p=>{
+      const dw = Number(p.guardiaFija||0);
+      if(!dw) return;
+      allDays.forEach(d=>{
+        if(d.dow !== dw) return;
+        if(d.holiday || d.dow===0 || d.dow===6) return;        // los festivos van al reparto normal
+        if(!notAbsent(p, d.key)) return;                       // vacaciones, baja o permiso
+        if(esDiaLibre(p.id, d.key)) return;                    // día de no disponibilidad
+        if(bloqueaGuardia(p, d.dow)) return;                   // no trabaja ese día
+        const a = getA(p.id, d.key);
+        if(a && (a.f || a.m || a.t)) return;                   // ya tiene algo puesto
+        // Otro compañero ya cubre esa urgencia
+        if(state.physicians.some(q=>esUrgencia(state.assignments[q.id+"|"+d.key]))) return;
+        const tipo = (d.dow===1 || d.dow===5 || esPrefestivo(d.key)) ? "URGLV" : "URG";
+        state.assignments[p.id+"|"+d.key] = {m:null, t:null, f:tipo};
+        assigned++;
+      });
+    });
+  }
+
   // FASE 1 · URGF (festivos/findes) por rondas equitativas. No cuenta como jornada.
   // =========================================================
   if(urgReq){
@@ -6629,6 +6671,11 @@ document.addEventListener("change", e=>{
   else if(field==="urgreq"){ state.settings.urgRequired = el.checked; save(); }
   else if(field==="minmorning"){ state.settings.minMorning = Math.min(20,Math.max(0,Number(el.value)||0)); save(); }
   else if(field==="maxmorning"){ state.settings.maxMorning = Math.min(20,Math.max(1,Number(el.value)||8)); save(); }
+  else if(field==="guardia-fija"){
+    const p = state.physicians.find(x=>x.id===el.dataset.pid);
+    if(p){ p.guardiaFija = el.value ? Number(el.value) : 0; save(); render(); }
+    return;
+  }
   else if(field==="tarde-pref"){
     const p = state.physicians.find(x=>x.id===el.dataset.pid);
     if(p){ p.tardePref = el.value ? Number(el.value) : 0; save(); render(); }
