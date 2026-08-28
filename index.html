@@ -934,7 +934,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v117";
+const APP_VERSION = "v118";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2128,21 +2128,26 @@ function rotSet(pid,date,slot,code){
 // Consultas donde puede haber residente: AL1..AL7 por la mañana y ALT1..ALT3 por la tarde
 // ---------- Guardias de puerta ----------
 function esGuardia(a){ return !!a && (a.f==="URG" || a.f==="URGLV" || a.f==="URGF"); }
-function esPuerta(pid, dkey){
-  const g = (state.guardiaRot||{})[pid+"|"+dkey];
-  if(g) return !!g.puerta;
-  return !!(state.puerta||{})[pid+"|"+dkey];      // formato anterior
-}
+// Compatibilidad con el formato anterior (marcado sobre el adjunto)
+function esPuerta(pid, dkey){ return !!(state.puerta||{})[pid+"|"+dkey]; }
 // ¿Qué residente está de guardia ese día, y con qué adjunto?
-function guardiaDeResidente(dkey){
+// Clave del nuevo formato: "R1|2027-11-02" → {puerta:true|false}
+function guardiaRotDe(rc, dkey){ return (state.guardiaRot||{})[rc+"|"+dkey] || null; }
+function residenteDeGuardia(dkey, rc){ return !!guardiaRotDe(rc, dkey); }
+function esGuardiaPuerta(rc, dkey){ const g = guardiaRotDe(rc, dkey); return !!(g && g.puerta); }
+// Residentes de guardia un día concreto
+function guardiasDelDia(dkey){
   const out = [];
-  Object.entries(state.guardiaRot||{}).forEach(([k,v])=>{
-    const partes = k.split("|");
-    if(partes[1]===dkey && v && v.rc) out.push({pid:partes[0], rc:v.rc, puerta:!!v.puerta});
-  });
+  ROT_CODES.forEach(rc=>{ const g = guardiaRotDe(rc, dkey); if(g) out.push({rc, puerta:!!g.puerta}); });
   return out;
 }
-function residenteDeGuardia(dkey, rc){ return guardiaDeResidente(dkey).some(x=>x.rc===rc); }
+// ¿Hay algún residente de puerta ese día?
+function hayPuerta(dkey){ return guardiasDelDia(dkey).some(x=>x.puerta); }
+// El adjunto que cubre urgencias ese día
+function adjuntoDeGuardia(dkey){
+  const p = state.physicians.find(x=>esGuardia(state.assignments[x.id+"|"+dkey]));
+  return p || null;
+}
 // El día siguiente a una guardia es saliente: no se trabaja y no computa.
 // Las guardias de viernes no generan saliente (el sábado no se trabaja).
 function esSaliente(rc, dkey){
@@ -2150,13 +2155,13 @@ function esSaliente(rc, dkey){
   const ant = new Date(dt); ant.setDate(dt.getDate()-1);
   const kAnt = keyOf(ant.getFullYear(), ant.getMonth(), ant.getDate());
   if(ant.getDay()===5) return false;              // guardia de viernes: sin saliente
-  return residenteDeGuardia(kAnt, rc);
+  return !!guardiaRotDe(rc, kAnt);
 }
-function setGuardiaRot(pid, dkey, rc, puerta){
+function setGuardiaRot(rc, dkey, activa, puerta){
   state.guardiaRot = state.guardiaRot || {};
-  const k = pid+"|"+dkey;
-  if(!rc) delete state.guardiaRot[k];
-  else state.guardiaRot[k] = {rc: rc, puerta: !!puerta};
+  const k = rc+"|"+dkey;
+  if(!activa) delete state.guardiaRot[k];
+  else state.guardiaRot[k] = {puerta: !!puerta};
   save();
 }
 function togglePuerta(pid, dkey){
@@ -2187,8 +2192,9 @@ const RES_TARDE  = (c)=> !!c && /^ALT[1-3]$/.test(c);
 
 // ---------- Marcar guardias de puerta ----------
 function viewGuardiasPuerta(){
-  const g = guardiasDelMes();
   const residentes = ROT_CODES.filter(rc=>((state.rotantesLeyenda||{})[rc]||"").trim());
+  const dias = monthDays().filter(d=>d.dow!==0 && d.dow!==6 && !d.holiday);
+  const sel = ui.rotGuardiaRc || (residentes[0]||"");
   let h = '<div class="seg no-print" style="margin-bottom:10px">'+
     '<button data-action="rot-sub-cuadro">Cuadro</button>'+
     '<button data-action="rot-sub-residente">Por residente</button>'+
@@ -2200,57 +2206,76 @@ function viewGuardiasPuerta(){
         '<button class="btn" style="border:none;padding:6px 8px" data-action="next-month">›</button>'+
       '</div></div>';
 
-  h += '<div class="card"><h2>Guardias de los residentes</h2>'+
-    '<p class="muted" style="margin-top:2px;font-size:14px">Indica qué residente hace cada guardia y si es <b>de puerta</b>. '+
-    'La mañana la pasa en consulta y computa; la tarde de puerta va a urgencias y no computa. '+
-    'El día siguiente es <b>saliente</b>: no se le asigna nada. Las de viernes no generan saliente.</p>'+
-    '<p class="tiny muted" style="margin-top:6px">Las guardias de fin de semana, al ser de fuera del servicio, márcalas como día de no disponibilidad el lunes.</p>';
-
-  if(!g.length){
-    h += '<p class="muted" style="margin-top:10px;font-size:14px">No hay guardias asignadas este mes.</p></div>';
-    return h;
-  }
   if(!residentes.length){
-    h += '<p class="muted" style="margin-top:10px;font-size:14px">Añade antes los nombres de los residentes en Ajustes.</p></div>';
-    return h;
+    return h + '<div class="card"><p class="muted">Añade antes los nombres de los residentes en Ajustes.</p></div>';
   }
-  const conRes = g.filter(x=>(state.guardiaRot||{})[x.pid+"|"+x.key]).length;
-  h += '<p class="tiny muted" style="margin-top:8px">'+conRes+' de '+g.length+' guardias con residente asignado.</p>';
-  h += '<div style="margin-top:8px">';
-  g.forEach(x=>{
-    const cfg = (state.guardiaRot||{})[x.pid+"|"+x.key] || {};
-    const asignado = cfg.rc || "";
-    const puerta = !!cfg.puerta;
-    // Saliente que generaría
-    const dt = new Date(x.key); const sig = new Date(dt); sig.setDate(dt.getDate()+1);
-    const haySaliente = asignado && dt.getDay()!==5;
-    h += '<div class="cambiofila" style="'+(asignado?'border-color:var(--teal-700);':'')+'">'+
-      '<div class="row between" style="align-items:center;gap:8px;flex-wrap:wrap">'+
-        '<div style="flex:1;min-width:150px">'+
-          '<b style="font-size:15px">'+fmtDate(x.key).slice(0,5)+' '+WD[x.dow]+'</b>'+
-          '<span class="tiny" style="margin-left:8px">'+esc(x.name)+'</span>'+
-          '<span class="tiny" style="margin-left:6px;background:var(--slate-200);padding:2px 7px;border-radius:999px">'+x.tipo+'</span>'+
-        '</div>'+
-      '</div>'+
-      '<div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap;align-items:center">'+
-        '<select data-field="grot-res" data-pid="'+x.pid+'" data-date="'+x.key+'" '+
-          'style="flex:1;min-width:130px;padding:7px;border:1px solid var(--slate-300);border-radius:8px;font-size:14px">'+
-          '<option value="">— sin residente —</option>'+
-          residentes.map(rc=>'<option value="'+rc+'"'+(asignado===rc?" selected":"")+'>'+
-            esc((state.rotantesLeyenda||{})[rc]||rc)+'</option>').join("")+
-        '</select>'+
-        (asignado
-          ? '<button class="btn" data-action="grot-puerta" data-pid="'+x.pid+'" data-date="'+x.key+'" '+
-            'style="padding:6px 12px;font-size:13px'+(puerta?';background:var(--teal-700);color:#fff;border-color:var(--teal-700)':'')+'">'+
-            (puerta?'✓ De puerta':'No puerta')+'</button>'
-          : '')+
-      '</div>'+
-      (haySaliente
-        ? '<p class="tiny" style="margin-top:6px;color:#b45309">Saliente el '+fmtDate(keyOf(sig.getFullYear(),sig.getMonth(),sig.getDate())).slice(0,5)+'</p>'
-        : (asignado ? '<p class="tiny muted" style="margin-top:6px">Guardia de viernes: sin saliente</p>' : ''))+
+
+  h += '<div class="card"><h2>Guardias de los residentes</h2>'+
+    '<p class="muted" style="margin-top:2px;font-size:14px">Elige un residente y marca sus días de guardia. '+
+    '<b>De puerta</b>: esa tarde va a nuestras urgencias con el adjunto de guardia. '+
+    '<b>No de puerta</b>: está de guardia fuera y esa tarde no pasa consulta. '+
+    'En los dos casos la mañana es normal y el día siguiente es saliente.</p>'+
+    '<p class="tiny muted" style="margin-top:6px">Las guardias de fin de semana no se marcan aquí: pon el lunes como día de no disponibilidad.</p>';
+
+  // Selector de residente
+  h += '<div class="seg" style="margin-top:12px;flex-wrap:wrap">'+
+    residentes.map(rc=>'<button class="'+(sel===rc?"on":"")+'" data-action="rot-guardia-res" data-rc="'+rc+'">'+
+      esc((state.rotantesLeyenda||{})[rc]||rc)+'</button>').join("")+
     '</div>';
+
+  const mias = dias.filter(d=>guardiaRotDe(sel, d.key));
+  h += '<p class="tiny muted" style="margin-top:10px">'+mias.length+' guardia'+(mias.length===1?'':'s')+' marcada'+(mias.length===1?'':'s')+' este mes.</p>';
+
+  // Rejilla de días del mes
+  h += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">';
+  dias.forEach(d=>{
+    const g = guardiaRotDe(sel, d.key);
+    const adj = adjuntoDeGuardia(d.key);
+    const fondo = !g ? "#fff" : (g.puerta ? "var(--teal-700)" : "#b45309");
+    const color = !g ? "var(--slate-700,#334155)" : "#fff";
+    h += '<button class="btn" data-action="guardia-dia" data-rc="'+sel+'" data-date="'+d.key+'" '+
+      'title="'+(adj?("Adjunto de guardia: "+esc(adj.name)):"Sin adjunto de guardia")+'" '+
+      'style="min-width:58px;padding:7px 4px;flex-direction:column;background:'+fondo+';color:'+color+
+      ';border-color:'+(g?fondo:'var(--slate-300)')+'">'+
+      '<b style="font-size:15px">'+d.n+'</b>'+
+      '<span style="font-size:10px;opacity:.85">'+WD[d.dow]+'</span>'+
+      (g?'<span style="font-size:9px;font-weight:700">'+(g.puerta?"PUERTA":"FUERA")+'</span>':'')+
+      '</button>';
   });
-  return h + '</div></div>';
+  h += '</div>'+
+    '<p class="tiny muted" style="margin-top:10px">Toca un día para marcarlo. Cada toque avanza: sin guardia → de puerta → fuera → sin guardia.</p>';
+
+  // Resumen de lo marcado
+  if(mias.length){
+    h += '<div style="margin-top:12px">';
+    mias.forEach(d=>{
+      const g = guardiaRotDe(sel, d.key);
+      const dt = new Date(d.key); const sig = new Date(dt); sig.setDate(dt.getDate()+1);
+      const sal = dt.getDay()!==5;
+      const adj = adjuntoDeGuardia(d.key);
+      h += '<div class="cambiofila">'+
+        '<div class="row between" style="align-items:center;gap:8px;flex-wrap:wrap">'+
+          '<div style="flex:1;min-width:0"><b>'+fmtDate(d.key).slice(0,5)+' '+WD[d.dow]+'</b>'+
+            '<span class="tiny" style="margin-left:8px;background:'+(g.puerta?'var(--teal-700)':'#b45309')+
+            ';color:#fff;padding:2px 8px;border-radius:999px">'+(g.puerta?'De puerta':'Fuera del servicio')+'</span></div>'+
+        '</div>'+
+        '<p class="tiny muted" style="margin-top:4px">'+
+          (g.puerta ? 'Tarde en urgencias con '+(adj?esc(adj.name):'el adjunto de guardia')+' · no computa'
+                    : 'Tarde bloqueada · no computa')+
+          (sal ? ' · saliente el '+fmtDate(keyOf(sig.getFullYear(),sig.getMonth(),sig.getDate())).slice(0,5)
+               : ' · viernes: sin saliente')+
+        '</p></div>';
+    });
+    h += '</div>';
+  }
+  // Aviso si dos residentes coinciden de puerta
+  const choques = dias.filter(d=>guardiasDelDia(d.key).filter(x=>x.puerta).length > 1);
+  if(choques.length){
+    h += '<div class="warnbox" style="margin-top:10px">⚠ Hay '+choques.length+' día'+(choques.length>1?'s':'')+
+      ' con más de un residente de puerta: '+choques.map(d=>fmtDate(d.key).slice(0,5)).join(", ")+
+      '. Solo uno puede ir con el adjunto de urgencias.</div>';
+  }
+  return h + '</div>';
 }
 
 // ---------- Agenda individual de cada residente ----------
@@ -2329,6 +2354,8 @@ function generateRotantes(){
   const libre = (r, dkey, slot)=>{
     if(rotResBloqueado(dkey, r)) return false;        // no disponibilidad
     if(esSaliente(r, dkey)) return false;             // saliente de guardia
+    // La tarde del día de guardia no admite consulta (de puerta o no)
+    if(slot==="t" && guardiaRotDe(r, dkey)) return false;
     // Un residente no puede estar en dos sitios en el mismo turno
     return !adjuntos.some(p=>state.rotantes[rotKey(p.id, dkey, slot)]===r);
   };
@@ -2341,15 +2368,15 @@ function generateRotantes(){
   // Ordena por quien menos turnos lleva
   const porCarga = (lista)=> lista.slice().sort((a,b)=> (turnos[a]-turnos[b]) || (plazas[a]-plazas[b]) || (Math.random()-0.5));
 
-  // ---------- Guardias marcadas: se respetan tal cual ----------
-  // La tarde de puerta ocupa al residente y NO computa; la mañana queda libre para consulta.
+  // ---------- Guardias de puerta: tarde en urgencias con el adjunto de guardia ----------
+  // Ocupa al residente y NO computa turno. La mañana queda libre para consulta.
   days.forEach(d=>{
-    guardiaDeResidente(d.key).forEach(g=>{
-      if(!residentes.includes(g.rc)) return;
-      if(g.puerta){
-        state.rotantes[rotKey(g.pid, d.key, "t")] = g.rc;
-        plazas[g.rc]++; asignadas++;                  // no suma turno
-      }
+    guardiasDelDia(d.key).forEach(g=>{
+      if(!residentes.includes(g.rc) || !g.puerta) return;
+      const adj = adjuntoDeGuardia(d.key);
+      if(!adj) return;
+      state.rotantes[rotKey(adj.id, d.key, "t")] = g.rc;
+      plazas[g.rc]++; asignadas++;                    // no suma turno
     });
   });
 
@@ -2372,26 +2399,17 @@ function generateRotantes(){
     });
   });
 
-  // ---------- 2ª pasada: urgencias, para quien no llegue al objetivo ----------
-  // Mañana de guardia: computa. Tarde de guardia: computa solo si NO es de puerta.
+  // ---------- 2ª pasada: mañana con el adjunto de urgencias ----------
   days.forEach(d=>{
-    adjuntos.forEach(p=>{
-      const a = state.assignments[p.id+"|"+d.key];
-      if(!esGuardia(a)) return;
-      // Mañana con el adjunto de guardia
-      if(!state.rotantes[rotKey(p.id, d.key, "m")]){
-        const cand = porCarga(residentes.filter(r=>libre(r,d.key,"m") && turnos[r] < objetivo));
-        if(cand.length) colocar(p.id, d.key, "m", cand[0], true);
-      }
-      // Tarde: si la guardia es de puerta ya está cubierta arriba y no computa
-      if(!state.rotantes[rotKey(p.id, d.key, "t")] && !esPuerta(p.id, d.key)){
-        const cand = porCarga(residentes.filter(r=>libre(r,d.key,"t") && turnos[r] < objetivo));
-        if(cand.length) colocar(p.id, d.key, "t", cand[0], true);
-      }
-    });
+    const adj = adjuntoDeGuardia(d.key);
+    if(!adj || !adjuntos.some(p=>p.id===adj.id)) return;
+    if(!state.rotantes[rotKey(adj.id, d.key, "m")]){
+      const cand = porCarga(residentes.filter(r=>libre(r,d.key,"m") && turnos[r] < objetivo));
+      if(cand.length) colocar(adj.id, d.key, "m", cand[0], true);
+    }
   });
 
-  // ---------- 3ª pasada: relleno final, admitiendo tarde sin mañana ----------
+  // ---------- 3ª pasada: relleno en consultas, admitiendo tarde sin mañana ----------
   const faltan = ()=> residentes.filter(r=>turnos[r] < objetivo);
   if(faltan().length){
     days.forEach(d=>{
@@ -2399,15 +2417,28 @@ function generateRotantes(){
       ["m","t"].forEach(slot=>{
         adjuntos.forEach(p=>{
           const a = state.assignments[p.id+"|"+d.key];
-          if(!a) return;
-          const hueco = a.f ? esGuardia(a) : (slot==="m" ? RES_MANANA(a.m) : RES_TARDE(a.t));
+          if(!a || a.f) return;
+          const hueco = (slot==="m") ? RES_MANANA(a.m) : RES_TARDE(a.t);
           if(!hueco || state.rotantes[rotKey(p.id, d.key, slot)]) return;
-          const computa = a.f ? !(slot==="t" && esPuerta(p.id, d.key)) : true;
-          if(!computa) return;                       // no sirve para completar turnos
           const cand = porCarga(faltan().filter(r=>libre(r,d.key,slot)));
           if(cand.length) colocar(p.id, d.key, slot, cand[0], true);
         });
       });
+    });
+  }
+
+  // ---------- 4ª pasada: ÚLTIMO recurso, tarde en urgencias ----------
+  // Solo si ese día ningún residente está de puerta: entonces el adjunto de
+  // urgencias queda libre para llevar residente por la tarde, y sí computa.
+  if(faltan().length){
+    days.forEach(d=>{
+      if(!faltan().length) return;
+      if(hayPuerta(d.key)) return;                    // la plaza la ocupa el de puerta
+      const adj = adjuntoDeGuardia(d.key);
+      if(!adj || !adjuntos.some(p=>p.id===adj.id)) return;
+      if(state.rotantes[rotKey(adj.id, d.key, "t")]) return;
+      const cand = porCarga(faltan().filter(r=>libre(r,d.key,"t")));
+      if(cand.length) colocar(adj.id, d.key, "t", cand[0], true);
     });
   }
 
@@ -2426,9 +2457,8 @@ function turnosRotante(rc){
     state.physicians.forEach(p=>{
       ["m","t"].forEach(slot=>{
         if(state.rotantes[rotKey(p.id, d.key, slot)] !== rc) return;
-        const cfgT = (state.guardiaRot||{})[p.id+"|"+d.key];
-        if(slot==="t" && cfgT && cfgT.rc===rc && cfgT.puerta) return;   // su tarde de puerta no computa
-        if(esSaliente(rc, d.key)) return;                                                  // saliente
+        if(slot==="t" && guardiaRotDe(rc, d.key)) return;   // tarde de guardia: no computa
+        if(esSaliente(rc, d.key)) return;                   // saliente
         n++;
       });
     });
@@ -2443,11 +2473,9 @@ function agendaRotante(rc){
       ["m","t"].forEach(slot=>{
         if(state.rotantes[rotKey(p.id, d.key, slot)] !== rc) return;
         const a = state.assignments[p.id+"|"+d.key] || {};
-        // La etiqueta depende del adjunto concreto, no del día
         const guardia = esGuardia(a);
-        const cfgG = (state.guardiaRot||{})[p.id+"|"+d.key];
-        const suGuardia = !!(cfgG && cfgG.rc === rc);          // es SU guardia, con este adjunto
-        const puerta = slot==="t" && suGuardia && !!cfgG.puerta;
+        const suGuardia = !!guardiaRotDe(rc, d.key);
+        const puerta = slot==="t" && suGuardia && esGuardiaPuerta(rc, d.key);
         out.push({
           key: d.key, dow: d.dow, slot,
           adjunto: p.name,
@@ -5538,7 +5566,7 @@ document.addEventListener("click", e=>{
   if(!el){ return; }
   const act = el.dataset.action;
   if(act==="admvo-ejecutado" && (MODE!=="viewer" || esAdministrativo())){ /* permitido */ }
-  else if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-urgred","toggle-required","official-on","official-off","admvo-cerrar","admvo-abrir","deshacer","vac-marcar","vac-quitar","copia-descargar","copia-servidor","rot-cell","rot-set","rot-gen","rot-clear","puerta-toggle","grot-puerta","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","buzon-recibir","buzon-guardar","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+  else if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-urgred","toggle-required","official-on","official-off","admvo-cerrar","admvo-abrir","deshacer","vac-marcar","vac-quitar","copia-descargar","copia-servidor","rot-cell","rot-set","rot-gen","rot-clear","puerta-toggle","guardia-dia","rot-guardia-res","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","buzon-recibir","buzon-guardar","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
       ui.reqDraft = {}; ui.reqNote = "";
@@ -5563,13 +5591,17 @@ document.addEventListener("click", e=>{
     case "rot-sub-residente": ui.rotSub="residente"; render(); break;
     case "rot-sub-puerta": ui.rotSub="puerta"; render(); break;
     case "rot-print": window.print(); break;
-    case "grot-puerta": {
-      const k = el.dataset.pid+"|"+el.dataset.date;
-      const cfg = (state.guardiaRot||{})[k];
-      if(cfg){ setGuardiaRot(el.dataset.pid, el.dataset.date, cfg.rc, !cfg.puerta); }
+    case "rot-guardia-res": { ui.rotGuardiaRc = el.dataset.rc; render(); break; }
+    case "guardia-dia": {
+      const rc = el.dataset.rc, dk = el.dataset.date;
+      const g = guardiaRotDe(rc, dk);
+      // Ciclo: sin guardia → de puerta → fuera → sin guardia
+      if(!g) setGuardiaRot(rc, dk, true, true);
+      else if(g.puerta) setGuardiaRot(rc, dk, true, false);
+      else setGuardiaRot(rc, dk, false, false);
       render(); break;
     }
-    case "puerta-toggle","grot-puerta": {
+    case "puerta-toggle","guardia-dia","rot-guardia-res": {
       togglePuerta(el.dataset.pid, el.dataset.date);
       render(); break;
     }
@@ -6505,11 +6537,6 @@ document.addEventListener("change", e=>{
   else if(field==="urgreq"){ state.settings.urgRequired = el.checked; save(); }
   else if(field==="minmorning"){ state.settings.minMorning = Math.min(20,Math.max(0,Number(el.value)||0)); save(); }
   else if(field==="maxmorning"){ state.settings.maxMorning = Math.min(20,Math.max(1,Number(el.value)||8)); save(); }
-  else if(field==="grot-res"){
-    const cfg = (state.guardiaRot||{})[el.dataset.pid+"|"+el.dataset.date] || {};
-    setGuardiaRot(el.dataset.pid, el.dataset.date, el.value, cfg.puerta);
-    render(); return;
-  }
   else if(field==="vac-pid"){ (ui.vacDraft=ui.vacDraft||{}).pid = el.value; return; }
   else if(field==="vac-desde"){ (ui.vacDraft=ui.vacDraft||{}).desde = el.value; return; }
   else if(field==="vac-hasta"){ (ui.vacDraft=ui.vacDraft||{}).hasta = el.value; return; }
