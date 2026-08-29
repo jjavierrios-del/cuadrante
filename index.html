@@ -939,7 +939,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v126";
+const APP_VERSION = "v127";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2171,6 +2171,18 @@ function esSaliente(rc, dkey){
   if(ant.getDay()===5) return false;              // guardia de viernes: sin saliente
   return !!guardiaRotDe(rc, kAnt);
 }
+// Limpia restos del formato antiguo (guardias marcadas sobre el adjunto)
+function limpiarGuardiasViejas(){
+  const g = state.guardiaRot || {};
+  let n = 0;
+  Object.keys(g).forEach(k=>{
+    const rc = k.split("|")[0];
+    if(ROT_CODES.indexOf(rc) < 0){ delete g[k]; n++; }   // la clave no es un residente
+  });
+  if(n) save();
+  return n;
+}
+
 function setGuardiaRot(rc, dkey, activa, puerta){
   state.guardiaRot = state.guardiaRot || {};
   const k = rc+"|"+dkey;
@@ -3060,8 +3072,16 @@ function viewRotantes(){
         inner = '<span class="full '+base+'"></span>';
       }else if(a.f){
         const cls = a.f==="URG"?"k-urg":(a.f==="URGLV"?"k-urglv":(a.f==="URGF"?"k-urgf":((absInfo(a.f)||{cls:"k-P"}).cls)));
-        const r = rotGet(p.id,d.key,"f");
-        inner = '<span class="full '+cls+' rotcell">'+a.f+(r?'<span class="rotbadge">'+r+'</span>':'')+'</span>';
+        // En las guardias el residente puede estar de mañana, de tarde o ambas
+        const rf = rotGet(p.id,d.key,"f");
+        const rm = rotGet(p.id,d.key,"m");
+        const rt = rotGet(p.id,d.key,"t");
+        const etiquetas = [];
+        if(rf) etiquetas.push(rf);
+        if(rm) etiquetas.push(rm+"m");
+        if(rt) etiquetas.push(rt+"t");
+        inner = '<span class="full '+cls+' rotcell">'+a.f+
+          (etiquetas.length?'<span class="rotbadge">'+etiquetas.join(" ")+'</span>':'')+'</span>';
       }else{
         const half = (c,slot)=>{
           if(!c) return '<span class="half '+base+'"></span>';
@@ -3874,6 +3894,7 @@ function viewSolicitudes(){
   // El administrador puede alternar entre revisar las recibidas y aplicar un cambio él mismo
   if(ui.reqSub===undefined) ui.reqSub = "revisar";
   try{ limpiarBandeja(); }catch(e){}
+  try{ limpiarGuardiasViejas(); }catch(e){}
   const pend = bandejaPendientes();
   let h = '<div class="seg no-print" style="margin-bottom:10px">'+
     '<button class="'+(ui.reqSub==="revisar"?"on":"")+'" data-action="req-sub-revisar">Bandeja'+(pend.length?' ('+pend.length+')':'')+'</button>'+
