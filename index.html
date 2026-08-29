@@ -152,14 +152,14 @@
   .updown button:hover{color:var(--slate-800)}
 
   /* Estadísticas */
-  .stats{min-width:1120px; border-collapse:collapse; table-layout:fixed}
+  .stats{min-width:1180px; border-collapse:collapse; table-layout:fixed}
   .stats td,.stats th{white-space:nowrap; box-sizing:border-box}
   .stats th:not(:first-child),.stats td:not(:first-child){width:58px; min-width:58px; padding-left:6px; padding-right:6px}
   @media(max-width:700px){
     .stats th:not(:first-child),.stats td:not(:first-child){width:52px; min-width:52px; font-size:12px}
     .stats th:nth-child(2),.stats td:nth-child(2){width:120px; min-width:120px}
     .stats th:nth-child(3),.stats td:nth-child(3){width:88px;  min-width:88px}
-    .stats{min-width:1020px}
+    .stats{min-width:1075px}
   }
   .stats th{text-align:center; font-size:11px; color:var(--slate-500); padding:6px 8px}
   .stats th:first-child,.stats td:first-child{text-align:left; width:150px; min-width:150px; max-width:150px; overflow:hidden; text-overflow:ellipsis;
@@ -939,7 +939,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v131";
+const APP_VERSION = "v132";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -4520,7 +4520,32 @@ function viewStats(){
   if(!state.physicians.length){ return html+'<p class="muted" style="margin-top:12px">Añade facultativos en la pestaña Equipo.</p></div>'; }
   html += '<p class="muted" style="margin-top:6px">Turnos totales: <b>'+totalT+'</b> (URG computa 2; URGF se retribuye como extra, se cuenta aparte y no suma turnos). «Esperado» = jornadas laborables del periodo × % de contrato (en vista de mes, ajustado para compensar el saldo previo). Las cifras corresponden al <b>cuadrante oficial</b>: los cambios pactados entre compañeros y autorizados no alteran el cómputo de nadie. «Saldo» = jornadas trabajadas menos las debidas en el periodo elegido (+ de más, − de menos); el generador lo compensa en el mes siguiente. Usa <b>Rango</b> para computar solo los meses que ya gestionas (p.ej. octubre a diciembre).</p>';
   html += '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:10px"><table class="stats">'+
-    '<thead><tr><th>Facultativo</th><th>Turnos</th><th>Esperado</th><th>Saldo</th><th>URGLV</th><th>URG</th><th>URGF</th><th>AL</th><th>ALRU</th><th>ALT</th><th>INT</th><th>RHB</th><th>ORT</th><th>RXI</th><th>ADM</th><th>Tráf.</th><th>Aus.</th></tr></thead><tbody>';
+    '<thead><tr><th>Facultativo</th><th>Turnos</th><th>Esperado</th><th>Saldo</th><th>URGLV</th><th>URG</th><th>URGF</th><th>AL</th><th>ALRU</th><th>ALT</th><th>INT</th><th>RHB</th><th>ORT</th><th>RXI</th><th>ADM</th><th>Tráf.</th><th>Aus.</th><th title="Porcentaje de sus consultas con residente asignado">Res.</th></tr></thead><tbody>';
+  // Porcentaje de consultas del facultativo que llevan residente, en el periodo mostrado
+  const pctResidente = (pid)=>{
+    const pf = state.physicians.find(x=>x.id===pid);
+    if(!pf || pf.noRes) return null;
+    let ofrece = 0, con = 0;
+    // Mismo periodo que muestra la tabla: mes, año completo o rango
+    let meses;
+    if(ui.scope==="month") meses=[ui.month];
+    else if(ui.scope==="range"){ meses=[]; for(let mo=statsFrom; mo<=statsTo; mo++) meses.push(mo); }
+    else { meses=[]; for(let mo=0; mo<12; mo++) meses.push(mo); }
+    meses.forEach(mo=>{
+      const dim = new Date(state.year, mo+1, 0).getDate();
+      for(let d=1; d<=dim; d++){
+        const key = keyOf(state.year, mo, d);
+        const dt = new Date(key), dow = dt.getDay();
+        if(dow===0 || dow===6) continue;
+        const a = state.assignments[pid+"|"+key];
+        if(!a || a.f) continue;
+        if(RES_MANANA(a.m)){ ofrece++; if((state.rotantes||{})[rotKey(pid,key,"m")]) con++; }
+        if(RES_TARDE(a.t)){  ofrece++; if((state.rotantes||{})[rotKey(pid,key,"t")]) con++; }
+      }
+    });
+    return ofrece ? {pct: Math.round(con/ofrece*100), con, ofrece} : null;
+  };
+
   res.forEach(({p,turnos,URGLV,URG,URGF,AL,ALRU,ALT,INT,RHB,ORT,RXINT,TRAF,ADM,aus})=>{
     // «Esperado» debe reflejar el MISMO objetivo que usó el generador para ese mes:
     // jornadas del periodo × % contrato, ajustado por el saldo arrastrado (máx ±25%),
@@ -4542,7 +4567,13 @@ function viewStats(){
       '<td><div style="display:flex;align-items:center;gap:6px"><span class="bar" style="width:'+Math.round((turnos/maxT)*90)+'px;min-width:'+(turnos?6:0)+'px;flex:none"></span><b style="font-size:12px">'+turnos+'</b></div></td>'+
       '<td class="'+(Math.abs(dev)>=3?"dev-bad":"muted")+'" style="font-size:12px">'+expected.toFixed(1)+' ('+(dev>=0?"+":"")+dev.toFixed(1)+')</td>'+
       '<td style="font-size:12px;font-weight:600;color:'+(Math.abs(saldo)<0.5?"var(--slate-400)":(saldo>0?"#c2410c":"#0369a1"))+'">'+(saldo>=0?"+":"")+saldo.toFixed(1)+'</td>'+
-      '<td style="color:#991b1b;font-weight:600">'+(URGLV||"–")+'</td><td style="color:#b45309;font-weight:600">'+(URG||"–")+'</td><td style="color:#c2410c;font-weight:600">'+(URGF||"–")+'</td><td>'+(AL||"–")+'</td><td>'+(ALRU||"–")+'</td><td>'+(ALT||"–")+'</td><td>'+(INT||"–")+'</td><td>'+(RHB||"–")+'</td><td>'+(ORT||"–")+'</td><td style="color:#6d28d9;font-weight:600">'+(RXINT||"–")+'</td><td style="color:#475569;font-weight:600">'+(ADM||"–")+'</td><td style="color:#b45309;font-weight:600">'+(TRAF||"–")+'</td><td>'+(aus||"–")+'</td></tr>';
+      '<td style="color:#991b1b;font-weight:600">'+(URGLV||"–")+'</td><td style="color:#b45309;font-weight:600">'+(URG||"–")+'</td><td style="color:#c2410c;font-weight:600">'+(URGF||"–")+'</td><td>'+(AL||"–")+'</td><td>'+(ALRU||"–")+'</td><td>'+(ALT||"–")+'</td><td>'+(INT||"–")+'</td><td>'+(RHB||"–")+'</td><td>'+(ORT||"–")+'</td><td style="color:#6d28d9;font-weight:600">'+(RXINT||"–")+'</td><td style="color:#475569;font-weight:600">'+(ADM||"–")+'</td><td style="color:#b45309;font-weight:600">'+(TRAF||"–")+'</td><td>'+(aus||"–")+'</td>'+
+      (function(){
+        const r = pctResidente(p.id);
+        if(!r) return '<td class="muted">–</td>';
+        const col = r.pct>=50 ? "var(--emerald-700)" : (r.pct>=25 ? "#b45309" : "#b91c1c");
+        return '<td style="color:'+col+';font-weight:700" title="'+r.con+' de '+r.ofrece+' consultas con residente">'+r.pct+'%</td>';
+      })()+'</tr>';
   });
   html += '</tbody></table></div></div>';
   return html;
