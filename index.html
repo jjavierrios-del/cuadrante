@@ -939,7 +939,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v124";
+const APP_VERSION = "v126";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2360,6 +2360,24 @@ function generateRotantes(){
     if(partes[1] && partes[1].slice(0,7)===mk){ delete state.rotantes[k]; borradas++; }
   });
 
+  // Plazas docentes que ofrece cada adjunto este mes (consultas AL de mañana y tarde).
+  // El reparto se equilibra por PORCENTAJE ocupado, no por número absoluto,
+  // porque cada adjunto ofrece un número distinto de plazas.
+  const ofrece = {}, recibidos = {};
+  adjuntos.forEach(p=>{ ofrece[p.id] = 0; recibidos[p.id] = 0; });
+  days.forEach(d=>{
+    adjuntos.forEach(p=>{
+      const a = state.assignments[p.id+"|"+d.key];
+      if(!a || a.f) return;
+      if(RES_MANANA(a.m)) ofrece[p.id]++;
+      if(RES_TARDE(a.t))  ofrece[p.id]++;
+    });
+  });
+  const ratio = (pid)=> ofrece[pid] ? (recibidos[pid]/ofrece[pid]) : 1;
+  // Adjuntos ordenados: primero quien tenga menor porcentaje ocupado
+  const porReparto = (lista)=> lista.slice().sort((a,b)=>
+    (ratio(a.id) - ratio(b.id)) || (ofrece[b.id] - ofrece[a.id]) || (Math.random()-0.5));
+
   const {objetivo} = objetivoRotante();
   const turnos = {}; residentes.forEach(r=>turnos[r]=0);   // turnos que COMPUTAN
   const plazas = {}; residentes.forEach(r=>plazas[r]=0);   // asignaciones totales
@@ -2370,13 +2388,16 @@ function generateRotantes(){
     if(esSaliente(r, dkey)) return false;             // saliente de guardia
     // La tarde del día de guardia no admite consulta (de puerta o no)
     if(slot==="t" && guardiaRotDe(r, dkey)) return false;
-    // Un residente no puede estar en dos sitios en el mismo turno
-    return !adjuntos.some(p=>state.rotantes[rotKey(p.id, dkey, slot)]===r);
+    // Un residente no puede estar en dos sitios en el mismo turno.
+    // Se miran TODOS los facultativos, incluidos los que no admiten residentes,
+    // porque en los días de puerta puede quedar colocado con el de urgencias.
+    return !state.physicians.some(p=>state.rotantes[rotKey(p.id, dkey, slot)]===r);
   };
   const tieneManana = (r, dkey)=> adjuntos.some(p=>state.rotantes[rotKey(p.id, dkey, "m")]===r);
   const colocar = (pid, dkey, slot, r, computa)=>{
     state.rotantes[rotKey(pid, dkey, slot)] = r;
     plazas[r]++; if(computa) turnos[r]++;
+    if(recibidos[pid]!==undefined) recibidos[pid]++;
     asignadas++;
   };
   // Ordena por quien menos turnos lleva
@@ -2394,17 +2415,46 @@ function generateRotantes(){
     });
   });
 
+  // ---------- Mañana obligatoria en los días de puerta ----------
+  // Quien esté de puerta debe tener mañana: primero consulta AL y, si no hay
+  // ninguna libre, urgencias con el adjunto de guardia (aunque tenga el
+  // residente desactivado, porque la mañana es obligada).
+  const pendientesPuerta = [];
+  days.forEach(d=>{
+    guardiasDelDia(d.key).forEach(g=>{
+      if(!residentes.includes(g.rc) || !g.puerta) return;
+      if(!libre(g.rc, d.key, "m")) return;                 // saliente, ausencia o ya ocupado
+      // 1) Consulta de alta resolución libre, priorizando al adjunto menos cargado
+      let puesto = false;
+      porReparto(adjuntos).some(p=>{
+        const a = state.assignments[p.id+"|"+d.key];
+        if(!a || a.f || !RES_MANANA(a.m)) return false;
+        if(state.rotantes[rotKey(p.id, d.key, "m")]) return false;
+        colocar(p.id, d.key, "m", g.rc, true);
+        puesto = true; return true;
+      });
+      if(puesto) return;
+      // 2) Urgencias con el adjunto de guardia, aunque no admita residentes
+      const adj = adjuntoDeGuardia(d.key);
+      if(adj && !state.rotantes[rotKey(adj.id, d.key, "m")]){
+        colocar(adj.id, d.key, "m", g.rc, true);
+        return;
+      }
+      pendientesPuerta.push({dia:d.key, rc:g.rc});
+    });
+  });
+
   // ---------- 1ª pasada: consultas de alta resolución ----------
   days.forEach(d=>{
     // Mañanas
-    adjuntos.forEach(p=>{
+    porReparto(adjuntos).forEach(p=>{
       const a = state.assignments[p.id+"|"+d.key];
       if(!a || a.f || !RES_MANANA(a.m)) return;
       const cand = porCarga(residentes.filter(r=>libre(r,d.key,"m") && turnos[r] < objetivo));
       if(cand.length) colocar(p.id, d.key, "m", cand[0], true);
     });
     // Tardes: se prefiere a quien ya está esa mañana (evita tardes sueltas)
-    adjuntos.forEach(p=>{
+    porReparto(adjuntos).forEach(p=>{
       const a = state.assignments[p.id+"|"+d.key];
       if(!a || a.f || !RES_TARDE(a.t)) return;
       let cand = porCarga(residentes.filter(r=>libre(r,d.key,"t") && turnos[r] < objetivo && tieneManana(r,d.key)));
@@ -2429,7 +2479,7 @@ function generateRotantes(){
     days.forEach(d=>{
       if(!faltan().length) return;
       ["m","t"].forEach(slot=>{
-        adjuntos.forEach(p=>{
+        porReparto(adjuntos).forEach(p=>{
           const a = state.assignments[p.id+"|"+d.key];
           if(!a || a.f) return;
           const hueco = (slot==="m") ? RES_MANANA(a.m) : RES_TARDE(a.t);
@@ -2456,12 +2506,44 @@ function generateRotantes(){
     });
   }
 
+  // ---------- Garantía final: mañana para todos los de puerta ----------
+  // Se ejecuta al final, cuando ya se sabe qué ha quedado libre.
+  const sinManana = [];
+  days.forEach(d=>{
+    guardiasDelDia(d.key).forEach(g=>{
+      if(!residentes.includes(g.rc) || !g.puerta) return;
+      // ¿Ya tiene mañana ese día?
+      if(state.physicians.some(p=>state.rotantes[rotKey(p.id, d.key, "m")]===g.rc)) return;
+      if(rotResBloqueado(d.key, g.rc) || esSaliente(g.rc, d.key)) return;   // no puede trabajar
+      // 1) Cualquier consulta de alta resolución libre
+      let puesto = false;
+      porReparto(adjuntos).some(p=>{
+        const a = state.assignments[p.id+"|"+d.key];
+        if(!a || a.f || !RES_MANANA(a.m)) return false;
+        if(state.rotantes[rotKey(p.id, d.key, "m")]) return false;
+        colocar(p.id, d.key, "m", g.rc, true); puesto = true; return true;
+      });
+      if(puesto) return;
+      // 2) Urgencias con el adjunto de guardia, aunque no admita residentes
+      const adj = adjuntoDeGuardia(d.key);
+      if(adj && !state.rotantes[rotKey(adj.id, d.key, "m")]){
+        colocar(adj.id, d.key, "m", g.rc, true); return;
+      }
+      sinManana.push({dia:d.key, rc:g.rc});
+    });
+  });
+
   save();
+  const repartoAdj = adjuntos.map(p=>({
+    id:p.id, name:p.name, ofrece:ofrece[p.id], recibidos:recibidos[p.id],
+    pct: ofrece[p.id] ? Math.round(recibidos[p.id]/ofrece[p.id]*100) : null
+  })).filter(x=>x.ofrece>0).sort((a,b)=>b.pct-a.pct);
   const resumen = residentes.map(r=>({
     rc: r, nombre: (state.rotantesLeyenda||{})[r]||r,
     turnos: turnos[r], plazas: plazas[r], objetivo, cumple: turnos[r] >= objetivo
   }));
-  return {asignadas, borradas, objetivo, resumen, residentes};
+  return {asignadas, borradas, objetivo, resumen, residentes, repartoAdj,
+          puertaSinManana: sinManana};
 }
 
 // Turnos que computan a un residente en el mes visible
@@ -4559,6 +4641,39 @@ function viewAjustes(){
     });
     html += '</tbody></table></div>'+
       '<p class="tiny muted" style="margin-top:6px">Las tardes de guardia de puerta no computan turno.</p></div>';
+
+    // Reparto docente entre adjuntos, medido en porcentaje de sus plazas
+    const filas = [];
+    state.physicians.forEach(p=>{
+      if(p.noRes) return;
+      let ofr = 0, rec = 0;
+      monthDays().forEach(d=>{
+        if(d.dow===0 || d.dow===6 || d.holiday) return;
+        const a = state.assignments[p.id+"|"+d.key];
+        if(!a || a.f) return;
+        if(RES_MANANA(a.m)){ ofr++; if(state.rotantes[rotKey(p.id,d.key,"m")]) rec++; }
+        if(RES_TARDE(a.t)){  ofr++; if(state.rotantes[rotKey(p.id,d.key,"t")]) rec++; }
+      });
+      if(ofr) filas.push({n:p.name, ofr, rec, pct: Math.round(rec/ofr*100)});
+    });
+    if(filas.length){
+      filas.sort((a,b)=>b.pct-a.pct);
+      const pcts = filas.map(f=>f.pct);
+      const dif = Math.max(...pcts) - Math.min(...pcts);
+      html += '<div class="card" style="margin-top:10px"><div class="row between" style="align-items:center;gap:8px;flex-wrap:wrap">'+
+        '<h2 style="margin:0">Reparto entre adjuntos</h2>'+
+        '<span class="tiny" style="background:'+(dif<=30?'#065f46':'#b45309')+';color:#fff;padding:3px 10px;border-radius:999px">'+
+          'diferencia: '+dif+' puntos</span></div>'+
+        '<p class="tiny muted" style="margin-top:4px">Porcentaje de sus plazas docentes que tienen residente. Se equilibra el porcentaje, no el número, porque cada uno ofrece plazas distintas.</p>'+
+        '<div style="overflow-x:auto;margin-top:8px"><table class="stats" style="min-width:380px"><thead><tr>'+
+        '<th style="text-align:left">Adjunto</th><th>Con residente</th><th>Plazas</th><th>%</th></tr></thead><tbody>';
+      filas.forEach(f=>{
+        html += '<tr><td style="text-align:left"><b>'+esc(f.n)+'</b></td>'+
+          '<td>'+f.rec+'</td><td>'+f.ofr+'</td>'+
+          '<td style="font-weight:700;color:'+(f.pct>=50?'var(--emerald-700)':(f.pct>=25?'#b45309':'#b91c1c'))+'">'+f.pct+'%</td></tr>';
+      });
+      html += '</tbody></table></div></div>';
+    }
   })();
   return html;
 }
