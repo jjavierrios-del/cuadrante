@@ -939,7 +939,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v132";
+const APP_VERSION = "v133";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2408,7 +2408,9 @@ function generateRotantes(){
   days.forEach(d=>{
     adjuntos.forEach(p=>{
       const a = state.assignments[p.id+"|"+d.key];
-      if(!a || a.f) return;
+      if(!a) return;
+      if(esGuardia(a)){ ofrece[p.id] += 2; return; }   // urgencias: mañana y tarde
+      if(a.f) return;
       if(RES_MANANA(a.m)) ofrece[p.id]++;
       if(RES_TARDE(a.t))  ofrece[p.id]++;
     });
@@ -4520,7 +4522,7 @@ function viewStats(){
   if(!state.physicians.length){ return html+'<p class="muted" style="margin-top:12px">Añade facultativos en la pestaña Equipo.</p></div>'; }
   html += '<p class="muted" style="margin-top:6px">Turnos totales: <b>'+totalT+'</b> (URG computa 2; URGF se retribuye como extra, se cuenta aparte y no suma turnos). «Esperado» = jornadas laborables del periodo × % de contrato (en vista de mes, ajustado para compensar el saldo previo). Las cifras corresponden al <b>cuadrante oficial</b>: los cambios pactados entre compañeros y autorizados no alteran el cómputo de nadie. «Saldo» = jornadas trabajadas menos las debidas en el periodo elegido (+ de más, − de menos); el generador lo compensa en el mes siguiente. Usa <b>Rango</b> para computar solo los meses que ya gestionas (p.ej. octubre a diciembre).</p>';
   html += '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:10px"><table class="stats">'+
-    '<thead><tr><th>Facultativo</th><th>Turnos</th><th>Esperado</th><th>Saldo</th><th>URGLV</th><th>URG</th><th>URGF</th><th>AL</th><th>ALRU</th><th>ALT</th><th>INT</th><th>RHB</th><th>ORT</th><th>RXI</th><th>ADM</th><th>Tráf.</th><th>Aus.</th><th title="Porcentaje de sus consultas con residente asignado">Res.</th></tr></thead><tbody>';
+    '<thead><tr><th>Facultativo</th><th>Turnos</th><th>Esperado</th><th>Saldo</th><th>URGLV</th><th>URG</th><th>URGF</th><th>AL</th><th>ALRU</th><th>ALT</th><th>INT</th><th>RHB</th><th>ORT</th><th>RXI</th><th>ADM</th><th>Tráf.</th><th>Aus.</th><th title="Porcentaje de sus plazas docentes con residente: consultas AL y guardias">Res.</th></tr></thead><tbody>';
   // Porcentaje de consultas del facultativo que llevan residente, en el periodo mostrado
   const pctResidente = (pid)=>{
     const pf = state.physicians.find(x=>x.id===pid);
@@ -4538,7 +4540,15 @@ function viewStats(){
         const dt = new Date(key), dow = dt.getDay();
         if(dow===0 || dow===6) continue;
         const a = state.assignments[pid+"|"+key];
-        if(!a || a.f) continue;
+        if(!a) continue;
+        if(esGuardia(a)){
+          // En una guardia el residente puede acompañarle de mañana y de tarde
+          ofrece += 2;
+          if((state.rotantes||{})[rotKey(pid,key,"m")]) con++;
+          if((state.rotantes||{})[rotKey(pid,key,"t")]) con++;
+          continue;
+        }
+        if(a.f) continue;                       // vacaciones, baja o permiso
         if(RES_MANANA(a.m)){ ofrece++; if((state.rotantes||{})[rotKey(pid,key,"m")]) con++; }
         if(RES_TARDE(a.t)){  ofrece++; if((state.rotantes||{})[rotKey(pid,key,"t")]) con++; }
       }
@@ -4763,7 +4773,14 @@ function viewAjustes(){
       monthDays().forEach(d=>{
         if(d.dow===0 || d.dow===6 || d.holiday) return;
         const a = state.assignments[p.id+"|"+d.key];
-        if(!a || a.f) return;
+        if(!a) return;
+        if(esGuardia(a)){
+          ofr += 2;                              // mañana y tarde de urgencias
+          if(state.rotantes[rotKey(p.id,d.key,"m")]) rec++;
+          if(state.rotantes[rotKey(p.id,d.key,"t")]) rec++;
+          return;
+        }
+        if(a.f) return;
         if(RES_MANANA(a.m)){ ofr++; if(state.rotantes[rotKey(p.id,d.key,"m")]) rec++; }
         if(RES_TARDE(a.t)){  ofr++; if(state.rotantes[rotKey(p.id,d.key,"t")]) rec++; }
       });
@@ -4777,7 +4794,7 @@ function viewAjustes(){
         '<h2 style="margin:0">Reparto entre adjuntos</h2>'+
         '<span class="tiny" style="background:'+(dif<=30?'#065f46':'#b45309')+';color:#fff;padding:3px 10px;border-radius:999px">'+
           'diferencia: '+dif+' puntos</span></div>'+
-        '<p class="tiny muted" style="margin-top:4px">Porcentaje de sus plazas docentes que tienen residente. Se equilibra el porcentaje, no el número, porque cada uno ofrece plazas distintas.</p>'+
+        '<p class="tiny muted" style="margin-top:4px">Porcentaje de sus plazas docentes con residente: consultas de alta resolución más sus guardias (mañana y tarde de urgencias). Se equilibra el porcentaje, no el número, porque cada uno ofrece plazas distintas.</p>'+
         '<div style="overflow-x:auto;margin-top:8px"><table class="stats" style="min-width:380px"><thead><tr>'+
         '<th style="text-align:left">Adjunto</th><th>Con residente</th><th>Plazas</th><th>%</th></tr></thead><tbody>';
       filas.forEach(f=>{
