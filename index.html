@@ -939,7 +939,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v127";
+const APP_VERSION = "v128";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2147,12 +2147,32 @@ function esPuerta(pid, dkey){ return !!(state.puerta||{})[pid+"|"+dkey]; }
 // ¿Qué residente está de guardia ese día, y con qué adjunto?
 // Clave del nuevo formato: "R1|2027-11-02" → {puerta:true|false}
 function guardiaRotDe(rc, dkey){ return (state.guardiaRot||{})[rc+"|"+dkey] || null; }
+// Tipos: "puerta" (tarde en nuestras urgencias), "observacion" (tarde en observación,
+// no va a urgencias) y "fuera" (guardia fuera del servicio).
+const TIPOS_GUARDIA = ["puerta","observacion","fuera"];
+function tipoGuardia(rc, dkey){
+  const g = guardiaRotDe(rc, dkey);
+  if(!g) return null;
+  if(g.tipo) return g.tipo;
+  return g.puerta ? "puerta" : "fuera";        // formato anterior
+}
+function etiquetaGuardia(t){
+  return t==="puerta" ? "De puerta" : (t==="observacion" ? "En observación" : "Fuera del servicio");
+}
+function colorGuardia(t){
+  return t==="puerta" ? "var(--teal-700)" : (t==="observacion" ? "#7c3aed" : "#b45309");
+}
+// ¿La mañana es obligatoria? En puerta y en observación, sí.
+function mananaObligatoria(t){ return t==="puerta" || t==="observacion"; }
 function residenteDeGuardia(dkey, rc){ return !!guardiaRotDe(rc, dkey); }
-function esGuardiaPuerta(rc, dkey){ const g = guardiaRotDe(rc, dkey); return !!(g && g.puerta); }
+function esGuardiaPuerta(rc, dkey){ return tipoGuardia(rc, dkey) === "puerta"; }
 // Residentes de guardia un día concreto
 function guardiasDelDia(dkey){
   const out = [];
-  ROT_CODES.forEach(rc=>{ const g = guardiaRotDe(rc, dkey); if(g) out.push({rc, puerta:!!g.puerta}); });
+  ROT_CODES.forEach(rc=>{
+    const t = tipoGuardia(rc, dkey);
+    if(t) out.push({rc, tipo:t, puerta:t==="puerta"});
+  });
   return out;
 }
 // ¿Hay algún residente de puerta ese día?
@@ -2183,11 +2203,16 @@ function limpiarGuardiasViejas(){
   return n;
 }
 
-function setGuardiaRot(rc, dkey, activa, puerta){
+function setGuardiaRot(rc, dkey, activa, tipo){
   state.guardiaRot = state.guardiaRot || {};
   const k = rc+"|"+dkey;
   if(!activa) delete state.guardiaRot[k];
-  else state.guardiaRot[k] = {puerta: !!puerta};
+  else{
+    // Compatibilidad: si llega un booleano se traduce al tipo correspondiente
+    const t = (typeof tipo === "boolean") ? (tipo ? "puerta" : "fuera")
+            : (TIPOS_GUARDIA.indexOf(tipo)>=0 ? tipo : "puerta");
+    state.guardiaRot[k] = {tipo: t, puerta: t==="puerta"};
+  }
   save();
 }
 function togglePuerta(pid, dkey){
@@ -2238,9 +2263,10 @@ function viewGuardiasPuerta(){
 
   h += '<div class="card"><h2>Guardias de los residentes</h2>'+
     '<p class="muted" style="margin-top:2px;font-size:14px">Elige un residente y marca sus días de guardia. '+
-    '<b>De puerta</b>: esa tarde va a nuestras urgencias con el adjunto de guardia. '+
-    '<b>No de puerta</b>: está de guardia fuera y esa tarde no pasa consulta. '+
-    'En los dos casos la mañana es normal y el día siguiente es saliente.</p>'+
+    '<b>De puerta</b>: tarde en nuestras urgencias con el adjunto de guardia. '+
+    '<b>En observación</b>: tarde en observación, no va a urgencias, así que el adjunto se queda sin residente. '+
+    '<b>Fuera del servicio</b>: guardia fuera; esa tarde no pasa consulta. '+
+    'En puerta y observación la mañana se le asigna siempre. En los tres casos el día siguiente es saliente y la tarde no computa.</p>'+
     '<p class="tiny muted" style="margin-top:6px">Las guardias de fin de semana no se marcan aquí: pon el lunes como día de no disponibilidad.</p>';
 
   // Selector de residente
@@ -2249,23 +2275,24 @@ function viewGuardiasPuerta(){
       esc((state.rotantesLeyenda||{})[rc]||rc)+'</button>').join("")+
     '</div>';
 
-  const mias = dias.filter(d=>guardiaRotDe(sel, d.key));
+  const mias = dias.filter(d=>tipoGuardia(sel, d.key));
   h += '<p class="tiny muted" style="margin-top:10px">'+mias.length+' guardia'+(mias.length===1?'':'s')+' marcada'+(mias.length===1?'':'s')+' este mes.</p>';
 
   // Rejilla de días del mes
   h += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">';
   dias.forEach(d=>{
-    const g = guardiaRotDe(sel, d.key);
+    const t = tipoGuardia(sel, d.key);
     const adj = adjuntoDeGuardia(d.key);
-    const fondo = !g ? "#fff" : (g.puerta ? "var(--teal-700)" : "#b45309");
-    const color = !g ? "var(--slate-700,#334155)" : "#fff";
+    const fondo = !t ? "#fff" : colorGuardia(t);
+    const color = !t ? "var(--slate-700,#334155)" : "#fff";
     h += '<button class="btn" data-action="guardia-dia" data-rc="'+sel+'" data-date="'+d.key+'" '+
       'title="'+(adj?("Adjunto de guardia: "+esc(adj.name)):"Sin adjunto de guardia")+'" '+
       'style="min-width:58px;padding:7px 4px;flex-direction:column;background:'+fondo+';color:'+color+
       ';border-color:'+(g?fondo:'var(--slate-300)')+'">'+
       '<b style="font-size:15px">'+d.n+'</b>'+
       '<span style="font-size:10px;opacity:.85">'+WD[d.dow]+'</span>'+
-      (g?'<span style="font-size:9px;font-weight:700">'+(g.puerta?"PUERTA":"FUERA")+'</span>':'')+
+      (t?'<span style="font-size:9px;font-weight:700">'+
+        (t==="puerta"?"PUERTA":(t==="observacion"?"OBSERV.":"FUERA"))+'</span>':'')+
       '</button>';
   });
   h += '</div>'+
@@ -2275,19 +2302,20 @@ function viewGuardiasPuerta(){
   if(mias.length){
     h += '<div style="margin-top:12px">';
     mias.forEach(d=>{
-      const g = guardiaRotDe(sel, d.key);
+      const t = tipoGuardia(sel, d.key);
       const dt = new Date(d.key); const sig = new Date(dt); sig.setDate(dt.getDate()+1);
       const sal = dt.getDay()!==5;
       const adj = adjuntoDeGuardia(d.key);
       h += '<div class="cambiofila">'+
         '<div class="row between" style="align-items:center;gap:8px;flex-wrap:wrap">'+
           '<div style="flex:1;min-width:0"><b>'+fmtDate(d.key).slice(0,5)+' '+WD[d.dow]+'</b>'+
-            '<span class="tiny" style="margin-left:8px;background:'+(g.puerta?'var(--teal-700)':'#b45309')+
-            ';color:#fff;padding:2px 8px;border-radius:999px">'+(g.puerta?'De puerta':'Fuera del servicio')+'</span></div>'+
+            '<span class="tiny" style="margin-left:8px;background:'+colorGuardia(t)+
+            ';color:#fff;padding:2px 8px;border-radius:999px">'+etiquetaGuardia(t)+'</span></div>'+
         '</div>'+
         '<p class="tiny muted" style="margin-top:4px">'+
-          (g.puerta ? 'Tarde en urgencias con '+(adj?esc(adj.name):'el adjunto de guardia')+' · no computa'
-                    : 'Tarde bloqueada · no computa')+
+          (t==="puerta" ? 'Mañana en consulta · tarde en urgencias con '+(adj?esc(adj.name):'el adjunto de guardia')+' · no computa'
+           : t==="observacion" ? 'Mañana en consulta · tarde en observación, no va a urgencias · no computa'
+           : 'Tarde bloqueada · no computa')+
           (sal ? ' · saliente el '+fmtDate(keyOf(sig.getFullYear(),sig.getMonth(),sig.getDate())).slice(0,5)
                : ' · viernes: sin saliente')+
         '</p></div>';
@@ -2295,7 +2323,7 @@ function viewGuardiasPuerta(){
     h += '</div>';
   }
   // Aviso si dos residentes coinciden de puerta
-  const choques = dias.filter(d=>guardiasDelDia(d.key).filter(x=>x.puerta).length > 1);
+  const choques = dias.filter(d=>guardiasDelDia(d.key).filter(x=>x.tipo==="puerta").length > 1);
   if(choques.length){
     h += '<div class="warnbox" style="margin-top:10px">⚠ Hay '+choques.length+' día'+(choques.length>1?'s':'')+
       ' con más de un residente de puerta: '+choques.map(d=>fmtDate(d.key).slice(0,5)).join(", ")+
@@ -2419,7 +2447,7 @@ function generateRotantes(){
   // Ocupa al residente y NO computa turno. La mañana queda libre para consulta.
   days.forEach(d=>{
     guardiasDelDia(d.key).forEach(g=>{
-      if(!residentes.includes(g.rc) || !g.puerta) return;
+      if(!residentes.includes(g.rc) || g.tipo !== "puerta") return;
       const adj = adjuntoDeGuardia(d.key);
       if(!adj) return;
       state.rotantes[rotKey(adj.id, d.key, "t")] = g.rc;
@@ -2434,7 +2462,7 @@ function generateRotantes(){
   const pendientesPuerta = [];
   days.forEach(d=>{
     guardiasDelDia(d.key).forEach(g=>{
-      if(!residentes.includes(g.rc) || !g.puerta) return;
+      if(!residentes.includes(g.rc) || !mananaObligatoria(g.tipo)) return;
       if(!libre(g.rc, d.key, "m")) return;                 // saliente, ausencia o ya ocupado
       // 1) Consulta de alta resolución libre, priorizando al adjunto menos cargado
       let puesto = false;
@@ -2523,7 +2551,7 @@ function generateRotantes(){
   const sinManana = [];
   days.forEach(d=>{
     guardiasDelDia(d.key).forEach(g=>{
-      if(!residentes.includes(g.rc) || !g.puerta) return;
+      if(!residentes.includes(g.rc) || !mananaObligatoria(g.tipo)) return;
       // ¿Ya tiene mañana ese día?
       if(state.physicians.some(p=>state.rotantes[rotKey(p.id, d.key, "m")]===g.rc)) return;
       if(rotResBloqueado(d.key, g.rc) || esSaliente(g.rc, d.key)) return;   // no puede trabajar
@@ -2582,8 +2610,9 @@ function agendaRotante(rc){
         if(state.rotantes[rotKey(p.id, d.key, slot)] !== rc) return;
         const a = state.assignments[p.id+"|"+d.key] || {};
         const guardia = esGuardia(a);
-        const suGuardia = !!guardiaRotDe(rc, d.key);
-        const puerta = slot==="t" && suGuardia && esGuardiaPuerta(rc, d.key);
+        const tg = tipoGuardia(rc, d.key);
+        const suGuardia = !!tg;
+        const puerta = slot==="t" && tg==="puerta";
         out.push({
           key: d.key, dow: d.dow, slot,
           adjunto: p.name,
@@ -5852,11 +5881,12 @@ document.addEventListener("click", e=>{
     case "rot-guardia-res": { ui.rotGuardiaRc = el.dataset.rc; render(); break; }
     case "guardia-dia": {
       const rc = el.dataset.rc, dk = el.dataset.date;
-      const g = guardiaRotDe(rc, dk);
-      // Ciclo: sin guardia → de puerta → fuera → sin guardia
-      if(!g) setGuardiaRot(rc, dk, true, true);
-      else if(g.puerta) setGuardiaRot(rc, dk, true, false);
-      else setGuardiaRot(rc, dk, false, false);
+      const t = tipoGuardia(rc, dk);
+      // Ciclo: sin guardia → de puerta → en observación → fuera → sin guardia
+      if(!t) setGuardiaRot(rc, dk, true, "puerta");
+      else if(t==="puerta") setGuardiaRot(rc, dk, true, "observacion");
+      else if(t==="observacion") setGuardiaRot(rc, dk, true, "fuera");
+      else setGuardiaRot(rc, dk, false);
       render(); break;
     }
     case "puerta-toggle","guardia-dia","rot-guardia-res": {
