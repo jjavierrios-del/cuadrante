@@ -939,7 +939,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v129";
+const APP_VERSION = "v131";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2485,15 +2485,17 @@ function generateRotantes(){
   });
 
   // ---------- 1ª pasada: consultas de alta resolución ----------
+  // Primero TODAS las mañanas del mes
   days.forEach(d=>{
-    // Mañanas
     porReparto(adjuntos).forEach(p=>{
       const a = state.assignments[p.id+"|"+d.key];
       if(!a || a.f || !RES_MANANA(a.m)) return;
       const cand = porCarga(residentes.filter(r=>libre(r,d.key,"m") && turnos[r] < objetivo));
       if(cand.length) colocar(p.id, d.key, "m", cand[0], true);
     });
-    // Tardes: se prefiere a quien ya está esa mañana (evita tardes sueltas)
+  });
+  // Y solo después las tardes, prefiriendo a quien ya tiene esa mañana
+  days.forEach(d=>{
     porReparto(adjuntos).forEach(p=>{
       const a = state.assignments[p.id+"|"+d.key];
       if(!a || a.f || !RES_TARDE(a.t)) return;
@@ -2516,9 +2518,10 @@ function generateRotantes(){
   // ---------- 3ª pasada: relleno en consultas, admitiendo tarde sin mañana ----------
   const faltan = ()=> residentes.filter(r=>turnos[r] < objetivo);
   if(faltan().length){
-    days.forEach(d=>{
-      if(!faltan().length) return;
-      ["m","t"].forEach(slot=>{
+    // Se agotan todas las mañanas del mes antes de tocar ninguna tarde
+    ["m","t"].forEach(slot=>{
+      days.forEach(d=>{
+        if(!faltan().length) return;
         porReparto(adjuntos).forEach(p=>{
           const a = state.assignments[p.id+"|"+d.key];
           if(!a || a.f) return;
@@ -2544,6 +2547,35 @@ function generateRotantes(){
       const cand = porCarga(faltan().filter(r=>libre(r,d.key,"t")));
       if(cand.length) colocar(adj.id, d.key, "t", cand[0], true);
     });
+  }
+
+  // ---------- Completar el objetivo con el recuento REAL ----------
+  // El contador interno puede desviarse del cómputo definitivo (tardes de guardia,
+  // salientes…). Aquí se recalcula con la misma función que muestra la aplicación
+  // y se rellenan los huecos que queden, hasta agotar plazas o alcanzar el objetivo.
+  for(let vuelta = 0; vuelta < 6; vuelta++){
+    const faltanReal = residentes.filter(rc => turnosRotante(rc) < objetivo);
+    if(!faltanReal.length) break;
+    let algo = false;
+    // También aquí: primero todas las mañanas, luego las tardes
+    ["m","t"].forEach(slot=>{
+      days.forEach(d=>{
+        porReparto(adjuntos).forEach(p=>{
+          const a = state.assignments[p.id+"|"+d.key];
+          if(!a || a.f) return;
+          const hueco = (slot==="m") ? RES_MANANA(a.m) : RES_TARDE(a.t);
+          if(!hueco || state.rotantes[rotKey(p.id, d.key, slot)]) return;
+          // Se recalcula en cada hueco: quien menos turnos reales lleve
+          const cand = residentes
+            .filter(rc => turnosRotante(rc) < objetivo && libre(rc, d.key, slot))
+            .sort((x,y)=> turnosRotante(x) - turnosRotante(y));
+          if(!cand.length) return;
+          colocar(p.id, d.key, slot, cand[0], true);
+          algo = true;
+        });
+      });
+    });
+    if(!algo) break;                       // no quedan huecos aprovechables
   }
 
   // ---------- Garantía final: mañana para todos los de puerta ----------
