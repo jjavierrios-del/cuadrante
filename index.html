@@ -939,7 +939,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v128";
+const APP_VERSION = "v129";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2288,7 +2288,7 @@ function viewGuardiasPuerta(){
     h += '<button class="btn" data-action="guardia-dia" data-rc="'+sel+'" data-date="'+d.key+'" '+
       'title="'+(adj?("Adjunto de guardia: "+esc(adj.name)):"Sin adjunto de guardia")+'" '+
       'style="min-width:58px;padding:7px 4px;flex-direction:column;background:'+fondo+';color:'+color+
-      ';border-color:'+(g?fondo:'var(--slate-300)')+'">'+
+      ';border-color:'+(t?fondo:'var(--slate-300)')+'">'+
       '<b style="font-size:15px">'+d.n+'</b>'+
       '<span style="font-size:10px;opacity:.85">'+WD[d.dow]+'</span>'+
       (t?'<span style="font-size:9px;font-weight:700">'+
