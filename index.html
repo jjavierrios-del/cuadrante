@@ -939,7 +939,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v133";
+const APP_VERSION = "v134";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1123,6 +1123,32 @@ function bloqueaDia(p, dow){ return bloqueaM(p, dow) || bloqueaT(p, dow); }
 // Con «Guardia en días de reducción: Sí», el facultativo sigue entrando en el reparto
 // de urgencias esos días aunque no pase consulta (p. ej. reducción los viernes,
 // pero hace los viernes de guardia que le correspondan).
+// ---------- Porcentaje de contrato con fecha de efecto ----------
+// p.pct es el porcentaje base y p.pctTramos una lista [{desde:"2026-10", pct:50}]
+// ordenada por fecha. Cada mes usa el tramo vigente en ese momento.
+function pctDe(p, mo, anio){
+  if(!p) return 100;
+  const base = (p.pct === undefined || p.pct === null) ? 100 : p.pct;
+  const tramos = p.pctTramos;
+  if(!Array.isArray(tramos) || !tramos.length) return base;
+  const y = (anio === undefined) ? state.year : anio;
+  const clave = y + "-" + pad((mo === undefined ? ui.month : mo) + 1);
+  let valor = base;
+  tramos.slice().sort((a,b)=>String(a.desde).localeCompare(String(b.desde)))
+        .forEach(t=>{ if(String(t.desde) <= clave) valor = t.pct; });
+  return valor;
+}
+// Porcentaje que se muestra en las fichas: el del mes visible
+function pctVisible(p){ return pctDe(p, ui.month, state.year); }
+function tramosTexto(p){
+  if(!Array.isArray(p.pctTramos) || !p.pctTramos.length) return "";
+  return p.pctTramos.slice().sort((a,b)=>String(a.desde).localeCompare(String(b.desde)))
+    .map(t=>{
+      const pr = String(t.desde).split("-");
+      return MONTHS[Number(pr[1])-1].slice(0,3)+" "+pr[0]+": "+t.pct+"%";
+    }).join(" · ");
+}
+
 function bloqueaGuardia(p, dow){
   // Días en los que no hace guardias, aunque sí trabaje en consulta
   if(((p.noUrgDows)||[]).indexOf(dow) >= 0) return true;
@@ -4380,7 +4406,12 @@ function viewEquipo(){
       '<button data-action="move-phys" data-pid="'+p.id+'" data-dir="1">▼</button></span>'+
       '<input type="text" value="'+esc(p.name)+'" data-field="phys-name" data-pid="'+p.id+'">'+
       '<input type="number" value="'+p.pct+'" min="10" max="100" step="5" class="pctin" data-field="phys-pct" data-pid="'+p.id+'"><span class="muted">%</span>'+
+      '<button class="btn" data-action="pct-tramos" data-pid="'+p.id+'" title="Cambios de jornada con fecha de efecto" '+
+        'style="padding:3px 8px;font-size:12px;margin-left:4px'+(Array.isArray(p.pctTramos)&&p.pctTramos.length?';background:#7c3aed;color:#fff;border-color:#7c3aed':'')+'">'+
+        (Array.isArray(p.pctTramos)&&p.pctTramos.length ? p.pctTramos.length+" cambio"+(p.pctTramos.length>1?"s":"") : "Cambio de jornada")+'</button>'+
       '<button class="icon" data-action="del-phys" data-pid="'+p.id+'" title="Eliminar">🗑</button></div>'+
+      (Array.isArray(p.pctTramos)&&p.pctTramos.length
+        ? '<div class="tiny muted" style="margin-left:26px;margin-top:2px">Jornada: '+p.pct+'% al inicio · '+esc(tramosTexto(p))+'</div>' : '')+
       '<div class="row" style="margin-top:6px;margin-left:26px"><span class="tiny" style="margin-right:4px;min-width:64px">No trabaja:</span>'+
       '<span class="tiny" style="margin-right:3px;opacity:.7">M</span>'+
       [1,2,3,4,5].map(dow=>'<button class="dowbtn'+(bloqueaM(p,dow)?" on":"")+'" data-action="toggle-block" data-pid="'+p.id+'" data-dow="'+dow+'" data-slot="m" title="Mañana del '+WD[dow]+'">'+WD[dow]+'</button>').join("")+
@@ -4484,7 +4515,7 @@ function viewStats(){
   // Mismo criterio que usa el generador. En scope "año" suma los 12 meses; en "mes" solo el visible.
   const hmapStats = Object.fromEntries(state.holidays.map(h=>[h.date,1]));
   const laborablesFor = (p)=>{
-    let n=0;
+    let n=0, ponderado=0;
     let months;
     if(ui.scope==="month") months=[ui.month];
     else if(ui.scope==="range"){ months=[]; for(let mo=statsFrom; mo<=statsTo; mo++) months.push(mo); }
@@ -4501,8 +4532,10 @@ function viewStats(){
         const a = officialAt(p.id, key);
         if(a && a.f && absInfo(a.f)) continue;
         n++;  // los días bloqueados NO reducen el objetivo (se compensan trabajando de tarde)
+        ponderado += pctDe(p, mo, state.year)/100;   // cada mes con su % vigente
       }
     });
+    laborablesFor.ultimoPonderado = ponderado;
     return n;
   };
 
@@ -4561,7 +4594,8 @@ function viewStats(){
     // jornadas del periodo × % contrato, ajustado por el saldo arrastrado (máx ±25%),
     // igual que en generateMonth. Así Turnos y Esperado son comparables y no aparece
     // un falso "exceso" cuando en realidad se está recuperando un déficit anterior.
-    const baseExpected = laborablesFor(p) * (p.pct||100)/100;
+    laborablesFor(p);                                   // calcula también el ponderado
+    const baseExpected = laborablesFor.ultimoPonderado;  // jornadas × % vigente de cada mes
     let expected = baseExpected;
     if(ui.scope==="month"){
       const prev = carryBalance(p, ui.month, state.settings.computeFrom||0);   // saldo desde el inicio del cómputo
@@ -4843,6 +4877,41 @@ function renderModal(){
       '<div class="row" style="margin-top:14px"><button class="btn" style="flex:1" data-action="copia-cerrar">Ahora no</button></div>'+
       '</div></div>';
     return;
+  }
+  // Cambios de jornada con fecha de efecto
+  if(ui.tramosPid){
+    const p = state.physicians.find(x=>x.id===ui.tramosPid);
+    if(!p){ ui.tramosPid=null; }
+    else{
+      const tramos = (p.pctTramos||[]).slice().sort((a,b)=>String(a.desde).localeCompare(String(b.desde)));
+      root.innerHTML = '<div class="overlay" data-action="close-modal"><div class="modal" data-stop="1">'+
+        '<b style="font-size:17px">Cambios de jornada · '+esc(p.name)+'</b>'+
+        '<p class="muted" style="margin-top:6px;font-size:13px">Su jornada de partida es del <b>'+p.pct+'%</b>. '+
+        'Añade aquí los cambios con la fecha en que empiezan a aplicarse. Cada mes se calculará con la jornada vigente entonces.</p>'+
+        (tramos.length
+          ? '<div style="margin-top:10px">'+tramos.map((t,i)=>{
+              const pr=String(t.desde).split("-");
+              return '<div class="row between" style="align-items:center;padding:6px 0;border-bottom:1px solid var(--slate-100)">'+
+                '<span style="font-size:14px">Desde <b>'+MONTHS[Number(pr[1])-1]+' '+pr[0]+'</b>: <b>'+t.pct+'%</b></span>'+
+                '<button class="btn" data-action="tramo-borrar" data-pid="'+p.id+'" data-i="'+i+'" style="padding:3px 9px;font-size:12px">Quitar</button>'+
+              '</div>';
+            }).join("")+'</div>'
+          : '<p class="muted" style="margin-top:10px;font-size:14px">Sin cambios registrados.</p>')+
+        '<div class="row" style="margin-top:14px;gap:8px;align-items:flex-end;flex-wrap:wrap">'+
+          '<span style="flex:1;min-width:110px"><span class="tiny">Desde</span>'+
+            '<select id="tr-mes" style="width:100%;padding:7px;border:1px solid var(--slate-300);border-radius:8px">'+
+              MONTHS.map((m,i)=>'<option value="'+i+'"'+(i===ui.month?" selected":"")+'>'+m+'</option>').join("")+
+            '</select></span>'+
+          '<span style="width:88px"><span class="tiny">Año</span>'+
+            '<input type="number" id="tr-anio" value="'+state.year+'" style="width:100%;padding:7px;border:1px solid var(--slate-300);border-radius:8px"></span>'+
+          '<span style="width:82px"><span class="tiny">Jornada</span>'+
+            '<input type="number" id="tr-pct" value="50" min="10" max="100" step="5" style="width:100%;padding:7px;border:1px solid var(--slate-300);border-radius:8px"></span>'+
+          '<button class="btn primary" data-action="tramo-add" data-pid="'+p.id+'">Añadir</button>'+
+        '</div>'+
+        '<div class="row" style="margin-top:12px"><button class="btn" style="flex:1" data-action="close-modal">Cerrar</button></div>'+
+        '</div></div>';
+      return;
+    }
   }
   // Confirmación antes de enviar una solicitud
   if(ui.confirmEnvio){
@@ -5194,7 +5263,7 @@ function carryBalance(p, beforeMonth, fromMonth){
       lab++;
       if(a) done += turnosOf(a);   // URG=2, URGF=0
     }
-    due += lab * (p.pct||100)/100;  // objetivo del mes (laborables menos ausencias)
+    due += lab * pctDe(p, mo, state.year)/100;  // objetivo del mes con su % vigente
   }
   return done - due;   // + = de más ; - = de menos
 }
@@ -5366,7 +5435,7 @@ function generateMonth(mode){
       if(a && a.f && absInfo(a.f)) aus++;
     });
     ausDias[p.id] = aus;
-    baseTarget[p.id] = (labDays.length - aus) * (p.pct||100)/100;   // objetivo del mes, sin los días de ausencia
+    baseTarget[p.id] = (labDays.length - aus) * pctDe(p, ui.month, state.year)/100;   // objetivo del mes, sin los días de ausencia
     carry[p.id] = carryBalance(p, ui.month, state.settings.computeFrom||0);  // saldo desde el mes de inicio del cómputo
     // Ajuste por saldo, SUAVE: como mucho se compensa un 25% del objetivo mensual.
     // Así un desfase grande se reparte entre varios meses en lugar de descargarse de golpe
@@ -5424,7 +5493,7 @@ function generateMonth(mode){
     });
   }
 
-  const weight = p=>(p.pct||100)/100;
+  const weight = p=>pctDe(p, ui.month, state.year)/100;
   const deficit = p=> target[p.id]-load[p.id];
   const wouldExceed = (p,add)=> (load[p.id]+add) > target[p.id] + 1e-9;
   const byDeficit = arr=> arr.slice().sort((x,y)=> (deficit(y)-deficit(x)) || (Math.random()-0.5));
@@ -5933,7 +6002,7 @@ document.addEventListener("click", e=>{
   if(!el){ return; }
   const act = el.dataset.action;
   if(act==="admvo-ejecutado" && (MODE!=="viewer" || esAdministrativo())){ /* permitido */ }
-  else if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-urgred","toggle-tsuelta","toggle-topesem","toggle-nourgdow","toggle-required","official-on","official-off","admvo-cerrar","admvo-abrir","deshacer","vac-marcar","vac-quitar","copia-descargar","copia-servidor","rot-cell","rot-set","rot-gen","rot-clear","puerta-toggle","guardia-dia","rot-guardia-res","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","buzon-recibir","buzon-guardar","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+  else if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-urgred","toggle-tsuelta","toggle-topesem","toggle-nourgdow","pct-tramos","tramo-add","tramo-borrar","toggle-required","official-on","official-off","admvo-cerrar","admvo-abrir","deshacer","vac-marcar","vac-quitar","copia-descargar","copia-servidor","rot-cell","rot-set","rot-gen","rot-clear","puerta-toggle","guardia-dia","rot-guardia-res","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","buzon-recibir","buzon-guardar","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
       ui.reqDraft = {}; ui.reqNote = "";
@@ -5941,7 +6010,7 @@ document.addEventListener("click", e=>{
     }
     return;
   }
-  if(act==="close-modal"){ if(stop && !el.closest(".modal")) return; ui.editCell=null; ui.dayDetail=null; ui.genModal=false; ui.genReport=null; ui.resetMonthModal=false; ui.reqModal=null; ui.reviewModal=null; ui.rotCell=null; ui.rotBlockDay=null; ui.avisoCopia=null; renderModal(); return; }
+  if(act==="close-modal"){ if(stop && !el.closest(".modal")) return; ui.editCell=null; ui.dayDetail=null; ui.genModal=false; ui.genReport=null; ui.resetMonthModal=false; ui.reqModal=null; ui.reviewModal=null; ui.rotCell=null; ui.rotBlockDay=null; ui.avisoCopia=null; ui.tramosPid=null; renderModal(); return; }
   switch(act){
     case "tab": ui.tab = el.dataset.tab; ui.confirmReset=false; render(); break;
     case "prev-month": if(ui.month===0){ui.month=11; state.year--;} else ui.month--; save(); render(); break;
@@ -6822,6 +6891,26 @@ document.addEventListener("click", e=>{
       const p = state.physicians.find(x=>x.id===el.dataset.pid); if(!p) break;
       toggleNoUrgDow(p, Number(el.dataset.dow));
       save(); render(); break;
+    }
+    case "pct-tramos": { ui.tramosPid = el.dataset.pid; renderModal(); break; }
+    case "tramo-add": {
+      const p = state.physicians.find(x=>x.id===el.dataset.pid); if(!p) break;
+      const mes = Number((document.getElementById("tr-mes")||{value:0}).value);
+      const anio = Number((document.getElementById("tr-anio")||{value:state.year}).value);
+      const pct = Number((document.getElementById("tr-pct")||{value:50}).value);
+      if(!(pct>=5 && pct<=100)){ window.alert("La jornada debe estar entre 5 y 100."); break; }
+      p.pctTramos = (p.pctTramos||[]).filter(t=>String(t.desde) !== anio+"-"+pad(mes+1));
+      p.pctTramos.push({desde: anio+"-"+pad(mes+1), pct: pct});
+      save(); renderModal(); render();
+      break;
+    }
+    case "tramo-borrar": {
+      const p = state.physicians.find(x=>x.id===el.dataset.pid); if(!p) break;
+      const orden = (p.pctTramos||[]).slice().sort((a,b)=>String(a.desde).localeCompare(String(b.desde)));
+      const quitar = orden[Number(el.dataset.i)];
+      if(quitar) p.pctTramos = (p.pctTramos||[]).filter(t=>t!==quitar && String(t.desde)!==String(quitar.desde));
+      save(); renderModal(); render();
+      break;
     }
     case "toggle-topesem": {
       const p = state.physicians.find(x=>x.id===el.dataset.pid); if(!p) break;
