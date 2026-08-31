@@ -939,7 +939,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v135";
+const APP_VERSION = "v136";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -6746,11 +6746,17 @@ document.addEventListener("click", e=>{
           }catch(e){}
           const dref = rq0.type==="swap" ? rq0.dateA
                     : (rq0.type==="move" ? rq0.dateTo
+                    : (rq0.type==="consultas" ? rq0.fA
                     : (rq0.type==="doble" ? (rq0.pares&&rq0.pares[0]?rq0.pares[0].a:rq0.date)
                     : (rq0.type==="urg2" ? rq0.dateU
-                    : (rq0.type==="libre" ? (rq0.dias&&rq0.dias[0] ? rq0.dias[0] : rq0.date) : rq0.date))));
-          const pr = dref.split("-").map(Number);
-          state.year = pr[0]; ui.month = pr[1]-1; save();
+                    : (rq0.type==="libre" ? (rq0.dias&&rq0.dias[0] ? rq0.dias[0] : rq0.date) : rq0.date)))));
+          // Si no se identifica la fecha, no se salta de mes; nunca debe impedir
+          // que la solicitud quede marcada como resuelta.
+          if(typeof dref === "string" && dref.indexOf("-") > 0){
+            const pr = dref.split("-").map(Number);
+            state.year = pr[0]; ui.month = pr[1]-1;
+          }
+          save();
           if(ui.reviewTab && ui.reviewTab.id) bandejaResolver(ui.reviewTab.id, "aprobada");
           ui.reviewTab = {}; ui.tab = "cuadrante";
           render();
