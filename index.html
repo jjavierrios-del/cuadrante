@@ -939,7 +939,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v134";
+const APP_VERSION = "v135";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2117,11 +2117,15 @@ function solicitudFormHTML(){
 }
 
 // Consultas de mañana ocupadas ese día (RXINT no ocupa despacho físico)
+// Consultas que NO ocupan despacho físico: radiología intervencionista
+// y la actividad administrativa, que no se hace en consulta.
+const SIN_DESPACHO = ["RXINT","ADM","ADMT"];
+function ocupaDespacho(code){ return !!code && SIN_DESPACHO.indexOf(code) < 0; }
 function mananasOcupadasDia(dkey){
   let n=0;
   state.physicians.forEach(p=>{
     const a = state.assignments[p.id+"|"+dkey];
-    if(a && a.m && a.m!=="RXINT") n++;
+    if(a && ocupaDespacho(a.m)) n++;
   });
   return n;
 }
@@ -2714,7 +2718,7 @@ function validarMovimiento(pid, dateFrom, part, dateTo, slot){
   if(!sustituto) return "La consulta "+code+" ya la pasa otro compañero el "+fmtDate(dateTo)+" y no queda ninguna equivalente libre.";
 
   // Hueco físico de mañana (RXINT no ocupa despacho)
-  if(slot==="m" && code!=="RXINT"){
+  if(slot==="m" && ocupaDespacho(code)){
     const ocupadas = mananasOcupadasDia(dateTo) - ((dateFrom===dateTo && slotOrig==="m") ? 1 : 0);
     if(ocupadas >= (state.settings.maxMorning||8))
       return "Ese día ya están ocupadas las "+(state.settings.maxMorning||8)+" consultas físicas de mañana: no hay hueco.";
@@ -2767,14 +2771,14 @@ function validarIntercambio(pidA, dateA, pidB, dateB){
       if(motivo) avisos.push(esc(quien.name)+" "+motivo+" ("+cod+").");
     });
     // Hueco físico de mañana en el día que recibe
-    if(celda.m && celda.m!=="RXINT"){
+    if(ocupaDespacho(celda.m)){
       let ocupadas = 0;
       state.physicians.forEach(q=>{
         if(q.id===quien.id) return;
         if(q.id===pa.id && fecha===dateA) return;   // esa celda se vacía
         if(q.id===pb.id && fecha===dateB) return;
         const x = state.assignments[q.id+"|"+fecha];
-        if(x && x.m && x.m!=="RXINT") ocupadas++;
+        if(x && ocupaDespacho(x.m)) ocupadas++;
       });
       if(ocupadas >= (state.settings.maxMorning||8))
         avisos.push("El "+fmtDate(fecha)+" ya están ocupadas las "+(state.settings.maxMorning||8)+" consultas físicas de mañana.");
@@ -5302,7 +5306,7 @@ function generateMonth(mode){
   // los facultativos que queden pasan a la tarde.
   const maxM = state.settings.maxMorning || 8;
   // RXINT no ocupa una de las consultas físicas (se hace en otro espacio), así que no cuenta.
-  const OCUPA_CONSULTA = (code)=> !!code && code!=="RXINT";
+  const OCUPA_CONSULTA = (code)=> ocupaDespacho(code);
   const mananasOcupadas = (dkey)=>{
     let n=0;
     state.physicians.forEach(p=>{ const a=getA(p.id,dkey); if(a && OCUPA_CONSULTA(a.m)) n++; });
