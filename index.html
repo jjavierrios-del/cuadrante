@@ -939,7 +939,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v136";
+const APP_VERSION = "v137";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -4160,6 +4160,11 @@ function viewSolicitudes(){
       ? '<div class="warnbox" style="margin-top:8px">ℹ '+AVISO_VOLUNTARIO+'</div>' : '';
     h += '<div class="card" style="margin-top:10px;background:var(--slate-50)">'+ficha+avisoVol+'</div>'+
       (rv.err?'<p style="color:var(--rose-700);font-size:13px;margin-top:8px">'+esc(rv.err)+'</p>':'')+
+      (rv.err && rv.id
+        ? '<div class="warnbox" style="margin-top:10px">Si este cambio <b>ya está hecho</b> en el cuadrante, ciérralo sin volver a aplicarlo:'+
+          '<div style="margin-top:8px"><button class="btn" data-action="reviewt-yahecha" data-id="'+rv.id+'" '+
+          'style="background:#065f46;color:#fff;border-color:#065f46">✓ Ya está hecha</button></div></div>'
+        : '')+
       '<div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">'+
       '<button class="btn primary" data-action="reviewt-apply">Aprobar y aplicar</button>'+
       (rv.id?'<button class="btn danger" data-action="bandeja-rechazar" data-id="'+rv.id+'">Rechazar</button>':'')+
@@ -6006,7 +6011,7 @@ document.addEventListener("click", e=>{
   if(!el){ return; }
   const act = el.dataset.action;
   if(act==="admvo-ejecutado" && (MODE!=="viewer" || esAdministrativo())){ /* permitido */ }
-  else if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-urgred","toggle-tsuelta","toggle-topesem","toggle-nourgdow","pct-tramos","tramo-add","tramo-borrar","toggle-required","official-on","official-off","admvo-cerrar","admvo-abrir","deshacer","vac-marcar","vac-quitar","copia-descargar","copia-servidor","rot-cell","rot-set","rot-gen","rot-clear","puerta-toggle","guardia-dia","rot-guardia-res","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","buzon-recibir","buzon-guardar","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+  else if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-urgred","toggle-tsuelta","toggle-topesem","toggle-nourgdow","pct-tramos","tramo-add","tramo-borrar","toggle-required","official-on","official-off","admvo-cerrar","admvo-abrir","deshacer","vac-marcar","vac-quitar","copia-descargar","copia-servidor","rot-cell","rot-set","rot-gen","rot-clear","puerta-toggle","guardia-dia","rot-guardia-res","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","reviewt-yahecha","buzon-recibir","buzon-guardar","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
       ui.reqDraft = {}; ui.reqNote = "";
@@ -6583,6 +6588,14 @@ document.addEventListener("click", e=>{
       render(); break;
     }
     case "reviewt-back": ui.reviewTab = {}; render(); break;
+    case "reviewt-yahecha": {
+      // El cambio ya consta en el cuadrante: se cierra como aprobada sin reaplicarlo
+      bandejaResolver(el.dataset.id, "aprobada", "Ya estaba aplicada");
+      ui.reviewTab = {};
+      setSave("✓ Marcada como hecha");
+      render();
+      break;
+    }
     case "req-enviar-buzon": {
       const txt = buildRequestText();
       if(!txt) break;
