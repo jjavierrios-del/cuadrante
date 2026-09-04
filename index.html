@@ -939,7 +939,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v137";
+const APP_VERSION = "v138";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1288,6 +1288,18 @@ function buildRequestText(){
       (note?("Motivo: "+note+"\n"):"")+
       "\n[SOLICITUD]"+JSON.stringify(payload);
   }
+  if(rq.type==="permiso"){
+    const pa = state.physicians.find(x=>x.id===rq.pid);
+    const dp = ui.reqDraft||{};
+    const dias = Array.isArray(dp.permisos)?dp.permisos:[];
+    const payload = {v:9, type:"permiso", by:name, note:note, pid:rq.pid, phys:pa?pa.name:"", dias:dias};
+    return "Solicitud de DÍAS DE PERMISO\n"+
+      "Solicitante: "+(name||"(sin nombre)")+"\n"+
+      "Facultativo: "+(pa?pa.name:"")+"\n"+
+      "Días: "+dias.map(fmtDate).join(", ")+"\n"+
+      (note?("Motivo: "+note+"\n"):"")+
+      "\n[SOLICITUD]"+JSON.stringify(payload);
+  }
   if(rq.type==="trafico"){
     const pa = state.physicians.find(x=>x.id===rq.pid);
     const d3 = ui.reqDraft||{};
@@ -1459,6 +1471,32 @@ function applyRequest(r){
     Object.entries(sim.cambios).forEach(([k,celda])=>{
       if(celda) state.assignments[k] = celda; else delete state.assignments[k];
     });
+    save();
+    return null;
+  }
+  if(r.type==="permiso"){
+    const p = state.physicians.find(x=>x.id===r.pid) || state.physicians.find(x=>x.name===r.phys);
+    if(!p) return "No se encuentra al facultativo.";
+    const dias = (r.dias||[]).slice().sort();
+    if(!dias.length) return "No se indican días.";
+    const hmapP = holidayMap();
+    for(const d of dias){
+      const dt = new Date(d), dow = dt.getDay();
+      if(dow===0 || dow===6) return "El "+fmtDate(d)+" cae en fin de semana.";
+      if(hmapP[d]) return "El "+fmtDate(d)+" es festivo.";
+      const a = state.assignments[p.id+"|"+d];
+      if(a && a.f && a.f!=="P" && absInfo(a.f))
+        return "El "+fmtDate(d)+" ya está como "+(absInfo(a.f)||{label:a.f}).label+".";
+    }
+    // Tope anual, contando los ya concedidos
+    const porAnio = {};
+    dias.forEach(d=>{ const y=d.slice(0,4); porAnio[y]=(porAnio[y]||0)+1; });
+    for(const y in porAnio){
+      const ya = permisosDelAnio(p.id, Number(y)).filter(d=>dias.indexOf(d)<0).length;
+      if(ya + porAnio[y] > MAX_PERMISOS)
+        return "Supera el máximo de "+MAX_PERMISOS+" días de permiso en "+y+" (ya tiene "+ya+").";
+    }
+    dias.forEach(d=>{ state.assignments[p.id+"|"+d] = {m:null, t:null, f:"P"}; });
     save();
     return null;
   }
@@ -1684,6 +1722,7 @@ function resumenSolicitud(r){
     case "urg2":    return n(r.physA)+" ⇄ "+n(r.physB)+" · urgencia del "+fmtDate(r.dateU)+" por dos consultas";
     case "trafico": return n(r.phys)+" · Tráfico "+esc(r.code||"")+" el "+fmtDate(r.date)+(r.hora?" a las "+esc(r.hora):"");
     case "libre":   return n(r.phys)+" · no disponible "+(r.dias||[]).map(fmtDate).join(", ");
+    case "permiso": return n(r.phys)+" · permiso "+(r.dias||[]).map(fmtDate).join(", ");
     default:        return n(r.phys)+" · "+fmtDate(r.date);
   }
 }
@@ -1732,6 +1771,10 @@ function detalleSolicitud(r){
       fila("Facultativo", esc(r.phys||""));
       fila("Días solicitados", (r.dias||[]).map(fmtDate).join("<br>"));
       break;
+    case "permiso":
+      fila("Facultativo", esc(r.phys||""));
+      fila("Días de permiso", (r.dias||[]).map(fmtDate).join("<br>"));
+      break;
     default:
       fila("Facultativo", esc(r.phys||""));
       fila("Día", fmtDate(r.date));
@@ -1742,7 +1785,7 @@ function detalleSolicitud(r){
 }
 
 function etiquetaTipo(t){
-  const m = {consultas:"Intercambio de consultas", swap:"Intercambio", move:"Mover consulta", doble:"Cambio doble", ceder:"Cesión",
+  const m = {permiso:"Días de permiso", consultas:"Intercambio de consultas", swap:"Intercambio", move:"Mover consulta", doble:"Cambio doble", ceder:"Cesión",
              urg2:"Urgencia × 2", trafico:"Tráfico", libre:"No disponibilidad"};
   return m[t] || "Cambio";
 }
@@ -1864,6 +1907,37 @@ function solicitudFormHTML(){
         ? '<div class="warnbox" style="margin-top:8px">Ya tienes concedidos ese mes: '+yaPedidos.map(fmtDate).join(", ")+'</div>'
         : '');
     ui.reqBloqueo = total ? null : "Añade al menos un día.";
+  }else if(rq.type==="permiso"){
+    const dp = ui.reqDraft || (ui.reqDraft={});
+    dp.permisos = Array.isArray(dp.permisos) ? dp.permisos : [];
+    const total = dp.permisos.length;
+    const anio = (dp.permisos[0]||rq.date||"").slice(0,4) || String(state.year);
+    const yaConcedidos = p ? permisosDelAnio(p.id, Number(anio)).filter(d=>dp.permisos.indexOf(d)<0) : [];
+    const restantes = Math.max(0, MAX_PERMISOS - yaConcedidos.length);
+    const hmapP = holidayMap();
+    const malDia = dp.permisos.find(d=>{ const w=new Date(d).getDay(); return w===0||w===6||hmapP[d]; });
+    core = '<p class="tiny" style="margin-top:10px">Facultativo</p>'+
+      '<div class="row" style="margin-top:4px">'+physSel("rq-phys", p?p.id:"")+'</div>'+
+      '<p class="tiny" style="margin-top:12px">Días de permiso (máximo '+MAX_PERMISOS+' al año)</p>'+
+      '<div class="row" style="margin-top:4px;gap:8px">'+
+        '<input type="date" value="'+(dp.nuevoPermiso||rq.date||"")+'" data-field="rq-permisodia" style="padding:7px;flex:1">'+
+        '<button class="btn primary" data-action="req-permiso-add"'+(total>=restantes?' disabled style="opacity:.4"':'')+'>Añadir</button>'+
+      '</div>'+
+      (total
+        ? '<div style="margin-top:10px">'+dp.permisos.map((f,i)=>
+            '<div class="row between" style="padding:6px 8px;background:var(--slate-50);border-radius:8px;margin-top:6px">'+
+              '<span style="font-size:14px">'+fmtDate(f)+'</span>'+
+              '<button class="btn" data-action="req-permiso-del" data-idx="'+i+'" style="padding:4px 8px">Quitar</button>'+
+            '</div>').join("")+'</div>'
+        : '<p class="muted" style="font-size:13px;margin-top:8px">Aún no has añadido ninguno.</p>')+
+      '<p class="muted" style="font-size:12px;margin-top:8px">Pides <b>'+total+'</b> de los '+restantes+' que te quedan en '+anio+'. '+
+        'Solo días laborables. Cada día de permiso <b>cuenta como jornada trabajada</b>, así que no tendrás que recuperarlo.</p>'+
+      (yaConcedidos.length
+        ? '<div class="warnbox" style="margin-top:8px">Ya tienes concedidos en '+anio+': '+yaConcedidos.map(fmtDate).join(", ")+'</div>'
+        : '');
+    ui.reqBloqueo = !total ? "Añade al menos un día."
+                  : (malDia ? "El "+fmtDate(malDia)+" no es día laborable."
+                  : (total > restantes ? "Supera los "+MAX_PERMISOS+" días anuales." : null));
   }else if(rq.type==="trafico"){
     const d3 = ui.reqDraft || (ui.reqDraft={});
     d3.tfSlot = d3.tfSlot || "m";
@@ -2101,6 +2175,7 @@ function solicitudFormHTML(){
       '<option value="urg2"'+(rq.type==="urg2"?" selected":"")+'>Cambiar una urgencia por dos consultas</option>'+
       '<option value="trafico"'+(rq.type==="trafico"?" selected":"")+'>Solicitar consulta de Tráfico</option>'+
       '<option value="libre"'+(rq.type==="libre"?" selected":"")+'>Pedir días de no disponibilidad</option>'+
+      '<option value="permiso"'+(rq.type==="permiso"?" selected":"")+'>Pedir días de permiso</option>'+
     '</select>'+
     core+
     '<input type="text" id="rq-name" placeholder="Tu nombre" value="'+esc(name || (miFacultativo()?miFacultativo().name:""))+'" data-field="rq-name" style="width:100%;padding:8px;margin-top:10px;border:1px solid var(--slate-300);border-radius:8px">'+
@@ -3299,6 +3374,20 @@ function extraerSolicitudes(texto){
 }
 
 const MAX_DIAS_LIBRES = 3;   // máximo por facultativo y mes
+const MAX_PERMISOS = 4;      // días de permiso por facultativo y año
+// Días de permiso ya concedidos en el año
+function permisosDelAnio(pid, anio){
+  const y = anio || state.year;
+  const out = [];
+  Object.entries(state.assignments||{}).forEach(([k,a])=>{
+    if(!a || a.f !== "P") return;
+    const i = k.indexOf("|");
+    if(k.slice(0,i) !== pid) return;
+    const fecha = k.slice(i+1);
+    if(fecha.slice(0,4) === String(y)) out.push(fecha);
+  });
+  return out.sort();
+}
 function esDiaLibre(pid, dkey){ return !!(state.diasLibres||{})[pid+"|"+dkey]; }
 function diasLibresDelMes(pid, mo){
   const pre = state.year+"-"+pad(mo+1);
@@ -6408,6 +6497,20 @@ document.addEventListener("click", e=>{
       ghPublish(true);
       break;
     }
+    case "req-permiso-add": {
+      const dPer = ui.reqDraft = ui.reqDraft || {};
+      dPer.permisos = Array.isArray(dPer.permisos) ? dPer.permisos : [];
+      const diaPer = dPer.nuevoPermiso || (ui.reqModal||{}).date;
+      if(!diaPer) break;
+      if(dPer.permisos.indexOf(diaPer) < 0) dPer.permisos.push(diaPer);
+      dPer.permisos.sort();
+      render(); break;
+    }
+    case "req-permiso-del": {
+      const dPer2 = ui.reqDraft || {};
+      if(Array.isArray(dPer2.permisos)) dPer2.permisos.splice(Number(el.dataset.idx), 1);
+      render(); break;
+    }
     case "req-libre-add": {
       const d5 = ui.reqDraft = ui.reqDraft || {};
       d5.libres = Array.isArray(d5.libres) ? d5.libres : [];
@@ -6762,7 +6865,7 @@ document.addEventListener("click", e=>{
                     : (rq0.type==="consultas" ? rq0.fA
                     : (rq0.type==="doble" ? (rq0.pares&&rq0.pares[0]?rq0.pares[0].a:rq0.date)
                     : (rq0.type==="urg2" ? rq0.dateU
-                    : (rq0.type==="libre" ? (rq0.dias&&rq0.dias[0] ? rq0.dias[0] : rq0.date) : rq0.date)))));
+                    : ((rq0.type==="libre"||rq0.type==="permiso") ? (rq0.dias&&rq0.dias[0] ? rq0.dias[0] : rq0.date) : rq0.date)))));
           // Si no se identifica la fecha, no se salta de mes; nunca debe impedir
           // que la solicitud quede marcada como resuelta.
           if(typeof dref === "string" && dref.indexOf("-") > 0){
@@ -7006,6 +7109,7 @@ document.addEventListener("change", e=>{
     else if(fld==="rq-tfhora"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.tfHora=el.value; rqRefresh(); }
     else if(fld==="rq-cedepart"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.cedePart=el.value; rqRefresh(); }
     else if(fld==="rq-libredia"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.nuevoDia=el.value; }
+    else if(fld==="rq-permisodia"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.nuevoPermiso=el.value; }
     else if(fld==="rq-slota"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.slotA=el.value; rqRefresh(); }
     else if(fld==="rq-slotb"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.slotB=el.value; rqRefresh(); }
     else if(fld==="rq-desplaza"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.moverDesplazada=el.checked; rqRefresh(); }
