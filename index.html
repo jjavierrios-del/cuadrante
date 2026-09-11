@@ -942,7 +942,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v139";
+const APP_VERSION = "v140";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -3940,6 +3940,24 @@ function viewTraficoAdmvo(mo){
           horas.map(x=>'<option value="'+x+'"'+(d.hora===x?" selected":"")+'>'+x+'</option>').join("")+
         '</select></span>'+
     '</div>'+
+    (function(){
+      // Estado real del turno elegido, recalculado en cada cambio
+      const pidSel = d.pid || (state.physicians[0]||{}).id;
+      const diaSel = d.dia || (dias[0]||{}).key;
+      if(!pidSel || !diaSel) return '';
+      const a = state.assignments[pidSel+"|"+diaSel] || {};
+      const quien = (state.physicians.find(x=>x.id===pidSel)||{}).name || "";
+      if(a.f) return '<div class="warnbox" style="margin-top:10px">⚠ '+esc(quien)+' tiene <b>'+esc(a.f)+'</b> ese día.</div>';
+      if(a[slot]) return '<div class="warnbox" style="margin-top:10px">⚠ Ese turno ya está ocupado con <b>'+esc(a[slot])+'</b>.</div>';
+      const cod = d.code || (slot==="m"?"TFM1":"TFT1");
+      const repetida = state.physicians.some(q=>{
+        if(q.id===pidSel) return false;
+        const x = state.assignments[q.id+"|"+diaSel];
+        return x && x[slot]===cod;
+      });
+      if(repetida) return '<div class="warnbox" style="margin-top:10px">⚠ La consulta '+esc(cod)+' ya la tiene otro compañero ese día.</div>';
+      return '<p class="muted" style="margin-top:10px;font-size:13px;color:var(--emerald-700)">✓ '+esc(quien)+' tiene libre ese turno.</p>';
+    })()+
     '<div class="row" style="margin-top:10px;gap:8px"><button class="btn primary" data-action="tfa-poner">Añadir tráfico</button></div>'+
     (d.aviso?'<div class="warnbox" style="margin-top:10px">'+esc(d.aviso)+'</div>':'')+
     '</div>';
@@ -7304,6 +7322,20 @@ document.addEventListener("change", e=>{
   const fieldVista = el.dataset ? (el.dataset.field||"") : "";
   if(fieldVista==="stats-from"){ ui.statsFrom = Number(el.value); saveStatsView(); render(); return; }
   if(fieldVista==="stats-to"){ ui.statsTo = Number(el.value); saveStatsView(); render(); return; }
+  // Los administrativos gestionan los tráficos desde modo consulta:
+  // sus campos se atienden antes del corte por permisos.
+  const campoTf = el.dataset ? (el.dataset.field||"") : "";
+  if(campoTf.indexOf("tfa-")===0 && (MODE!=="viewer" || esAdministrativo())){
+    const t = ui.tfAdm = ui.tfAdm || {};
+    t.aviso = "";                                   // al cambiar algo, se borra el aviso anterior
+    if(campoTf==="tfa-pid")  t.pid  = el.value;
+    if(campoTf==="tfa-dia")  t.dia  = el.value;
+    if(campoTf==="tfa-code") t.code = el.value;
+    if(campoTf==="tfa-hora") t.hora = el.value;
+    if(campoTf==="tfa-slot"){ t.slot = el.value; t.code = null; t.hora = null; }
+    render();
+    return;
+  }
   if(MODE==="viewer") return;
   const field = el.dataset.field;
   if(el.id==="import-file"){ if(el.files&&el.files[0]) importBackup(el.files[0]); el.value=""; return; }
@@ -7325,11 +7357,6 @@ document.addEventListener("change", e=>{
     if(p){ p.tardePref = el.value ? Number(el.value) : 0; save(); render(); }
     return;
   }
-  else if(field==="tfa-pid"){ (ui.tfAdm=ui.tfAdm||{}).pid = el.value; return; }
-  else if(field==="tfa-dia"){ (ui.tfAdm=ui.tfAdm||{}).dia = el.value; return; }
-  else if(field==="tfa-slot"){ const t=(ui.tfAdm=ui.tfAdm||{}); t.slot=el.value; t.code=null; t.hora=null; render(); return; }
-  else if(field==="tfa-code"){ (ui.tfAdm=ui.tfAdm||{}).code = el.value; return; }
-  else if(field==="tfa-hora"){ (ui.tfAdm=ui.tfAdm||{}).hora = el.value; return; }
   else if(field==="vac-pid"){ (ui.vacDraft=ui.vacDraft||{}).pid = el.value; return; }
   else if(field==="vac-desde"){ (ui.vacDraft=ui.vacDraft||{}).desde = el.value; return; }
   else if(field==="vac-hasta"){ (ui.vacDraft=ui.vacDraft||{}).hasta = el.value; return; }
