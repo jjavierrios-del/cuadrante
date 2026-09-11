@@ -447,6 +447,8 @@ let state = {
   // Meses cerrados para administrativos: fecha del cierre y cambios hechos después
   cerradoAdm: {},
   cambiosAdm: {},
+  // Tráficos puestos o quitados por administración, para avisarte
+  avisosTrafico: [],
   // Buzón de solicitudes (Cloudflare Worker). La dirección y la clave de envío se
   // publican para que la app de los compañeros pueda enviar; la clave de
   // administración nunca viaja: se guarda solo en el dispositivo del jefe de servicio.
@@ -726,6 +728,7 @@ function loadState(){
       state.historial = d.historial||{};
       state.cerradoAdm = d.cerradoAdm||{};
       state.cambiosAdm = d.cambiosAdm||{};
+      state.avisosTrafico = Array.isArray(d.avisosTrafico) ? d.avisosTrafico : [];
       state.buzon = Object.assign({url:"",claveEnvio:"",claveCalendario:""}, d.buzon||{});
       state.rotantesLeyenda = Object.assign({R1:"",R2:"",R3:"",R4:"",R5:""}, d.rotantesLeyenda||{});
       state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
@@ -939,7 +942,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v138";
+const APP_VERSION = "v139";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -956,6 +959,23 @@ function setClaveAdmvo(v){ try{ if(v) localStorage.setItem(KEY_ADMVO_PASS, v); e
 
 // El administrativo marca un cambio como reajustado. Se guarda en el servidor,
 // porque en modo consulta la aplicación no publica por su cuenta.
+// El administrativo pone o quita una consulta de Tráfico a través del servidor
+async function traficoServidor(pid, fecha, slot, code, hora, quitar){
+  const b = state.buzon||{};
+  if(!b.url) return "SIN_BUZON";
+  const clave = claveAdmvo();
+  if(!clave) return "FALTA_CLAVE";
+  try{
+    const r = await fetch(b.url.replace(/\/+$/,"")+"/trafico", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({clave, pid, fecha, slot, code, hora, quitar: !!quitar})
+    });
+    const d = await r.json().catch(()=>null);
+    if(!r.ok || !d || !d.ok) return (d && d.error) ? d.error : "No se ha podido guardar.";
+    return null;
+  }catch(e){ return "Sin conexión con el servidor."; }
+}
+
 async function marcarEjecutadoServidor(mk, id, valor){
   const b = state.buzon||{};
   if(!b.url) return "SIN_BUZON";
@@ -3841,6 +3861,7 @@ function viewAdministrativo(){
   h += '<div class="seg no-print" style="margin-bottom:10px">'+
     '<button class="'+(sub==="consulta"?"on":"")+'" data-action="admvo-consulta">Agenda por consulta</button>'+
     '<button class="'+(sub==="facultativo"?"on":"")+'" data-action="admvo-facultativo">Agenda por facultativo</button>'+
+    '<button class="'+(sub==="trafico"?"on":"")+'" data-action="admvo-trafico">Tráficos</button>'+
     (cerradoAdmvo(mo) ? '<button class="'+(sub==="cambios"?"on":"")+'" data-action="admvo-cambios">Cambios realizados</button>' : '')+
     '</div>';
 
@@ -3880,7 +3901,80 @@ function viewAdministrativo(){
     return h;
   }
 
+  if(sub==="trafico") return h + viewTraficoAdmvo(mo);
   return h + viewCambiosAdmvo(mo);
+}
+
+// ---------- Administración: poner y quitar consultas de Tráfico ----------
+function viewTraficoAdmvo(mo){
+  const d = ui.tfAdm || (ui.tfAdm = {});
+  const dias = monthDays().filter(x=>x.dow!==0 && x.dow!==6 && !x.holiday);
+  const slot = d.slot || "m";
+  const codigos = slot==="m" ? ["TFM1","TFM2","TFM3"] : ["TFT1","TFT2","TFT3"];
+  const horas = [];
+  if(slot==="m"){ for(let hh=8; hh<=13; hh++){ horas.push(pad(hh)+":00"); horas.push(pad(hh)+":30"); } }
+  else { for(let hh=15; hh<=19; hh++){ horas.push(pad(hh)+":00"); horas.push(pad(hh)+":30"); } }
+
+  let h = '<div class="card"><h2>Consultas de Tráfico</h2>'+
+    '<p class="muted" style="margin-top:2px;font-size:14px">Puedes añadir o retirar consultas de Tráfico sin autorización previa. '+
+    'El resto del cuadrante no se puede modificar desde aquí.</p>'+
+    '<div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap;align-items:flex-end">'+
+      '<span style="flex:2;min-width:150px"><span class="tiny">Facultativo</span>'+
+        '<select data-field="tfa-pid" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
+          state.physicians.map(x=>'<option value="'+x.id+'"'+((d.pid||(state.physicians[0]||{}).id)===x.id?" selected":"")+'>'+esc(x.name)+'</option>').join("")+
+        '</select></span>'+
+      '<span style="flex:1;min-width:120px"><span class="tiny">Día</span>'+
+        '<select data-field="tfa-dia" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
+          dias.map(x=>'<option value="'+x.key+'"'+(d.dia===x.key?" selected":"")+'>'+x.n+' '+WD[x.dow]+'</option>').join("")+
+        '</select></span>'+
+      '<span style="width:110px"><span class="tiny">Turno</span>'+
+        '<select data-field="tfa-slot" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
+          '<option value="m"'+(slot==="m"?" selected":"")+'>Mañana</option>'+
+          '<option value="t"'+(slot==="t"?" selected":"")+'>Tarde</option></select></span>'+
+      '<span style="width:110px"><span class="tiny">Consulta</span>'+
+        '<select data-field="tfa-code" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
+          codigos.map(c=>'<option value="'+c+'"'+(d.code===c?" selected":"")+'>'+c+'</option>').join("")+
+        '</select></span>'+
+      '<span style="width:100px"><span class="tiny">Comienzo</span>'+
+        '<select data-field="tfa-hora" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
+          horas.map(x=>'<option value="'+x+'"'+(d.hora===x?" selected":"")+'>'+x+'</option>').join("")+
+        '</select></span>'+
+    '</div>'+
+    '<div class="row" style="margin-top:10px;gap:8px"><button class="btn primary" data-action="tfa-poner">Añadir tráfico</button></div>'+
+    (d.aviso?'<div class="warnbox" style="margin-top:10px">'+esc(d.aviso)+'</div>':'')+
+    '</div>';
+
+  // Tráficos del mes, con opción de quitarlos
+  const lista = [];
+  dias.forEach(dd=>{
+    state.physicians.forEach(p=>{
+      const a = state.assignments[p.id+"|"+dd.key];
+      if(!a || a.f) return;
+      ["m","t"].forEach(sl=>{
+        if(esTrafico(a[sl])) lista.push({pid:p.id, name:p.name, key:dd.key, dow:dd.dow, slot:sl,
+          code:a[sl], hora:(state.traficoHoras||{})[p.id+"|"+dd.key+"|"+sl]||""});
+      });
+    });
+  });
+  h += '<div class="card" style="margin-top:10px"><h2>Tráficos de '+MONTHS[mo]+' · '+lista.length+'</h2>';
+  if(!lista.length){
+    h += '<p class="muted" style="margin-top:8px;font-size:14px">Ninguno este mes.</p></div>';
+    return h;
+  }
+  h += '<div style="margin-top:8px">';
+  lista.forEach(x=>{
+    h += '<div class="cambiofila"><div class="row between" style="align-items:center;gap:8px;flex-wrap:wrap">'+
+      '<div style="flex:1;min-width:0">'+
+        '<b style="font-size:15px">'+esc(x.name)+'</b>'+
+        '<span class="tiny" style="margin-left:8px">'+fmtDate(x.key).slice(0,5)+' '+WD[x.dow]+'</span>'+
+        '<span class="tiny" style="margin-left:6px;background:#b45309;color:#fff;padding:2px 8px;border-radius:999px">'+x.code+'</span>'+
+        (x.hora?'<span class="tiny muted" style="margin-left:6px">'+esc(x.hora)+'</span>':'')+
+      '</div>'+
+      '<button class="btn danger" data-action="tfa-quitar" data-pid="'+x.pid+'" data-date="'+x.key+'" data-slot="'+x.slot+'" '+
+        'style="padding:5px 12px;font-size:13px">Quitar</button>'+
+    '</div></div>';
+  });
+  return h + '</div></div>';
 }
 
 function viewCambiosAdmvo(mo){
@@ -4309,6 +4403,23 @@ function viewCuadrante(){
       '<button class="btn" data-action="viewer-edit" title="Solo administración" style="padding:6px 9px">⚙</button></span></div>';
   }
   if(MODE==="editor"){
+    // Tráficos que ha puesto o quitado administración y aún no has visto
+    const nuevosTf = (state.avisosTrafico||[]).filter(a=>!a.visto);
+    if(nuevosTf.length){
+      html += '<div class="card no-print" style="margin-bottom:10px;border-color:#b45309;background:#fffbeb">'+
+        '<div class="row between" style="align-items:center;gap:8px;flex-wrap:wrap">'+
+          '<b style="font-size:15px;color:#b45309">Administración ha tocado '+nuevosTf.length+' consulta'+(nuevosTf.length>1?'s':'')+' de Tráfico</b>'+
+          '<button class="btn" data-action="tf-visto" style="padding:4px 10px;font-size:13px">Enterado</button>'+
+        '</div>'+
+        '<div style="margin-top:8px">'+
+          nuevosTf.slice(-8).reverse().map(a=>'<div style="font-size:14px;padding:4px 0;border-bottom:1px solid #fde68a">'+
+            (a.accion==="poner"?'<b style="color:var(--emerald-700)">+</b> ':'<b style="color:#b91c1c">−</b> ')+
+            '<b>'+esc(a.phys||"")+'</b> · '+esc(a.code||"")+' el '+fmtDate(a.fecha)+
+            ' ('+(a.slot==="m"?"mañana":"tarde")+')'+(a.hora?' a las '+esc(a.hora):'')+'</div>').join("")+
+        '</div>'+
+        (nuevosTf.length>8?'<p class="tiny muted" style="margin-top:6px">y '+(nuevosTf.length-8)+' más</p>':'')+
+        '</div>';
+    }
     const espera = cambiosEnEspera();
     if(espera.length){
       html += '<div class="warnbox no-print" style="margin-bottom:10px">⏳ <b>'+espera.length+' cambio'+(espera.length>1?'s':'')+
@@ -5306,6 +5417,7 @@ function importBackup(file){
       state.historial = d.historial||{};
       state.cerradoAdm = d.cerradoAdm||{};
       state.cambiosAdm = d.cambiosAdm||{};
+      state.avisosTrafico = Array.isArray(d.avisosTrafico) ? d.avisosTrafico : [];
       state.buzon = Object.assign({url:"",claveEnvio:"",claveCalendario:""}, d.buzon||{});
       state.rotantesLeyenda = Object.assign({R1:"",R2:"",R3:"",R4:"",R5:""}, d.rotantesLeyenda||{});
       state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
@@ -6099,8 +6211,10 @@ document.addEventListener("click", e=>{
   const el = e.target.closest("[data-action]");
   if(!el){ return; }
   const act = el.dataset.action;
-  if(act==="admvo-ejecutado" && (MODE!=="viewer" || esAdministrativo())){ /* permitido */ }
-  else if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-urgred","toggle-tsuelta","toggle-topesem","toggle-nourgdow","pct-tramos","tramo-add","tramo-borrar","toggle-required","official-on","official-off","admvo-cerrar","admvo-abrir","deshacer","vac-marcar","vac-quitar","copia-descargar","copia-servidor","rot-cell","rot-set","rot-gen","rot-clear","puerta-toggle","guardia-dia","rot-guardia-res","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","reviewt-yahecha","buzon-recibir","buzon-guardar","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+  // Administración puede gestionar los tráficos y marcar cambios como hechos
+  if(["admvo-ejecutado","admvo-trafico","tfa-poner","tfa-quitar"].indexOf(act) >= 0
+     && (MODE!=="viewer" || esAdministrativo())){ /* permitido */ }
+  else if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-urgred","toggle-tsuelta","toggle-topesem","toggle-nourgdow","pct-tramos","tramo-add","tramo-borrar","toggle-required","official-on","official-off","admvo-cerrar","admvo-abrir","deshacer","vac-marcar","vac-quitar","copia-descargar","copia-servidor","rot-cell","rot-set","rot-gen","rot-clear","puerta-toggle","guardia-dia","rot-guardia-res","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","reviewt-yahecha","buzon-recibir","buzon-guardar","tf-visto","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
       ui.reqDraft = {}; ui.reqNote = "";
@@ -6121,6 +6235,10 @@ document.addEventListener("click", e=>{
       break;
     }
     case "novedades-visto": { marcarVisitado(); render(); break; }
+    case "tf-visto": {
+      (state.avisosTrafico||[]).forEach(a=>{ a.visto = true; });
+      save(); setSave("✓ Visto"); render(); break;
+    }
     case "rot-sub-cuadro": ui.rotSub="cuadro"; render(); break;
     case "rot-sub-residente": ui.rotSub="residente"; render(); break;
     case "rot-sub-puerta": ui.rotSub="puerta"; render(); break;
@@ -6609,6 +6727,67 @@ document.addEventListener("click", e=>{
     case "admvo-consulta": ui.admvoSub = "consulta"; render(); break;
     case "admvo-facultativo": ui.admvoSub = "facultativo"; render(); break;
     case "admvo-cambios": ui.admvoSub = "cambios"; render(); break;
+    case "admvo-trafico": ui.admvoSub = "trafico"; render(); break;
+    case "tfa-poner": case "tfa-quitar": {
+      const d = ui.tfAdm = ui.tfAdm || {};
+      const quitar = (act === "tfa-quitar");
+      const pid   = quitar ? el.dataset.pid  : (d.pid || (state.physicians[0]||{}).id);
+      const fecha = quitar ? el.dataset.date : (d.dia || (monthDays().find(x=>x.dow!==0&&x.dow!==6&&!x.holiday)||{}).key);
+      const slot  = quitar ? el.dataset.slot : (d.slot || "m");
+      const code  = quitar ? "" : (d.code || (slot==="m"?"TFM1":"TFT1"));
+      const hora  = quitar ? "" : (d.hora || "");
+      if(!pid || !fecha){ d.aviso = "Faltan datos."; render(); break; }
+      if(quitar && !window.confirm("¿Quitar esta consulta de Tráfico?")) break;
+      setSave(quitar ? "Quitando…" : "Guardando…");
+      // El coordinador la aplica directamente; administración pasa por el servidor
+      if(MODE !== "viewer"){
+        marcarDeshacer(quitar ? "quitar tráfico" : "poner tráfico");
+        const k = pid+"|"+fecha;
+        const celda = Object.assign({m:null,t:null,f:null}, state.assignments[k]||{});
+        if(quitar){ celda[slot] = null;
+          if(!celda.m && !celda.t && !celda.f) delete state.assignments[k]; else state.assignments[k]=celda;
+          if(state.traficoHoras) delete state.traficoHoras[pid+"|"+fecha+"|"+slot];
+        }else{
+          if(celda.f || celda[slot]){ d.aviso = "Ese turno no está libre."; setSave("⚠"); render(); break; }
+          celda[slot] = code;
+          state.assignments[k] = celda;
+          if(hora){ state.traficoHoras = state.traficoHoras||{}; state.traficoHoras[pid+"|"+fecha+"|"+slot] = hora; }
+        }
+        save(); d.aviso = quitar ? "Tráfico retirado." : "Tráfico añadido.";
+        setSave("✓ Guardado"); render(); break;
+      }
+      const hacerlo = ()=>{
+        traficoServidor(pid, fecha, slot, code, hora, quitar).then(err=>{
+          if(err === "FALTA_CLAVE"){
+            const cl = window.prompt("Contraseña de administrativo\n\nIntrodúcela una vez para poder gestionar los tráficos.");
+            if(!cl){ setSave("Solo consulta"); return; }
+            setClaveAdmvo(cl); hacerlo(); return;
+          }
+          if(err === "SIN_BUZON"){
+            window.alert("El coordinador debe configurar el servidor en Ajustes para que puedas gestionar los tráficos.");
+            setSave("Solo consulta"); return;
+          }
+          if(err){
+            d.aviso = err;
+            if(err.indexOf("incorrecta")>=0) setClaveAdmvo("");
+            setSave("⚠ No guardado"); render(); return;
+          }
+          // Se refleja al momento y se recarga lo publicado
+          const k = pid+"|"+fecha;
+          const celda = Object.assign({m:null,t:null,f:null}, state.assignments[k]||{});
+          if(quitar){ celda[slot]=null;
+            if(!celda.m && !celda.t && !celda.f) delete state.assignments[k]; else state.assignments[k]=celda;
+          }else{
+            celda[slot]=code; state.assignments[k]=celda;
+            if(hora){ state.traficoHoras = state.traficoHoras||{}; state.traficoHoras[pid+"|"+fecha+"|"+slot]=hora; }
+          }
+          d.aviso = quitar ? "Tráfico retirado." : "Tráfico añadido.";
+          setSave("✓ Guardado"); render();
+        });
+      };
+      hacerlo();
+      break;
+    }
     case "admvo-print": window.print(); break;
     case "admvo-cerrar": {
       if(window.confirm("Cerrar "+MONTHS[ui.month]+" "+state.year+" para los administrativos.\n\n"+
@@ -7146,6 +7325,11 @@ document.addEventListener("change", e=>{
     if(p){ p.tardePref = el.value ? Number(el.value) : 0; save(); render(); }
     return;
   }
+  else if(field==="tfa-pid"){ (ui.tfAdm=ui.tfAdm||{}).pid = el.value; return; }
+  else if(field==="tfa-dia"){ (ui.tfAdm=ui.tfAdm||{}).dia = el.value; return; }
+  else if(field==="tfa-slot"){ const t=(ui.tfAdm=ui.tfAdm||{}); t.slot=el.value; t.code=null; t.hora=null; render(); return; }
+  else if(field==="tfa-code"){ (ui.tfAdm=ui.tfAdm||{}).code = el.value; return; }
+  else if(field==="tfa-hora"){ (ui.tfAdm=ui.tfAdm||{}).hora = el.value; return; }
   else if(field==="vac-pid"){ (ui.vacDraft=ui.vacDraft||{}).pid = el.value; return; }
   else if(field==="vac-desde"){ (ui.vacDraft=ui.vacDraft||{}).desde = el.value; return; }
   else if(field==="vac-hasta"){ (ui.vacDraft=ui.vacDraft||{}).hasta = el.value; return; }
@@ -7194,6 +7378,7 @@ function applyPublished(d){
       state.historial = d.historial||{};
       state.cerradoAdm = d.cerradoAdm||{};
       state.cambiosAdm = d.cambiosAdm||{};
+      state.avisosTrafico = Array.isArray(d.avisosTrafico) ? d.avisosTrafico : [];
   state.buzon = Object.assign({url:"",claveEnvio:"",claveCalendario:""}, d.buzon||{});
   state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
   state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
