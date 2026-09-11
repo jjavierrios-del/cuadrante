@@ -942,7 +942,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v140";
+const APP_VERSION = "v141";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -960,6 +960,13 @@ function setClaveAdmvo(v){ try{ if(v) localStorage.setItem(KEY_ADMVO_PASS, v); e
 // El administrativo marca un cambio como reajustado. Se guarda en el servidor,
 // porque en modo consulta la aplicación no publica por su cuenta.
 // El administrativo pone o quita una consulta de Tráfico a través del servidor
+// Deja constancia de cada tráfico puesto, quitado o cambiado de hora
+function anotarTrafico(datos){
+  state.avisosTrafico = Array.isArray(state.avisosTrafico) ? state.avisosTrafico : [];
+  state.avisosTrafico.push(Object.assign({at:new Date().toISOString(), visto:false}, datos));
+  if(state.avisosTrafico.length > 200) state.avisosTrafico = state.avisosTrafico.slice(-200);
+}
+
 async function traficoServidor(pid, fecha, slot, code, hora, quitar){
   const b = state.buzon||{};
   if(!b.url) return "SIN_BUZON";
@@ -3974,10 +3981,33 @@ function viewTraficoAdmvo(mo){
       });
     });
   });
+  // Historial de movimientos, con quién y cuándo
+  const histTf = (state.avisosTrafico||[]).slice().reverse();
+  const bloqueHistorial = (function(){
+    let hh = '<div class="card" style="margin-top:10px"><div class="row between" style="align-items:center;gap:8px;flex-wrap:wrap">'+
+      '<h2 style="margin:0">Historial de tráficos</h2>'+
+      (histTf.length?'<span class="tiny muted">'+histTf.length+' movimiento'+(histTf.length>1?'s':'')+'</span>':'')+'</div>';
+    if(!histTf.length) return hh + '<p class="muted" style="margin-top:8px;font-size:14px">Aún no hay movimientos registrados.</p></div>';
+    hh += '<div style="margin-top:8px">';
+    histTf.slice(0,40).forEach(a=>{
+      const puso = a.accion === "poner";
+      const cuando = a.at ? new Date(a.at) : null;
+      hh += '<div style="padding:7px 0;border-bottom:1px solid var(--slate-100);font-size:14px">'+
+        '<span style="font-weight:800;color:'+(puso?'var(--emerald-700)':'#b91c1c')+'">'+(puso?'+':'−')+'</span> '+
+        '<b>'+esc(a.phys||"")+'</b> · '+esc(a.code||"—")+' el '+fmtDate(a.fecha)+
+        ' ('+(a.slot==="m"?"mañana":"tarde")+')'+(a.hora?' a las '+esc(a.hora):'')+
+        '<div class="tiny muted">'+(puso?'Añadido':'Retirado')+' por '+esc(a.por||"administración")+
+          (cuando && !isNaN(cuando) ? ' · '+cuando.toLocaleString("es-ES",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}) : '')+
+        '</div></div>';
+    });
+    if(histTf.length>40) hh += '<p class="tiny muted" style="margin-top:6px">Se muestran los 40 más recientes.</p>';
+    return hh + '</div></div>';
+  })();
+
   h += '<div class="card" style="margin-top:10px"><h2>Tráficos de '+MONTHS[mo]+' · '+lista.length+'</h2>';
   if(!lista.length){
     h += '<p class="muted" style="margin-top:8px;font-size:14px">Ninguno este mes.</p></div>';
-    return h;
+    return h + bloqueHistorial;
   }
   h += '<div style="margin-top:8px">';
   lista.forEach(x=>{
@@ -3992,7 +4022,7 @@ function viewTraficoAdmvo(mo){
         'style="padding:5px 12px;font-size:13px">Quitar</button>'+
     '</div></div>';
   });
-  return h + '</div></div>';
+  return h + '</div></div>' + bloqueHistorial;
 }
 
 function viewCambiosAdmvo(mo){
@@ -6762,6 +6792,7 @@ document.addEventListener("click", e=>{
         marcarDeshacer(quitar ? "quitar tráfico" : "poner tráfico");
         const k = pid+"|"+fecha;
         const celda = Object.assign({m:null,t:null,f:null}, state.assignments[k]||{});
+        const anterior = celda[slot];
         if(quitar){ celda[slot] = null;
           if(!celda.m && !celda.t && !celda.f) delete state.assignments[k]; else state.assignments[k]=celda;
           if(state.traficoHoras) delete state.traficoHoras[pid+"|"+fecha+"|"+slot];
@@ -6771,6 +6802,10 @@ document.addEventListener("click", e=>{
           state.assignments[k] = celda;
           if(hora){ state.traficoHoras = state.traficoHoras||{}; state.traficoHoras[pid+"|"+fecha+"|"+slot] = hora; }
         }
+        const pCoord = state.physicians.find(x=>x.id===pid);
+        anotarTrafico({accion: quitar?"quitar":"poner", por:"coordinador",
+                       phys:(pCoord?pCoord.name:""), fecha, slot,
+                       code: quitar ? (anterior||"") : code, hora, visto:true});
         save(); d.aviso = quitar ? "Tráfico retirado." : "Tráfico añadido.";
         setSave("✓ Guardado"); render(); break;
       }
@@ -6799,6 +6834,9 @@ document.addEventListener("click", e=>{
             celda[slot]=code; state.assignments[k]=celda;
             if(hora){ state.traficoHoras = state.traficoHoras||{}; state.traficoHoras[pid+"|"+fecha+"|"+slot]=hora; }
           }
+          const pAdm = state.physicians.find(x=>x.id===pid);
+          anotarTrafico({accion: quitar?"quitar":"poner", por:"administración",
+                         phys:(pAdm?pAdm.name:""), fecha, slot, code, hora, visto:false});
           d.aviso = quitar ? "Tráfico retirado." : "Tráfico añadido.";
           setSave("✓ Guardado"); render();
         });
