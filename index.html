@@ -60,10 +60,10 @@
   .lbl{width:58px; display:inline-block}
 
   /* Colores de consultas */
-  .k-al{background:#bae6fd; color:#0c4a6e}
-  .k-int{background:#99f6e4; color:#134e4a}
-  .k-rhb{background:#d9f99d; color:#365314}
-  .k-alt{background:#a5b4fc; color:#1e1b4b}
+  .k-al{background:#a5dcfb; color:#07354f}
+  .k-int{background:#7eecd8; color:#0c3b38}
+  .k-rhb{background:#cdf283; color:#2b4310}
+  .k-alt{background:#93a4fb; color:#141238}
   .k-rhbt{background:#84cc16; color:#1a2e05}
   .k-adm{background:#64748b; color:#fff}
   .nodisp{background:repeating-linear-gradient(45deg,#fee2e2,#fee2e2 5px,#fecaca 5px,#fecaca 10px)!important; color:#991b1b!important}
@@ -80,11 +80,15 @@
   td.hoy{background:rgba(180,83,9,.07)}
   tr.miFila > td.namecol{box-shadow: inset 3px 0 0 0 var(--teal-700)}
   tr.miFila{background:rgba(15,81,50,.05)}
-  .navpanel{position:absolute; top:calc(100% + 6px); right:0; z-index:60;
-            background:#fff; border-radius:12px; padding:6px; min-width:172px;
-            box-shadow:0 10px 30px rgba(0,0,0,.28); display:flex; flex-direction:column; gap:2px}
-  .navpanel button{display:block; width:100%; text-align:left; color:#334155;
-                   background:transparent; border:none; padding:10px 12px; border-radius:8px; font-size:15px}
+  .navpanel{position:absolute; top:calc(100% + 6px); left:0; right:auto; z-index:60;
+            background:#fff; border-radius:12px; padding:6px;
+            min-width:190px; max-width:calc(100vw - 28px);
+            box-shadow:0 12px 34px rgba(0,0,0,.3); display:flex; flex-direction:column; gap:2px}
+  /* El color se fuerza porque la barra pinta sus botones en claro */
+  nav .navpanel button{display:block; width:100%; text-align:left; color:#1f2937 !important;
+                   background:transparent; border:none; padding:11px 12px; border-radius:8px;
+                   font-size:15px; font-weight:500}
+  nav .navpanel button:hover{background:#f1f5f9}
   .cambiofila{border:1px solid var(--slate-200); border-radius:10px; padding:10px 12px; margin-bottom:8px; background:#fff}
   .histcard{border:1px solid var(--slate-200); border-radius:10px; padding:10px; margin-top:8px;
             display:flex; align-items:flex-start; justify-content:space-between; gap:10px; flex-wrap:wrap}
@@ -954,7 +958,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v143";
+const APP_VERSION = "v144";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
