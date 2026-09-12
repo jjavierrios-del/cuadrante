@@ -335,7 +335,7 @@ async function ghPublish(manual){
       const d = await r.json().catch(()=>null);
       if(r.ok && d && d.ok){
         PUBLISHED_AT = body.publishedAt;
-        PUB_TIENE_PASS = !!body.adminPass;
+        PUB_TIENE_PASS = !!(body.adminPass || body.adminPass2);
         state.updatedAt = body.publishedAt;
         try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){}
         NEWER = false;
@@ -385,7 +385,7 @@ async function ghPublish(manual){
         // La copia local queda al día con lo recién publicado: así este dispositivo
         // no se avisa a sí mismo de su propia publicación.
         state.updatedAt = body.publishedAt;
-        PUB_TIENE_PASS = !!body.adminPass;
+        PUB_TIENE_PASS = !!(body.adminPass || body.adminPass2);
         try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){}
         setSave("✓ Publicado "+new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}));
       }else if(r.status===409 || r.status===422){
@@ -721,6 +721,7 @@ function loadState(){
       state.puerta = d.puerta||{};
       state.guardiaRot = d.guardiaRot||{};
       if(d.adminPass) state.adminPass = d.adminPass;
+      if(d.adminPass2) state.adminPass2 = d.adminPass2;
       state.rotBloqueados = d.rotBloqueados||{};
       state.traficoHoras = d.traficoHoras||{};
       state.diasLibres = d.diasLibres||{};
@@ -942,7 +943,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v141";
+const APP_VERSION = "v142";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -965,6 +966,44 @@ function anotarTrafico(datos){
   state.avisosTrafico = Array.isArray(state.avisosTrafico) ? state.avisosTrafico : [];
   state.avisosTrafico.push(Object.assign({at:new Date().toISOString(), visto:false}, datos));
   if(state.avisosTrafico.length > 200) state.avisosTrafico = state.avisosTrafico.slice(-200);
+}
+
+// ---------- Copias de seguridad en el servidor ----------
+async function guardarCopiaServidor(nota){
+  const b = state.buzon||{};
+  if(!b.url) return "El servidor no está configurado (Ajustes → Buzón de solicitudes).";
+  const clave = buzonClavePublicar();
+  if(!clave) return "Falta la contraseña de publicación (Ajustes → Buzón de solicitudes).";
+  try{
+    const r = await fetch(b.url.replace(/\/+$/,"")+"/copia", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({clave: clave, nota: nota||"", datos: state})
+    });
+    const d = await r.json().catch(()=>null);
+    if(!r.ok || !d || !d.ok) return (d && d.error) ? d.error : "No se ha podido guardar.";
+    return null;
+  }catch(e){ return "Sin conexión con el servidor."; }
+}
+
+// Copia diaria automática: una vez al día, al abrir en modo edición.
+// Silenciosa; si falla, se reintenta en la próxima apertura.
+const KEY_ULT_COPIA = "cuadrante-ultima-copia-v1";
+function copiaHechaHoy(){
+  try{ return localStorage.getItem(KEY_ULT_COPIA) === new Date().toISOString().slice(0,10); }
+  catch(e){ return true; }
+}
+function marcarCopiaHecha(){
+  try{ localStorage.setItem(KEY_ULT_COPIA, new Date().toISOString().slice(0,10)); }catch(e){}
+}
+function copiaDiariaAuto(){
+  if(MODE !== "editor") return;                     // solo el coordinador
+  if(copiaHechaHoy()) return;
+  const b = state.buzon||{};
+  if(!b.url || !buzonClavePublicar()) return;       // sin servidor configurado
+  if(!state.physicians.length) return;
+  guardarCopiaServidor("Copia diaria automática").then(err=>{
+    if(!err){ marcarCopiaHecha(); setSave("✓ Copia diaria guardada"); }
+  });
 }
 
 async function traficoServidor(pid, fecha, slot, code, hora, quitar){
@@ -1124,12 +1163,51 @@ function setAdminPass(txt){
   try{ localStorage.removeItem(KEY_ADMINPASS); }catch(e){}   // ya no se usa el almacén local
   save();
 }
+// ---------- Huella reforzada de la contraseña ----------
+// La anterior se calculaba en un instante, así que probar millones de contraseñas
+// era trivial. Esta usa PBKDF2 con sal propia y 150.000 vueltas: comprobar una
+// tarda milisegundos, pero probarlas todas se vuelve inviable.
+const PASS_VUELTAS = 150000;
+function salAleatoria(){
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  return Array.from(b).map(x=>x.toString(16).padStart(2,"0")).join("");
+}
+async function passHashFuerte(txt, sal){
+  const enc = new TextEncoder();
+  const clave = await crypto.subtle.importKey("raw", enc.encode(String(txt||"")), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    {name:"PBKDF2", salt: enc.encode("cuadrante::"+sal), iterations: PASS_VUELTAS, hash:"SHA-256"},
+    clave, 256);
+  return Array.from(new Uint8Array(bits)).map(x=>x.toString(16).padStart(2,"0")).join("");
+}
+async function setAdminPassFuerte(txt){
+  if(!txt){ delete state.adminPass; delete state.adminPass2; save(); return; }
+  const sal = salAleatoria();
+  state.adminPass2 = {sal: sal, hash: await passHashFuerte(txt, sal), v: 2};
+  delete state.adminPass;
+  save();
+}
+async function checkAdminPassAsync(txt){
+  const nueva = state.adminPass2;
+  if(nueva && nueva.hash) return (await passHashFuerte(txt, nueva.sal||"")) === nueva.hash;
+  if(state.adminPass && passHash(txt) === state.adminPass){
+    await setAdminPassFuerte(txt);
+    return true;
+  }
+  return false;
+}
+function hayAdminPass(){ return !!((state.adminPass2 && state.adminPass2.hash) || state.adminPass); }
+function marcaSesion(){
+  const n = state.adminPass2;
+  return n && n.hash ? ("v2:"+String(n.hash).slice(0,16)) : (state.adminPass||"");
+}
+
 const KEY_AUTH = "cuadrante-auth-v1";
-function marcarAutenticado(){ try{ sessionStorage.setItem(KEY_AUTH, adminPassHash()); }catch(e){} }
+function marcarAutenticado(){ try{ sessionStorage.setItem(KEY_AUTH, marcaSesion()); }catch(e){} }
 function estaAutenticado(){
-  const h = adminPassHash();
-  if(!h) return true;                       // sin contraseña configurada
-  try{ return sessionStorage.getItem(KEY_AUTH)===h; }catch(e){ return false; }
+  if(!hayAdminPass()) return true;
+  try{ return sessionStorage.getItem(KEY_AUTH)===marcaSesion(); }catch(e){ return false; }
 }
 function checkAdminPass(txt){
   const h = adminPassHash();
@@ -4219,6 +4297,7 @@ function viewSolicitudes(){
   if(ui.reqSub===undefined) ui.reqSub = "revisar";
   try{ limpiarBandeja(); }catch(e){}
   try{ limpiarGuardiasViejas(); }catch(e){}
+  setTimeout(()=>{ try{ copiaDiariaAuto(); }catch(e){} }, 4000);   // en segundo plano
   const pend = bandejaPendientes();
   let h = '<div class="seg no-print" style="margin-bottom:10px">'+
     '<button class="'+(ui.reqSub==="revisar"?"on":"")+'" data-action="req-sub-revisar">Bandeja'+(pend.length?' ('+pend.length+')':'')+'</button>'+
@@ -4890,7 +4969,7 @@ function viewAjustes(){
   }
   let html = '<div class="card"><h2>Acceso de administración</h2>'+
     '<p class="muted" style="margin-top:4px;font-size:13px">'+
-      (adminPassHash()
+      (hayAdminPass()
         ? 'Hay una contraseña definida. Viaja con el cuadrante publicado, así que se pedirá para pasar de consulta a edición en <b>cualquier dispositivo</b>.'+
           (PUB_TIENE_PASS===true
             ? ' <b style="color:#065f46">✓ Comprobado: la versión publicada ya la lleva.</b>'
@@ -4900,7 +4979,7 @@ function viewAjustes(){
         : '⚠ No hay contraseña definida: cualquiera que abra el enlace puede entrar en modo edición.')+
     '</p>'+
     '<div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap">'+
-      '<input type="password" id="admin-pass" placeholder="'+(adminPassHash()?"Nueva contraseña":"Contraseña")+'" style="flex:1;min-width:160px;padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
+      '<input type="password" id="admin-pass" placeholder="'+(hayAdminPass()?"Nueva contraseña":"Contraseña")+'" style="flex:1;min-width:160px;padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
       '<button class="btn primary" data-action="admin-pass-set">'+(adminPassHash()?"Cambiar":"Definir")+'</button>'+
       (adminPassHash()?'<button class="btn" data-action="admin-pass-clear">Quitar</button>':'')+
       (adminPassHash()?'<button class="btn primary" data-action="admin-pass-publish">Publicar ahora</button>':'')+
@@ -5458,6 +5537,7 @@ function importBackup(file){
       state.puerta = d.puerta||{};
       state.guardiaRot = d.guardiaRot||{};
       if(d.adminPass) state.adminPass = d.adminPass;
+      if(d.adminPass2) state.adminPass2 = d.adminPass2;
       state.rotBloqueados = d.rotBloqueados||{};
       state.traficoHoras = d.traficoHoras||{};
       state.diasLibres = d.diasLibres||{};
@@ -6549,7 +6629,8 @@ document.addEventListener("click", e=>{
       const el2 = document.getElementById("admin-pass");
       const v = el2 ? el2.value.trim() : "";
       if(v.length < 4){ window.alert("La contraseña debe tener al menos 4 caracteres."); break; }
-      setAdminPass(v); marcarAutenticado(); setSave("✓ Contraseña guardada"); render();
+      setSave("Guardando…");
+      setAdminPassFuerte(v).then(()=>{ marcarAutenticado(); setSave("✓ Contraseña guardada"); render(); });
       break;
     }
     case "admin-pass-publish": {
@@ -6557,7 +6638,7 @@ document.addEventListener("click", e=>{
       ghPublish(true)
         .then(()=> fetchPublished())
         .then(d=>{
-          PUB_TIENE_PASS = !!(d && d.adminPass);
+          PUB_TIENE_PASS = !!(d && (d.adminPass || d.adminPass2));
           render();
           window.alert(PUB_TIENE_PASS
             ? "Comprobado: la contraseña ya viaja en la versión publicada.\n\nAl abrir el enlace en otro dispositivo o en una ventana privada, se pedirá para entrar en modo edición."
@@ -6568,7 +6649,7 @@ document.addEventListener("click", e=>{
     }
     case "admin-pass-clear": {
       if(window.confirm("Quitar la contraseña. Cualquiera que abra el enlace podrá entrar en modo edición. ¿Continuar?")){
-        setAdminPass(""); setSave("Contraseña eliminada"); render();
+        setAdminPassFuerte(""); setSave("Contraseña eliminada"); render();
       }
       break;
     }
@@ -6577,10 +6658,13 @@ document.addEventListener("click", e=>{
       if(hash){
         const intento = window.prompt("Contraseña de administración:");
         if(intento===null) break;                       // ha cancelado
-        if(!checkAdminPass(intento)){ window.alert("Contraseña incorrecta."); break; }
-        marcarAutenticado();
-        MODE="editor"; render();
-        prepararPublicacion(intento);      // deja el dispositivo listo para publicar
+        setSave("Comprobando…");
+        checkAdminPassAsync(intento).then(ok=>{
+          if(!ok){ window.alert("Contraseña incorrecta."); setSave("Solo consulta"); return; }
+          marcarAutenticado();
+          MODE="editor"; render();
+          prepararPublicacion(intento);    // deja el dispositivo listo para publicar
+        });
         break;
       }
       // Sin contraseña configurada todavía: se permite y se recomienda ponerla
@@ -7497,7 +7581,7 @@ async function boot(){
   // aunque no se haya podido descargar la publicación.
   if(!hasLocal) MODE = "viewer";
   // Adoptar la contraseña publicada aunque este dispositivo tenga datos antiguos sin ella
-  if(published) PUB_TIENE_PASS = !!published.adminPass;
+  if(published) PUB_TIENE_PASS = !!(published.adminPass || published.adminPass2);
   if(published && published.adminPass && !state.adminPass) state.adminPass = published.adminPass;
   if(published && !hasLocal){ MODE="viewer"; applyPublished(published); }
   else if(published && hasLocal && published.publishedAt &&
