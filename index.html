@@ -74,6 +74,17 @@
   .rotcell{position:relative}
   .rotpick{display:inline-flex; gap:4px; flex-wrap:wrap}
   .printhead{display:none}
+  .navmas{position:relative; display:inline-block}
+  /* Día de hoy y fila propia, para localizarse de un vistazo */
+  th.hoy{box-shadow: inset 0 3px 0 0 #b45309; background:#fff7ed !important}
+  td.hoy{background:rgba(180,83,9,.07)}
+  tr.miFila > td.namecol{box-shadow: inset 3px 0 0 0 var(--teal-700)}
+  tr.miFila{background:rgba(15,81,50,.05)}
+  .navpanel{position:absolute; top:calc(100% + 6px); right:0; z-index:60;
+            background:#fff; border-radius:12px; padding:6px; min-width:172px;
+            box-shadow:0 10px 30px rgba(0,0,0,.28); display:flex; flex-direction:column; gap:2px}
+  .navpanel button{display:block; width:100%; text-align:left; color:#334155;
+                   background:transparent; border:none; padding:10px 12px; border-radius:8px; font-size:15px}
   .cambiofila{border:1px solid var(--slate-200); border-radius:10px; padding:10px 12px; margin-bottom:8px; background:#fff}
   .histcard{border:1px solid var(--slate-200); border-radius:10px; padding:10px; margin-top:8px;
             display:flex; align-items:flex-start; justify-content:space-between; gap:10px; flex-wrap:wrap}
@@ -943,7 +954,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v142";
+const APP_VERSION = "v143";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -3668,7 +3679,8 @@ function tablaHistorial(g){
   }
   let h = '<div class="gridbox"><table><thead><tr><th class="namecol">Facultativo</th>';
   dias.forEach(d=>{
-    const cls = d.holiday?"fest":(d.dow===0||d.dow===6?"wknd":"");
+    const esHoy = (d.key === keyOf(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()));
+    const cls = (d.holiday?"fest":(d.dow===0||d.dow===6?"wknd":"")) + (esHoy?" hoy":"");
     h += '<th class="dayhead '+cls+'"><b>'+d.n+'</b><small>'+WD[d.dow]+'</small></th>';
   });
   h += '</tr></thead><tbody>';
@@ -4502,8 +4514,22 @@ function renderNav(){
       : ["cuadrante","rotantes","traficos","solicitudes","exportar","stats"];
     tabs = tabs.filter(t=>permitidas.indexOf(t[0])>=0);
   }
-  document.getElementById("nav").innerHTML = tabs.map(([id,l])=>
+  // Las de uso diario quedan a la vista; el resto, en un menú.
+  const PRINCIPALES = ["cuadrante","rotantes","solicitudes","stats"];
+  const visibles = tabs.filter(t=>PRINCIPALES.indexOf(t[0])>=0 || t[0]===ui.tab);
+  const enMenu   = tabs.filter(t=>visibles.indexOf(t)<0);
+  let navHTML = visibles.map(([id,l])=>
     '<button data-action="tab" data-tab="'+id+'" class="'+(ui.tab===id?"active":"")+'">'+l+'</button>').join("");
+  if(enMenu.length){
+    navHTML += '<span class="navmas">'+
+      '<button data-action="nav-mas" class="'+(ui.navMas?"active":"")+'" title="Más secciones">Más ▾</button>'+
+      (ui.navMas
+        ? '<span class="navpanel">'+enMenu.map(([id,l])=>
+            '<button data-action="tab" data-tab="'+id+'">'+l+'</button>').join("")+'</span>'
+        : '')+
+    '</span>';
+  }
+  document.getElementById("nav").innerHTML = navHTML;
 }
 
 function viewCuadrante(){
@@ -4643,7 +4669,8 @@ function viewCuadrante(){
   html += '<div class="printhead">Cuadrante · '+MONTHS[ui.month]+' '+state.year+'</div>';
   html += '<div class="gridbox"><table><thead><tr><th class="namecol">Facultativo</th>';
   days.forEach(d=>{
-    const cls = d.holiday?"fest":(d.dow===0||d.dow===6?"wknd":"");
+    const esHoy = (d.key === keyOf(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()));
+    const cls = (d.holiday?"fest":(d.dow===0||d.dow===6?"wknd":"")) + (esHoy?" hoy":"");
     // «L» = quedan consultas físicas de mañana libres ese día (se recalcula en cada cambio)
     const lab = d.dow!==0 && d.dow!==6 && !d.holiday;
     const libres = lab ? consultasLibresDia(d.key) : 0;
@@ -4653,7 +4680,8 @@ function viewCuadrante(){
   html += '</tr></thead><tbody>';
 
   state.physicians.forEach(p=>{
-    html += '<tr><td class="namecol"><b>'+esc(p.name)+'</b>'+(p.pct<100?' <span class="muted">('+p.pct+'%)</span>':'')+'</td>';
+    const esMia = (typeof miFacultativo==="function") && miFacultativo() && miFacultativo().id===p.id;
+    html += '<tr'+(esMia?' class="miFila"':'')+'><td class="namecol"><b>'+esc(p.name)+'</b>'+(p.pct<100?' <span class="muted">('+p.pct+'%)</span>':'')+'</td>';
     days.forEach(d=>{
       const a = state.assignments[p.id+"|"+d.key];
       // Bloqueo por turno: cada mitad de la celda se sombrea por separado
@@ -6352,7 +6380,8 @@ document.addEventListener("click", e=>{
   }
   if(act==="close-modal"){ if(stop && !el.closest(".modal")) return; ui.editCell=null; ui.dayDetail=null; ui.genModal=false; ui.genReport=null; ui.resetMonthModal=false; ui.reqModal=null; ui.reviewModal=null; ui.rotCell=null; ui.rotBlockDay=null; ui.avisoCopia=null; ui.tramosPid=null; renderModal(); return; }
   switch(act){
-    case "tab": ui.tab = el.dataset.tab; ui.confirmReset=false; render(); break;
+    case "nav-mas": ui.navMas = !ui.navMas; render(); break;
+    case "tab": ui.tab = el.dataset.tab; ui.confirmReset=false; ui.navMas=false; render(); break;
     case "prev-month": if(ui.month===0){ui.month=11; state.year--;} else ui.month--; save(); render(); break;
     case "next-month": if(ui.month===11){ui.month=0; state.year++;} else ui.month++; save(); render(); break;
     case "print": window.print(); break;
