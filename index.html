@@ -958,7 +958,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v144";
+const APP_VERSION = "v145";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -4015,6 +4015,12 @@ function viewTraficoAdmvo(mo){
   const horas = [];
   if(slot==="m"){ for(let hh=8; hh<=13; hh++){ horas.push(pad(hh)+":00"); horas.push(pad(hh)+":30"); } }
   else { for(let hh=15; hh<=19; hh++){ horas.push(pad(hh)+":00"); horas.push(pad(hh)+":30"); } }
+  // La primera opción es la que se ve; se deja registrada para que valga aunque
+  // no se despliegue la lista. Igual con la consulta.
+  if(!d.hora || horas.indexOf(d.hora) < 0) d.hora = horas[0];
+  if(!d.code || codigos.indexOf(d.code) < 0) d.code = codigos[0];
+  if(!d.pid) d.pid = (state.physicians[0]||{}).id;
+  if(!d.dia || !dias.some(x=>x.key===d.dia)) d.dia = (dias[0]||{}).key;
 
   let h = '<div class="card"><h2>Consultas de Tráfico</h2>'+
     '<p class="muted" style="margin-top:2px;font-size:14px">Puedes añadir o retirar consultas de Tráfico sin autorización previa. '+
@@ -4059,7 +4065,8 @@ function viewTraficoAdmvo(mo){
       if(repetida) return '<div class="warnbox" style="margin-top:10px">⚠ La consulta '+esc(cod)+' ya la tiene otro compañero ese día.</div>';
       return '<p class="muted" style="margin-top:10px;font-size:13px;color:var(--emerald-700)">✓ '+esc(quien)+' tiene libre ese turno.</p>';
     })()+
-    '<div class="row" style="margin-top:10px;gap:8px"><button class="btn primary" data-action="tfa-poner">Añadir tráfico</button></div>'+
+    '<div class="row" style="margin-top:10px;gap:8px"><button class="btn primary" data-action="tfa-poner"'+
+      (d.enviando?' disabled style="opacity:.5"':'')+'>'+(d.enviando?"Guardando…":"Añadir tráfico")+'</button></div>'+
     (d.aviso?'<div class="warnbox" style="margin-top:10px">'+esc(d.aviso)+'</div>':'')+
     '</div>';
 
@@ -6895,13 +6902,14 @@ document.addEventListener("click", e=>{
     case "admvo-trafico": ui.admvoSub = "trafico"; render(); break;
     case "tfa-poner": case "tfa-quitar": {
       const d = ui.tfAdm = ui.tfAdm || {};
+      if(d.enviando) break;                       // evita el doble toque
       const quitar = (act === "tfa-quitar");
       const pid   = quitar ? el.dataset.pid  : (d.pid || (state.physicians[0]||{}).id);
       const fecha = quitar ? el.dataset.date : (d.dia || (monthDays().find(x=>x.dow!==0&&x.dow!==6&&!x.holiday)||{}).key);
       const slot  = quitar ? el.dataset.slot : (d.slot || "m");
       const code  = quitar ? "" : (d.code || (slot==="m"?"TFM1":"TFT1"));
       const hora  = quitar ? "" : (d.hora || "");
-      if(!pid || !fecha){ d.aviso = "Faltan datos."; render(); break; }
+      if(!pid || !fecha){ d.aviso = "Faltan datos."; d.enviando = false; render(); break; }
       if(quitar && !window.confirm("¿Quitar esta consulta de Tráfico?")) break;
       setSave(quitar ? "Quitando…" : "Guardando…");
       // El coordinador la aplica directamente; administración pasa por el servidor
@@ -6924,14 +6932,16 @@ document.addEventListener("click", e=>{
                        phys:(pCoord?pCoord.name:""), fecha, slot,
                        code: quitar ? (anterior||"") : code, hora, visto:true});
         save(); d.aviso = quitar ? "Tráfico retirado." : "Tráfico añadido.";
-        setSave("✓ Guardado"); render(); break;
+        d.enviando = false; setSave("✓ Guardado"); render(); break;
       }
+      d.enviando = true;
       const hacerlo = ()=>{
         traficoServidor(pid, fecha, slot, code, hora, quitar).then(err=>{
+          d.enviando = false;
           if(err === "FALTA_CLAVE"){
             const cl = window.prompt("Contraseña de administrativo\n\nIntrodúcela una vez para poder gestionar los tráficos.");
             if(!cl){ setSave("Solo consulta"); return; }
-            setClaveAdmvo(cl); hacerlo(); return;
+            setClaveAdmvo(cl); d.enviando = true; hacerlo(); return;
           }
           if(err === "SIN_BUZON"){
             window.alert("El coordinador debe configurar el servidor en Ajustes para que puedas gestionar los tráficos.");
