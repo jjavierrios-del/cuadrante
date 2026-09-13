@@ -330,6 +330,26 @@ async function fetchPublished(){
 
 let pubT = null, pubBusy = false, pubAgain = false;
 function b64utf8(str){ return btoa(unescape(encodeURIComponent(str))); }
+// Los motivos que escriben los compañeros pueden contener datos personales
+// («cita médica», «tema familiar»…) y el archivo publicado es público.
+// Se publica QUÉ se pidió y si se autorizó, pero nunca el texto libre.
+// Los motivos íntegros se conservan en tu dispositivo y en las copias del servidor.
+function paraPublicar(){
+  const body = JSON.parse(JSON.stringify(state));
+  if(Array.isArray(body.bandeja)){
+    body.bandeja.forEach(it=>{
+      if(!it) return;
+      if(it.req && typeof it.req === "object") delete it.req.note;  // motivo del solicitante
+      delete it.texto;                                             // mensaje completo enviado
+      delete it.motivo;                                            // motivo del rechazo
+    });
+  }
+  if(Array.isArray(body.applog)) body.applog.forEach(x=>{ if(x) delete x.nota; });
+  body.publishedAt = new Date().toISOString();
+  body.publishedBy = DEVICE_ID;
+  return body;
+}
+
 async function ghPublish(manual){
   if(MODE!=="editor") return;
   // Vía preferente: publicar a través del servidor, que guarda el token de GitHub.
@@ -339,9 +359,7 @@ async function ghPublish(manual){
     if(pubBusy){ pubAgain = true; return; }
     pubBusy = true;
     setSave("Publicando…");
-    const body = JSON.parse(JSON.stringify(state));
-    body.publishedAt = new Date().toISOString();
-    body.publishedBy = DEVICE_ID;
+    const body = paraPublicar();
     try{
       const r = await fetch((state.buzon.url||"").replace(/\/+$/,"")+"/publicar", {
         method:"POST", headers:{"Content-Type":"application/json"},
@@ -372,7 +390,7 @@ async function ghPublish(manual){
   setSave("Publicando…");
   const api = "https://api.github.com/repos/"+SYNC.owner+"/"+SYNC.repo+"/contents/data.json";
   const headers = {"Authorization":"Bearer "+SYNC.token, "Accept":"application/vnd.github+json", "X-GitHub-Api-Version":"2022-11-28"};
-  const body = JSON.parse(JSON.stringify(state)); body.publishedAt = new Date().toISOString(); body.publishedBy = DEVICE_ID;
+  const body = paraPublicar();
   const content = b64utf8(JSON.stringify(body));
   const branch = SYNC.branch || "main";
   async function getSha(){
@@ -958,7 +976,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v145";
+const APP_VERSION = "v146";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
