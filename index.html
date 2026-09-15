@@ -286,6 +286,7 @@ const KEY = "cuadrante-gestor-html-v1";
 let MODE = "editor";          // "editor" | "viewer"
 let PUBLISHED_AT = null;      // fecha de publicación de data.json
 let NEWER = false;            // hay publicación más nueva que la copia local de este dispositivo
+let ARRANCANDO = true;        // durante el arranque no se publica nada
 let PUB_TIENE_PASS = null;    // ¿la versión publicada ya lleva la contraseña? (null = sin comprobar)
 
 // Sincronización automática con GitHub (config local: NUNCA viaja en data.json ni en copias)
@@ -345,6 +346,15 @@ function paraPublicar(){
     });
   }
   if(Array.isArray(body.applog)) body.applog.forEach(x=>{ if(x) delete x.nota; });
+  // Las claves NUNCA deben viajar al archivo publicado: con la de calendario
+  // cualquiera podría descargar los turnos y ausencias de todo el equipo, y con
+  // la de envío mandar solicitudes falsas. Se publica solo la dirección del buzón.
+  if(body.buzon){
+    body.buzon = {url: body.buzon.url || ""};
+  }
+  delete body.adminPass;           // huella antigua de la contraseña
+  delete body.adminPass2;          // huella reforzada: tampoco necesita ser pública
+  body.tienePass = hayAdminPass(); // basta con saber SI hay contraseña
   body.publishedAt = new Date().toISOString();
   body.publishedBy = DEVICE_ID;
   return body;
@@ -368,7 +378,7 @@ async function ghPublish(manual){
       const d = await r.json().catch(()=>null);
       if(r.ok && d && d.ok){
         PUBLISHED_AT = body.publishedAt;
-        PUB_TIENE_PASS = !!(body.adminPass || body.adminPass2);
+        PUB_TIENE_PASS = !!(body.tienePass || body.adminPass || body.adminPass2);
         state.updatedAt = body.publishedAt;
         try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){}
         NEWER = false;
@@ -418,7 +428,7 @@ async function ghPublish(manual){
         // La copia local queda al día con lo recién publicado: así este dispositivo
         // no se avisa a sí mismo de su propia publicación.
         state.updatedAt = body.publishedAt;
-        PUB_TIENE_PASS = !!(body.adminPass || body.adminPass2);
+        PUB_TIENE_PASS = !!(body.tienePass || body.adminPass || body.adminPass2);
         try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){}
         setSave("✓ Publicado "+new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}));
       }else if(r.status===409 || r.status===422){
@@ -438,6 +448,15 @@ async function ghPublish(manual){
 }
 function schedulePublish(){
   if(MODE!=="editor") return;
+  // PROTECCIÓN: si el servidor tiene una publicación más reciente que esta copia,
+  // no se publica nada hasta que decidas qué versión vale. Sin esto, cualquier
+  // guardado —incluso las limpiezas automáticas del arranque— pisaría en silencio
+  // los cambios hechos desde otro dispositivo.
+  if(NEWER){
+    setSave("⚠ Hay una versión más reciente: no se publica");
+    return;
+  }
+  if(ARRANCANDO) return;                 // el arranque nunca publica
   // Si se publica a través del servidor, la publicación automática está siempre activa:
   // no depende de una casilla local que en un dispositivo nuevo estaría sin marcar.
   if(!publicaPorServidor() && !SYNC.auto) return;
@@ -744,6 +763,9 @@ function loadState(){
     const raw = localStorage.getItem(KEY);
     if(raw){
       const d = JSON.parse(raw);
+      // Fecha de esta copia: sin ella, cualquier publicación parecería más reciente
+      // y el aviso saltaría siempre, bloqueando la publicación.
+      if(d.updatedAt) state.updatedAt = d.updatedAt;
       state.physicians = (d.physicians||[]).map(p=>{const q=Object.assign({blocked:[]},p); if(q.noUrgf===undefined) q.noUrgf=!!q.noUrg; return q;});
       state.assignments = d.assignments||{};
       state.baseline = d.baseline||{};
@@ -976,7 +998,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v146";
+const APP_VERSION = "v148";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -987,6 +1009,29 @@ const DEVICE_ID = (function(){
 })();
 const KEY_BUZON_ADMIN = "cuadrante-buzon-admin-v1";
 const KEY_BUZON_PUB = "cuadrante-buzon-publicar-v1";
+// La clave de envío y la del calendario ya no viajan en el archivo publicado.
+// Cada dispositivo la guarda la primera vez que se le pide.
+const KEY_BUZON_ENVIO = "cuadrante-buzon-envio-v1";
+const KEY_BUZON_CAL   = "cuadrante-buzon-cal-v1";
+function claveEnvio(){
+  try{ const v = localStorage.getItem(KEY_BUZON_ENVIO); if(v) return v; }catch(e){}
+  return ((state.buzon||{}).claveEnvio) || "";       // la del coordinador, que la configura
+}
+function setClaveEnvio(v){
+  try{ if(v) localStorage.setItem(KEY_BUZON_ENVIO, v); else localStorage.removeItem(KEY_BUZON_ENVIO); }catch(e){}
+}
+function claveCalendario(){
+  try{ const v = localStorage.getItem(KEY_BUZON_CAL); if(v) return v; }catch(e){}
+  return ((state.buzon||{}).claveCalendario) || "";
+}
+function setClaveCalendario(v){
+  try{ if(v) localStorage.setItem(KEY_BUZON_CAL, v); else localStorage.removeItem(KEY_BUZON_CAL); }catch(e){}
+}
+function pedirClaveEnvio(){
+  const v = window.prompt("Clave de envío de solicitudes\n\nTe la facilita el coordinador. Solo se pide una vez en este dispositivo.");
+  if(v) setClaveEnvio(v.trim());
+  return v ? v.trim() : "";
+}
 const KEY_ADMVO_PASS = "cuadrante-admvo-pass-v1";
 function claveAdmvo(){ try{ return localStorage.getItem(KEY_ADMVO_PASS)||""; }catch(e){ return ""; } }
 function setClaveAdmvo(v){ try{ if(v) localStorage.setItem(KEY_ADMVO_PASS, v); else localStorage.removeItem(KEY_ADMVO_PASS); }catch(e){} }
@@ -1116,17 +1161,20 @@ async function prepararPublicacion(claveAdmin){
 }
 function buzonClaveAdmin(){ try{ return localStorage.getItem(KEY_BUZON_ADMIN)||""; }catch(e){ return ""; } }
 function setBuzonClaveAdmin(v){ try{ if(v) localStorage.setItem(KEY_BUZON_ADMIN, v); else localStorage.removeItem(KEY_BUZON_ADMIN); }catch(e){} }
-function buzonConfigurado(){ return !!((state.buzon||{}).url && (state.buzon||{}).claveEnvio); }
+function buzonConfigurado(){ return !!((state.buzon||{}).url); }
 
 // Envía una solicitud al buzón. Devuelve null si todo fue bien, o el motivo del fallo.
 async function buzonEnviar(req, texto){
   const b = state.buzon||{};
-  if(!b.url || !b.claveEnvio) return "El buzón no está configurado.";
+  if(!b.url) return "El buzón no está configurado.";
+  let ce = claveEnvio();
+  if(!ce) ce = pedirClaveEnvio();
+  if(!ce) return "Hace falta la clave de envío.";
   try{
     const r = await fetch(b.url.replace(/\/+$/,"")+"/", {
       method:"POST",
       headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({clave:b.claveEnvio, req:req, texto:(texto||"").slice(0,3000)})
+      body: JSON.stringify({clave:ce, req:req, texto:(texto||"").slice(0,3000)})
     });
     const d = await r.json().catch(()=>null);
     if(!r.ok || !d || !d.ok) return (d && d.error) ? d.error : "No se ha podido enviar (código "+r.status+").";
@@ -4221,8 +4269,15 @@ function viewExportar(){
     '</div></div>'+
     (function(){
       const b = state.buzon||{};
-      if(!b.url || !b.claveCalendario) return '';
-      const enlace = b.url.replace(/\/+$/,"")+"/calendario.ics?pid="+encodeURIComponent(pid)+"&k="+encodeURIComponent(b.claveCalendario);
+      if(!b.url) return '';
+      const kc = claveCalendario();
+      if(!kc){
+        return '<div class="card" style="margin-top:10px"><h2>Calendario suscrito</h2>'+
+          '<p class="muted" style="margin-top:4px;font-size:14px">Para obtener tu enlace necesitas la clave del calendario, '+
+          'que te facilita el coordinador. Solo se pide una vez en este dispositivo.</p>'+
+          '<button class="btn primary" style="margin-top:8px" data-action="cal-clave">Introducir clave</button></div>';
+      }
+      const enlace = b.url.replace(/\/+$/,"")+"/calendario.ics?pid="+encodeURIComponent(pid)+"&k="+encodeURIComponent(kc);
       return '<div class="card" style="margin-top:10px;border-color:var(--teal-700)"><h2>Calendario que se actualiza solo</h2>'+
         '<p class="muted" style="margin-top:2px;font-size:14px">En lugar de descargar el archivo cada mes, puedes <b>suscribirte</b> a esta dirección. '+
         'Cuando el cuadrante cambie, tu calendario se pondrá al día sin que hagas nada.</p>'+
@@ -6409,6 +6464,11 @@ document.addEventListener("click", e=>{
   }
   if(act==="close-modal"){ if(stop && !el.closest(".modal")) return; ui.editCell=null; ui.dayDetail=null; ui.genModal=false; ui.genReport=null; ui.resetMonthModal=false; ui.reqModal=null; ui.reviewModal=null; ui.rotCell=null; ui.rotBlockDay=null; ui.avisoCopia=null; ui.tramosPid=null; renderModal(); return; }
   switch(act){
+    case "cal-clave": {
+      const v = window.prompt("Clave del calendario\n\nTe la facilita el coordinador. Solo se pide una vez en este dispositivo.");
+      if(v){ setClaveCalendario(v.trim()); render(); }
+      break;
+    }
     case "nav-mas": ui.navMas = !ui.navMas; render(); break;
     case "tab": ui.tab = el.dataset.tab; ui.confirmReset=false; ui.navMas=false; render(); break;
     case "prev-month": if(ui.month===0){ui.month=11; state.year--;} else ui.month--; save(); render(); break;
@@ -6696,7 +6756,7 @@ document.addEventListener("click", e=>{
       ghPublish(true)
         .then(()=> fetchPublished())
         .then(d=>{
-          PUB_TIENE_PASS = !!(d && (d.adminPass || d.adminPass2));
+          PUB_TIENE_PASS = !!(d && (d.tienePass || d.adminPass || d.adminPass2));
           render();
           window.alert(PUB_TIENE_PASS
             ? "Comprobado: la contraseña ya viaja en la versión publicada.\n\nAl abrir el enlace en otro dispositivo o en una ventana privada, se pedirá para entrar en modo edición."
@@ -6902,7 +6962,12 @@ document.addEventListener("click", e=>{
         }catch(e){ setSave("⚠ Sin conexión"); }
       })();
       break;
-    case "dismiss-newer": NEWER=false; render(); break;
+    case "dismiss-newer": {
+      if(!window.confirm("Vas a conservar la copia de ESTE dispositivo.\n\n"+
+        "Los cambios publicados desde otro dispositivo que no estén aquí se perderán "+
+        "en cuanto publiques.\n\n¿Seguro?")) break;
+      NEWER=false; render(); break;
+    }
     case "go-viewer":
       if(window.confirm("Este dispositivo pasará a SOLO CONSULTA y se borrará su copia local de edición (lo publicado no se toca). ¿Continuar?")){
         try{ localStorage.removeItem(KEY); }catch(e){}
@@ -7642,7 +7707,7 @@ async function boot(){
   // aunque no se haya podido descargar la publicación.
   if(!hasLocal) MODE = "viewer";
   // Adoptar la contraseña publicada aunque este dispositivo tenga datos antiguos sin ella
-  if(published) PUB_TIENE_PASS = !!(published.adminPass || published.adminPass2);
+  if(published) PUB_TIENE_PASS = !!(published.tienePass || published.adminPass || published.adminPass2);
   if(published && published.adminPass && !state.adminPass) state.adminPass = published.adminPass;
   if(published && !hasLocal){ MODE="viewer"; applyPublished(published); }
   else if(published && hasLocal && published.publishedAt &&
@@ -7662,6 +7727,10 @@ async function boot(){
   setSave(MODE==="viewer" ? "Solo consulta" : "✓ Guardado");
   render();
   startAutoRefresh();
+  // El arranque ha terminado: a partir de aquí SÍ se puede publicar,
+  // salvo que exista una publicación más reciente sin resolver.
+  ARRANCANDO = false;
+  if(NEWER) setSave("⚠ Hay una versión más reciente publicada");
 }
 boot();
 if("serviceWorker" in navigator){
