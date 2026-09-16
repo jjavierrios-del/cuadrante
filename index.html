@@ -1065,7 +1065,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v150";
+const APP_VERSION = "v151";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1357,6 +1357,8 @@ function estaAutenticado(){
   if(!hayAdminPass()) return true;
   try{ return sessionStorage.getItem(KEY_AUTH)===marcaSesion(); }catch(e){ return false; }
 }
+// Obsoleta: solo reconocía la huella antigua. Se conserva por compatibilidad,
+// pero la comprobación válida es checkAdminPassAsync, que mira los dos formatos.
 function checkAdminPass(txt){
   const h = adminPassHash();
   return !!h && passHash(txt)===h;
@@ -5315,9 +5317,9 @@ function viewAjustes(){
     '</p>'+
     '<div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap">'+
       '<input type="password" id="admin-pass" placeholder="'+(hayAdminPass()?"Nueva contraseña":"Contraseña")+'" style="flex:1;min-width:160px;padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
-      '<button class="btn primary" data-action="admin-pass-set">'+(adminPassHash()?"Cambiar":"Definir")+'</button>'+
-      (adminPassHash()?'<button class="btn" data-action="admin-pass-clear">Quitar</button>':'')+
-      (adminPassHash()?'<button class="btn primary" data-action="admin-pass-publish">Publicar ahora</button>':'')+
+      '<button class="btn primary" data-action="admin-pass-set">'+(hayAdminPass()?"Cambiar":"Definir")+'</button>'+
+      (hayAdminPass()?'<button class="btn" data-action="admin-pass-clear">Quitar</button>':'')+
+      (hayAdminPass()?'<button class="btn primary" data-action="admin-pass-publish">Publicar ahora</button>':'')+
     '</div>'+
     '<p class="muted" style="font-size:12px;margin-top:6px">Se guarda cifrada (nunca en claro) y se publica junto al cuadrante, de modo que basta definirla una vez. Protege frente a ediciones accidentales o curiosidad; no es una barrera frente a alguien con conocimientos técnicos, porque la aplicación funciona por completo en el navegador.</p></div>'+
     '<div class="card"><h2>Buzón de solicitudes</h2>'+
@@ -7009,8 +7011,9 @@ document.addEventListener("click", e=>{
       break;
     }
     case "viewer-edit": {
-      const hash = adminPassHash();
-      if(hash){
+      // Debe reconocer los dos formatos: si solo mirara la huella antigua,
+      // tras migrar a la reforzada se entraría en edición sin preguntar.
+      if(hayAdminPass()){
         const intento = window.prompt("Contraseña de administración:");
         if(intento===null) break;                       // ha cancelado
         setSave("Comprobando…");
@@ -7956,7 +7959,9 @@ async function boot(){
     NEWER = true; PUBLISHED_AT = published.publishedAt;
   }else if(published && published.publishedAt){ PUBLISHED_AT = published.publishedAt; }
   // Si hay contraseña configurada, no se entra en edición sin haberla introducido en esta sesión
-  if(adminPassHash() && !estaAutenticado()) MODE = "viewer";
+  // Se comprueban los dos formatos: la huella reforzada (adminPass2) y la antigua.
+  // Mirando solo la antigua, tras migrar quedaba vacía y se entraba sin contraseña.
+  if(hayAdminPass() && !estaAutenticado()) MODE = "viewer";
   try{ limpiarBandeja(); }catch(e){}
   // Situarse en el mes en curso (si el cuadrante es de este año)
   try{
