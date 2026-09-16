@@ -709,11 +709,75 @@ function cambiosEnEspera(){
   return out.sort((a,b)=>(a.c.at||"").localeCompare(b.c.at||""));
 }
 
+// ---------- Tope de consultas físicas de mañana (v150) ----------
+// Los cambios en espera cuentan como si ya estuvieran hechos: el despacho está comprometido.
+function mapaEnEspera(){
+  const m = {};
+  cambiosEnEspera().forEach(({c})=>{
+    (c.celdas||[]).forEach(x=>{ if(x && x.k) m[x.k] = x.valor || null; });
+  });
+  return m;
+}
+function celdaEfectiva(k, espera){
+  const e = espera || mapaEnEspera();
+  return Object.prototype.hasOwnProperty.call(e, k) ? e[k] : state.assignments[k];
+}
+function vistaConEspera(){
+  const v = Object.assign({}, state.assignments);
+  const e = mapaEnEspera();
+  Object.keys(e).forEach(k=>{ if(e[k]) v[k] = e[k]; else delete v[k]; });
+  return v;
+}
+function recuentoFisico(vista){
+  const ids = new Set(state.physicians.map(p=>p.id));
+  const n = {};
+  Object.keys(vista).forEach(k=>{
+    const i = k.indexOf("|"); if(i<0) return;
+    if(!ids.has(k.slice(0,i))) return;
+    const a = vista[k];
+    if(a && ocupaDespacho(a.m)){ const d = k.slice(i+1); n[d] = (n[d]||0) + 1; }
+  });
+  return n;
+}
+const TXT_TOPE = "No hay hueco físico";
+// Días que superan el tope y que además han ganado consultas con el cambio
+function excesoTope(antes, despues){
+  const max = state.settings.maxMorning || 8;
+  const dias = Object.keys(despues).filter(d=> despues[d] > max && despues[d] > (antes[d]||0)).sort();
+  if(!dias.length) return null;
+  return TXT_TOPE+": "+dias.map(d=>"el "+fmtDate(d)+" ya están ocupadas las "+max+
+    " consultas físicas de mañana (quedarían "+despues[d]+")").join("; ")+".";
+}
+// ¿Se puede ejecutar este cambio en espera sin superar el tope?
+function topeAlEjecutar(c){
+  if(!c || !c.pendiente || !Array.isArray(c.celdas)) return null;
+  const antes = recuentoFisico(state.assignments);
+  const v = Object.assign({}, state.assignments);
+  c.celdas.forEach(x=>{ if(x && x.k){ if(x.valor) v[x.k] = x.valor; else delete v[x.k]; } });
+  const err = excesoTope(antes, recuentoFisico(v));
+  return err ? err+"\n\nNo se puede marcar como reajustado. Avisa al coordinador." : null;
+}
+// El coordinador anula un cambio en espera: el cuadrante vuelve a como estaba
+function anularEnEspera(mk, id){
+  const lista = (state.cambiosAdm||{})[mk] || [];
+  const i = lista.findIndex(x=>x.id===id);
+  if(i<0 || !lista[i].pendiente) return false;
+  marcarDeshacer("anular cambio en espera");
+  revertirEnEspera(mk, id);
+  lista.splice(i, 1);
+  save();
+  return true;
+}
+
 // El administrativo marca que ya ha reajustado las citas de ese cambio
 function marcarEjecutado(mk, id, quien){
   const lista = (state.cambiosAdm||{})[mk] || [];
   const c = lista.find(x=>x.id===id);
   if(!c) return;
+  if(!c.ejecutado){
+    const errTope = topeAlEjecutar(c);
+    if(errTope){ window.alert(errTope); return; }
+  }
   if(c.ejecutado){
     // Se deshace: el cuadrante vuelve a como estaba y queda de nuevo en espera
     delete c.ejecutado; delete c.ejecutadoAt;
@@ -876,7 +940,10 @@ function deshacer(){
   }catch(e){ return false; }
 }
 
+// v150: mientras se simula/aplica una solicitud, el guardado espera al resultado
+let PAUSA_GUARDADO = false, GUARDADO_APLAZADO = false;
 function save(){
+  if(PAUSA_GUARDADO){ GUARDADO_APLAZADO = true; return; }
   if(MODE==="viewer"){ setSave("Solo consulta"); return; }
   state.updatedAt = new Date().toISOString();
   setSave("Guardando…");
@@ -998,7 +1065,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v149";
+const APP_VERSION = "v150";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1661,7 +1728,32 @@ function parseRequest(txt){
   if(!r.date || (!r.pid && !r.phys)) return null;
   return r;
 }
-function applyRequest(r){
+// v150: toda solicitud se simula primero; si falla o supera el tope físico,
+// el cuadrante queda exactamente como estaba. soloComprobar = simulación sin aplicar.
+function applyRequest(r, soloComprobar){
+  const CLAVES = ["assignments","diasLibres","traficoHoras","cambiosAdm","rotantes"];
+  const copia = {};
+  CLAVES.forEach(k=>{ if(state[k]!==undefined) copia[k] = JSON.stringify(state[k]); });
+  const cimaDeshacer = ultimoDeshacer();
+  const avisoPrevio = AVISO_VOLUNTARIO;
+  const antes = recuentoFisico(vistaConEspera());
+  PAUSA_GUARDADO = true; GUARDADO_APLAZADO = false;
+  let err = null;
+  try{ err = applyRequestCore(r); }
+  catch(e){ err = "Error al aplicar la solicitud: "+((e && e.message) || e); }
+  finally{ PAUSA_GUARDADO = false; }
+  if(!err) err = excesoTope(antes, recuentoFisico(vistaConEspera()));
+  if(err || soloComprobar){
+    CLAVES.forEach(k=>{ if(k in copia) state[k] = JSON.parse(copia[k]); else delete state[k]; });
+    while(PILA_DESHACER.length && ultimoDeshacer() !== cimaDeshacer) PILA_DESHACER.pop();
+    AVISO_VOLUNTARIO = avisoPrevio;
+    GUARDADO_APLAZADO = false;
+    return err;
+  }
+  if(GUARDADO_APLAZADO){ GUARDADO_APLAZADO = false; save(); }
+  return null;
+}
+function applyRequestCore(r){
   marcarDeshacer("solicitud aplicada");
   if(r.type==="consultas"){
     const pa = state.physicians.find(x=>x.id===r.pidA) || state.physicians.find(x=>x.name===r.physA);
@@ -1845,37 +1937,36 @@ function applyRequest(r){
       if(dest.f) return "El día de destino está ocupado por «"+cellToText(dest)+"».";
       if(dest[slotDest]) return "El turno de "+(slotDest==="m"?"mañana":"tarde")+" del día de destino ya está ocupado por "+dest[slotDest]+".";
     }
-    // Quitar del origen
-    if(slotOrig==="f"){ delete state.assignments[kFrom]; }
-    else{
+    // v150: se calcula cómo quedan origen y destino SIN tocar todavía el cuadrante
+    let celdaOrigFinal = null;
+    if(slotOrig!=="f"){
       const c = Object.assign({}, orig); c[slotOrig] = null;
-      if(!c.m && !c.t && !c.f) delete state.assignments[kFrom]; else state.assignments[kFrom] = c;
+      celdaOrigFinal = (!c.m && !c.t && !c.f) ? null : c;
     }
     // Colocar en el destino, sustituyendo la consulta si su código ya está ocupado
-    const dest2 = Object.assign({}, state.assignments[kTo]||{});
+    const dest2 = Object.assign({}, (kFrom===kTo) ? (celdaOrigFinal||{}) : (state.assignments[kTo]||{}));
     const codFinal = (slotDest==="f") ? code : codigoLibreEn(code, r.dateTo, slotDest, [p.id]);
     if(!codFinal) return "La consulta "+code+" ya la pasa otro compañero el "+fmtDate(r.dateTo)+" y no queda ninguna equivalente libre.";
     dest2[slotDest] = codFinal;
+    const celdaDestFinal = {m:dest2.m||null, t:dest2.t||null, f:null};
     // Registro para administrativos: consulta y día de origen → consulta y día definitivos
     const marcaTurno = (c,sl)=> c + (sl==="t" ? " (tarde)" : (sl==="m" ? " (mañana)" : ""));
     const mkMov = (r.dateTo||"").slice(0,7);
     if(cerradoAdmvoPorClave(mkMov)){
-      // Queda en espera: se anota cómo quedaría y se deja el cuadrante como estaba
+      // Queda en espera: se anota cómo quedaría y el cuadrante NO se toca (ni el origen)
       const entrada = anotarCambioAdmvo(p.id, r.dateFrom, marcaTurno(code, slotOrig), r.dateTo, marcaTurno(codFinal, slotDest));
-      const celdaOrigFinal = (function(){
-        const c2 = Object.assign({}, orig); c2[slotOrig] = null;
-        return (!c2.m && !c2.t && !c2.f) ? null : c2;
-      })();
+      const previaDest = (kFrom===kTo) ? orig : state.assignments[kTo];
       guardarEnEspera(entrada,
         [{k:kFrom, valor: celdaOrigFinal},
-         {k:kTo,   valor: {m:dest2.m||null, t:dest2.t||null, f:null}}],
+         {k:kTo,   valor: celdaDestFinal}],
         [{k:kFrom, valor: JSON.parse(JSON.stringify(orig))},
-         {k:kTo,   valor: state.assignments[kTo] ? JSON.parse(JSON.stringify(state.assignments[kTo])) : null}]);
+         {k:kTo,   valor: previaDest ? JSON.parse(JSON.stringify(previaDest)) : null}]);
       save();
-      return null;               // el cuadrante NO se modifica todavía
+      return null;
     }
     try{ anotarCambioAdmvo(p.id, r.dateFrom, marcaTurno(code, slotOrig), r.dateTo, marcaTurno(codFinal, slotDest)); }catch(e){}
-    state.assignments[kTo] = {m:dest2.m||null, t:dest2.t||null, f:null};
+    if(celdaOrigFinal) state.assignments[kFrom] = celdaOrigFinal; else delete state.assignments[kFrom];
+    state.assignments[kTo] = celdaDestFinal;
     save();
     return null;
   }
@@ -2495,8 +2586,9 @@ const SIN_DESPACHO = ["RXINT","ADM","ADMT"];
 function ocupaDespacho(code){ return !!code && SIN_DESPACHO.indexOf(code) < 0; }
 function mananasOcupadasDia(dkey){
   let n=0;
+  const espera = mapaEnEspera();
   state.physicians.forEach(p=>{
-    const a = state.assignments[p.id+"|"+dkey];
+    const a = celdaEfectiva(p.id+"|"+dkey, espera);
     if(a && ocupaDespacho(a.m)) n++;
   });
   return n;
@@ -3145,11 +3237,12 @@ function validarIntercambio(pidA, dateA, pidB, dateB){
     // Hueco físico de mañana en el día que recibe
     if(ocupaDespacho(celda.m)){
       let ocupadas = 0;
+      const espera = mapaEnEspera();
       state.physicians.forEach(q=>{
         if(q.id===quien.id) return;
         if(q.id===pa.id && fecha===dateA) return;   // esa celda se vacía
         if(q.id===pb.id && fecha===dateB) return;
-        const x = state.assignments[q.id+"|"+fecha];
+        const x = celdaEfectiva(q.id+"|"+fecha, espera);
         if(x && ocupaDespacho(x.m)) ocupadas++;
       });
       if(ocupadas >= (state.settings.maxMorning||8))
@@ -3217,7 +3310,8 @@ function familiaDe(code, slot){
 }
 // getter opcional para trabajar sobre una simulación en curso
 function codigoLibreEn(code, fecha, slot, ignorar, getter){
-  const leer = getter || ((pid,dk)=> state.assignments[pid+"|"+dk]);
+  const espera = getter ? null : mapaEnEspera();
+  const leer = getter || ((pid,dk)=> celdaEfectiva(pid+"|"+dk, espera));
   const ocupado = (cod)=> state.physicians.some(q=>{
     if((ignorar||[]).indexOf(q.id) >= 0) return false;
     const x = leer(q.id, fecha);
@@ -4329,10 +4423,17 @@ function viewCambiosAdmvo(mo){
           '<b style="font-size:15px">'+esc(c.phys)+'</b>'+
           (c.pendiente?'<span class="tiny" style="margin-left:8px;background:#b45309;color:#fff;padding:2px 8px;border-radius:999px">en espera</span>':'')+
         '</div>'+
+        '<span class="row" style="gap:6px">'+
+        ((c.pendiente && !hecho && MODE!=="viewer")
+          ? '<button class="btn danger" data-action="admvo-anular" data-mk="'+mk+'" data-id="'+c.id+'" style="padding:5px 12px;font-size:13px">Anular</button>'
+          : '')+
         '<button class="btn'+(hecho?' hechoBtn':'')+'" data-action="admvo-ejecutado" data-mk="'+mk+'" data-id="'+c.id+'" '+
           'style="padding:5px 12px;font-size:13px'+(hecho?';background:#065f46;color:#fff;border-color:#065f46':'')+'">'+
-          (hecho?'✓ Hecho':'Marcar')+'</button>'+
+          (hecho?'✓ Hecho':'Marcar')+'</button></span>'+
       '</div>'+
+      ((c.pendiente && !hecho && topeAlEjecutar(c))
+        ? '<div style="margin-top:6px;font-size:13px;color:#991b1b">⛔ Supera el tope de consultas físicas: no se puede ejecutar.</div>'
+        : '')+
       '<div style="margin-top:6px;font-size:14px;line-height:1.5">'+
         '<div><span class="tiny muted">Antes:</span> <b>'+esc(c.origenConsulta||"—")+'</b>'+
           (c.origenDia?' · '+fmtDate(c.origenDia):'')+'</div>'+
@@ -4665,6 +4766,10 @@ function viewSolicitudes(){
         (r.note?'<p style="font-size:14px;margin-top:4px"><b>Motivo:</b> '+esc(r.note)+'</p>':'');
       }
     }
+    // v150: se simula la aprobación; si no es posible, no se deja aprobar
+    let bloqueoAprobar = null;
+    try{ bloqueoAprobar = applyRequest(r, true); }catch(e){ bloqueoAprobar = null; }
+    const esTope = !!bloqueoAprobar && bloqueoAprobar.indexOf(TXT_TOPE)===0;
     // Aviso informativo: si el cambio implica trabajar en un día de reducción
     limpiarAvisos();
     try{
@@ -4675,15 +4780,22 @@ function viewSolicitudes(){
     }catch(e){}
     const avisoVol = AVISO_VOLUNTARIO
       ? '<div class="warnbox" style="margin-top:8px">ℹ '+AVISO_VOLUNTARIO+'</div>' : '';
-    h += '<div class="card" style="margin-top:10px;background:var(--slate-50)">'+ficha+avisoVol+'</div>'+
-      (rv.err?'<p style="color:var(--rose-700);font-size:13px;margin-top:8px">'+esc(rv.err)+'</p>':'')+
-      (rv.err && rv.id
+    const bloqueoBox = bloqueoAprobar
+      ? '<div class="card" style="margin-top:10px;border-color:#b91c1c;background:#fef2f2;color:#991b1b;font-size:14px">'+
+        '⛔ <b>No se puede aprobar.</b><br>'+esc(bloqueoAprobar)+
+        (esTope?'<br><span style="font-size:13px">Recházala o pide al facultativo que elija otro día.</span>':'')+'</div>'
+      : '';
+    h += '<div class="card" style="margin-top:10px;background:var(--slate-50)">'+ficha+avisoVol+'</div>'+bloqueoBox+
+      ((rv.err && rv.err!==bloqueoAprobar)?'<p style="color:var(--rose-700);font-size:13px;margin-top:8px">'+esc(rv.err)+'</p>':'')+
+      ((rv.err || (bloqueoAprobar && !esTope)) && rv.id
         ? '<div class="warnbox" style="margin-top:10px">Si este cambio <b>ya está hecho</b> en el cuadrante, ciérralo sin volver a aplicarlo:'+
           '<div style="margin-top:8px"><button class="btn" data-action="reviewt-yahecha" data-id="'+rv.id+'" '+
           'style="background:#065f46;color:#fff;border-color:#065f46">✓ Ya está hecha</button></div></div>'
         : '')+
       '<div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">'+
-      '<button class="btn primary" data-action="reviewt-apply">Aprobar y aplicar</button>'+
+      (bloqueoAprobar
+        ? '<button class="btn" disabled style="opacity:.5;cursor:not-allowed">Aprobar y aplicar</button>'
+        : '<button class="btn primary" data-action="reviewt-apply">Aprobar y aplicar</button>')+
       (rv.id?'<button class="btn danger" data-action="bandeja-rechazar" data-id="'+rv.id+'">Rechazar</button>':'')+
       '<button class="btn" data-action="reviewt-back">Volver a la bandeja</button></div>';
   }else{
@@ -6656,6 +6768,16 @@ document.addEventListener("click", e=>{
       break;
     }
     case "ir-admvo": { ui.tab = "administrativo"; ui.admvoSub = "cambios"; render(); break; }
+    case "admvo-anular": {
+      const mkA = el.dataset.mk, idA = el.dataset.id;
+      const cA = ((state.cambiosAdm||{})[mkA]||[]).find(x=>x.id===idA);
+      if(!cA) break;
+      if(!window.confirm("Anular el cambio de "+cA.phys+" ("+(cA.origenConsulta||"—")+" del "+fmtDate(cA.origenDia)+
+         " → "+(cA.destinoConsulta||"—")+" del "+fmtDate(cA.destinoDia)+")\n\n"+
+         "El cuadrante queda como estaba antes de aprobarlo. Recuerda avisar al facultativo.\n\n¿Continuar?")) break;
+      if(anularEnEspera(mkA, idA)) setSave("✓ Cambio anulado");
+      render(); break;
+    }
     case "admvo-ejecutado": {
       const mkE = el.dataset.mk, idE = el.dataset.id;
       // El coordinador edita y publica con normalidad
@@ -6665,6 +6787,10 @@ document.addEventListener("click", e=>{
       const c = lista.find(x=>x.id===idE);
       if(!c) break;
       const nuevoValor = !c.ejecutado;
+      if(nuevoValor){
+        const errTope = topeAlEjecutar(c);
+        if(errTope){ window.alert(errTope); break; }
+      }
       const hacerlo = ()=>{
         setSave("Guardando…");
         marcarEjecutadoServidor(mkE, idE, nuevoValor).then(err=>{
