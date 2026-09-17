@@ -352,9 +352,11 @@ function paraPublicar(){
   if(body.buzon){
     body.buzon = {url: body.buzon.url || ""};
   }
-  delete body.adminPass;           // huella antigua de la contraseña
-  delete body.adminPass2;          // huella reforzada: tampoco necesita ser pública
-  body.tienePass = hayAdminPass(); // basta con saber SI hay contraseña
+  // La huella SÍ viaja: es PBKDF2 con sal y 150.000 vueltas, de ella no se obtiene
+  // la contraseña, y sin ella los demás dispositivos no podrían exigirla ni comprobarla.
+  // La antigua, débil, se retira.
+  delete body.adminPass;
+  body.tienePass = hayAdminPass();
   body.publishedAt = new Date().toISOString();
   body.publishedBy = DEVICE_ID;
   return body;
@@ -1065,7 +1067,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v151";
+const APP_VERSION = "v152";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1354,7 +1356,8 @@ function marcaSesion(){
 const KEY_AUTH = "cuadrante-auth-v1";
 function marcarAutenticado(){ try{ sessionStorage.setItem(KEY_AUTH, marcaSesion()); }catch(e){} }
 function estaAutenticado(){
-  if(!hayAdminPass()) return true;
+  // Si no hay contraseña ni aquí ni en lo publicado, no hay nada que exigir
+  if(!hayAdminPass() && PUB_TIENE_PASS!==true) return true;
   try{ return sessionStorage.getItem(KEY_AUTH)===marcaSesion(); }catch(e){ return false; }
 }
 // Obsoleta: solo reconocía la huella antigua. Se conserva por compatibilidad,
@@ -7025,6 +7028,20 @@ document.addEventListener("click", e=>{
         });
         break;
       }
+      // Lo publicado dice que hay contraseña pero este dispositivo no tiene la huella:
+      // se pide y se comprueba contra el servidor. Nunca se deja pasar sin más.
+      if(PUB_TIENE_PASS===true){
+        const intentoS = window.prompt("Contraseña de administración:");
+        if(intentoS===null) break;
+        setSave("Comprobando…");
+        verificarClavePublicar(intentoS).then(ok=>{
+          if(!ok){ window.alert("Contraseña incorrecta."); setSave("Solo consulta"); return; }
+          marcarAutenticado();
+          MODE="editor"; render();
+          prepararPublicacion(intentoS);
+        });
+        break;
+      }
       // Sin contraseña configurada todavía: se permite y se recomienda ponerla
       if(window.confirm("Modo edición (solo administración).\n\nAún no has definido una contraseña: cualquiera con el enlace podría entrar aquí. Puedes ponerla en Ajustes.\n\n¿Continuar?")){
         MODE="editor"; save(); render();
@@ -7211,6 +7228,9 @@ document.addEventListener("click", e=>{
     case "go-viewer":
       if(window.confirm("Este dispositivo pasará a SOLO CONSULTA y se borrará su copia local de edición (lo publicado no se toca). ¿Continuar?")){
         try{ localStorage.removeItem(KEY); }catch(e){}
+        // Salir de administración cierra la sesión: si no, al recargar se volvería
+        // a entrar en edición sin pedir la contraseña.
+        try{ sessionStorage.removeItem(KEY_AUTH); }catch(e){}
         MODE="viewer"; NEWER=false;
         (async()=>{
           try{ const d=await fetchPublished(); if(d) applyPublished(d); }catch(e){}
@@ -7880,6 +7900,10 @@ document.addEventListener("keydown", e=>{
 
 // ------------------ Inicio ------------------
 function applyPublished(d){
+  // La huella de la contraseña debe viajar aquí: sin ella este dispositivo no
+  // sabría que existe contraseña y dejaría entrar en edición sin pedirla.
+  if(d.adminPass2) state.adminPass2 = d.adminPass2;
+  if(d.adminPass) state.adminPass = d.adminPass;
   state.physicians = (d.physicians||[]).map(p=>{const q=Object.assign({blocked:[]},p); if(q.noUrgf===undefined) q.noUrgf=!!q.noUrg; return q;});
   state.assignments = d.assignments||{};
   state.baseline = d.baseline||{};
@@ -7961,7 +7985,9 @@ async function boot(){
   // Si hay contraseña configurada, no se entra en edición sin haberla introducido en esta sesión
   // Se comprueban los dos formatos: la huella reforzada (adminPass2) y la antigua.
   // Mirando solo la antigua, tras migrar quedaba vacía y se entraba sin contraseña.
-  if(hayAdminPass() && !estaAutenticado()) MODE = "viewer";
+  // Si este dispositivo no tiene la huella pero lo publicado indica que hay contraseña,
+  // tampoco se entra en edición: se pedirá y se comprobará contra el servidor.
+  if((hayAdminPass() || PUB_TIENE_PASS===true) && !estaAutenticado()) MODE = "viewer";
   try{ limpiarBandeja(); }catch(e){}
   // Situarse en el mes en curso (si el cuadrante es de este año)
   try{
