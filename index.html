@@ -613,6 +613,8 @@ function diferirSiCerrado(fn){
   const dias = enEspera.map(c=>c.clave.slice(c.clave.indexOf("|")+1));
   state.cambiosAdm = state.cambiosAdm || {};
   state.cambiosAdm[mk] = state.cambiosAdm[mk] || [];
+  // Formato idéntico al del resto del sistema: sin esto, el cambio se mostraría
+  // como ya realizado y administración no podría marcarlo.
   state.cambiosAdm[mk].push({
     id: "c"+Date.now().toString(36)+Math.random().toString(36).slice(2,6),
     at: new Date().toISOString(),
@@ -621,7 +623,9 @@ function diferirSiCerrado(fn){
     origenConsulta: txtCelda(enEspera[0].antes),
     destinoDia: dias[dias.length-1] || "",
     destinoConsulta: txtCelda(enEspera[enEspera.length-1].despues),
-    celdas: enEspera                                   // lo que se aplicará al confirmarlo
+    pendiente: true,                                        // aún no está en el cuadrante
+    celdas:  enEspera.map(c=>({k:c.clave, valor:c.despues})),  // cómo quedará al confirmarlo
+    previas: enEspera.map(c=>({k:c.clave, valor:c.antes}))     // cómo está ahora
   });
   save();
   return resultado;
@@ -1067,7 +1071,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v155";
+const APP_VERSION = "v156";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
