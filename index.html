@@ -1067,7 +1067,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v152";
+const APP_VERSION = "v153";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -4456,7 +4456,10 @@ function viewCambiosAdmvo(mo){
 }
 
 function viewExportar(){
-  const pid = ui.expPid || (state.physicians[0]||{}).id || "";
+  // Por defecto, el facultativo identificado en este dispositivo:
+  // abrir Exportar y ver los turnos de otro es lo primero que confunde.
+  const yoExp = (typeof miFacultativo==="function") ? miFacultativo() : null;
+  const pid = ui.expPid || (yoExp && yoExp.id) || (state.physicians[0]||{}).id || "";
   const mo  = (ui.expMes===undefined) ? ui.month : ui.expMes;
   const p = state.physicians.find(x=>x.id===pid);
   let turnos = 0;
@@ -7835,6 +7838,10 @@ document.addEventListener("change", e=>{
   if(fieldVista==="stats-to"){ ui.statsTo = Number(el.value); saveStatsView(); render(); return; }
   // Los administrativos gestionan los tráficos desde modo consulta:
   // sus campos se atienden antes del corte por permisos.
+  const campoLibre = el.dataset ? (el.dataset.field||"") : "";
+  // Campos que deben atenderse aunque el dispositivo esté en modo consulta
+  if(campoLibre==="exp-pid"){ ui.expPid = el.value; render(); return; }
+  if(campoLibre==="exp-mes"){ ui.expMes = Number(el.value); render(); return; }
   const campoTf = el.dataset ? (el.dataset.field||"") : "";
   if(campoTf.indexOf("tfa-")===0 && (MODE!=="viewer" || esAdministrativo())){
     const t = ui.tfAdm = ui.tfAdm || {};
