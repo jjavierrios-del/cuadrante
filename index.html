@@ -1067,7 +1067,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v154";
+const APP_VERSION = "v155";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1744,7 +1744,11 @@ function applyRequest(r, soloComprobar){
   const antes = recuentoFisico(vistaConEspera());
   PAUSA_GUARDADO = true; GUARDADO_APLAZADO = false;
   let err = null;
-  try{ err = applyRequestCore(r); }
+  try{
+    // En una simulación no se difiere nada: solo se quiere saber si es viable.
+    if(soloComprobar) err = applyRequestCore(r);
+    else err = diferirSiCerrado(()=>applyRequestCore(r));
+  }
   catch(e){ err = "Error al aplicar la solicitud: "+((e && e.message) || e); }
   finally{ PAUSA_GUARDADO = false; }
   if(!err) err = excesoTope(antes, recuentoFisico(vistaConEspera()));
