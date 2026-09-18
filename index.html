@@ -1067,7 +1067,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v153";
+const APP_VERSION = "v154";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2417,7 +2417,17 @@ function solicitudFormHTML(){
         '<span style="flex:1"><span class="tiny">2ª consulta</span>'+
           '<input type="date" value="'+rq.dateB2+'" data-field="rq-dateb2" style="padding:7px;width:100%"></span>'+
       '</div>'+
-      '<p class="muted" style="font-size:12px;margin-top:4px">'+cellToText(c1)+'  ·  '+cellToText(c2)+'</p>'+
+      (function(){
+        // Si se elige el mismo día dos veces, las consultas son su mañana y su tarde
+        if(rq.dateB && rq.dateB===rq.dateB2){
+          if(c1 && !c1.f && c1.m && c1.t)
+            return '<p class="muted" style="font-size:12px;margin-top:4px">Se entregan las dos de ese día: '+
+              '<b>'+esc(c1.m)+'</b> (mañana) y <b>'+esc(c1.t)+'</b> (tarde)</p>';
+          return '<div class="warnbox" style="margin-top:6px">Para usar el mismo día dos veces, esa jornada debe tener mañana y tarde.</div>';
+        }
+        return '<p class="muted" style="font-size:12px;margin-top:4px">1ª: <b>'+cellToText(c1)+
+          '</b>  ·  2ª: <b>'+cellToText(c2)+'</b></p>';
+      })()+
       '<div class="card" style="margin-top:10px;background:var(--slate-50);padding:10px">'+
         '<b style="font-size:13px">¿Mover alguna de esas consultas a otro día?</b>'+
         '<p class="muted" style="font-size:12px;margin-top:2px">Opcional. Deja la fecha en blanco para quedarte con el día original.</p>'+
@@ -3420,14 +3430,29 @@ function simularUrg2(pidA, fechaU, pidB, f1, f2, mov1, slot1, mov2, slot2){
   if(!guardia || !(guardia.f==="URG"||guardia.f==="URGLV"||guardia.f==="URGF"))
     return {error:"El "+fmtDate(fechaU)+" no tiene una guardia asignada a "+esc(pa.name)+"."};
   const c1 = get(pb.id, f1), c2 = get(pb.id, f2);
-  if(f1===f2) return {error:"Las dos consultas deben ser de días distintos."};
   if(!c1 || c1.f) return {error:esc(pb.name)+" no tiene una consulta normal el "+fmtDate(f1)+"."};
   if(!c2 || c2.f) return {error:esc(pb.name)+" no tiene una consulta normal el "+fmtDate(f2)+"."};
 
-  // 1) Se vacían las tres celdas de origen
+  // Qué dos consultas se traspasan. Si se elige el mismo día dos veces, son la
+  // mañana y la tarde de esa jornada; si son días distintos, una de cada uno.
+  let piezas;
+  if(f1===f2){
+    if(!(c1.m && c1.t))
+      return {error:esc(pb.name)+" no tiene mañana y tarde el "+fmtDate(f1)+": elige dos días distintos."};
+    piezas = [{dia:f1, slotO:"m", cod:c1.m}, {dia:f1, slotO:"t", cod:c1.t}];
+  }else{
+    const elegir = (cel, dia)=> cel.m ? {dia, slotO:"m", cod:cel.m} : {dia, slotO:"t", cod:cel.t};
+    piezas = [elegir(c1, f1), elegir(c2, f2)];
+  }
+
+  // Se vacía la guardia y SOLO el turno que se traspasa de cada consulta:
+  // así, si ese día tiene además otro turno, no se pierde.
   set(pa.id, fechaU, null);
-  set(pb.id, f1, null);
-  set(pb.id, f2, null);
+  piezas.forEach(z=>{
+    const cel = Object.assign({m:null,t:null,f:null}, get(pb.id, z.dia)||{});
+    cel[z.slotO] = null;
+    set(pb.id, z.dia, (!cel.m && !cel.t && !cel.f) ? null : cel);
+  });
 
   // 2) La guardia pasa a quien la asume
   const destU = get(pb.id, fechaU);
@@ -3447,11 +3472,11 @@ function simularUrg2(pidA, fechaU, pidB, f1, f2, mov1, slot1, mov2, slot2){
 
   // 3) Las dos consultas pasan a quien cede la guardia, en su día o en el elegido
   const hmap = holidayMap();
-  const colocar = (celda, origen, destino, slot)=>{
-    const dia = destino || origen;
-    const turno = destino ? slot : (celda.m ? "m" : "t");
-    const cod = celda.m || celda.t;
-    if(!cod) return "No se identifica la consulta del "+fmtDate(origen)+".";
+  const colocar = (pieza, destino, slot)=>{
+    const dia = destino || pieza.dia;
+    const turno = destino ? slot : pieza.slotO;
+    const cod = pieza.cod;
+    if(!cod) return "No se identifica la consulta del "+fmtDate(pieza.dia)+".";
     const dt = new Date(dia), dow = dt.getDay();
     if(dow===0||dow===6) return "El "+fmtDate(dia)+" cae en fin de semana.";
     if(hmap[dia]) return "El "+fmtDate(dia)+" es festivo.";
@@ -3469,8 +3494,8 @@ function simularUrg2(pidA, fechaU, pidB, f1, f2, mov1, slot1, mov2, slot2){
     set(pa.id, dia, nueva);
     return null;
   };
-  const e1 = colocar(c1, f1, mov1||"", slot1||"m"); if(e1) return {error:e1};
-  const e2 = colocar(c2, f2, mov2||"", slot2||"m"); if(e2) return {error:e2};
+  const e1 = colocar(piezas[0], mov1||"", slot1||"m"); if(e1) return {error:e1};
+  const e2 = colocar(piezas[1], mov2||"", slot2||"m"); if(e2) return {error:e2};
 
   return {ok:true, cambios:A};
 }
