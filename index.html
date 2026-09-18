@@ -1071,7 +1071,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v156";
+const APP_VERSION = "v157";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -7655,6 +7655,14 @@ document.addEventListener("click", e=>{
     case "month-reset-soft": resetMonth(false); ui.resetMonthModal=false; render(); break;
     case "month-reset-all": resetMonth(true); ui.resetMonthModal=false; render(); break;
     case "gen-run": {
+      // Generar reescribe el mes entero: con el mes cerrado, administración no
+      // recibiría aviso de cada cambio, así que se advierte antes.
+      const mkGen = state.year+"-"+pad(ui.month+1);
+      if(cerradoAdmvoPorClave(mkGen)){
+        if(!window.confirm(MONTHS[ui.month]+" está CERRADO para administrativos.\n\n"+
+          "Al generar se reescribe el mes completo y esos cambios NO aparecerán en su lista "+
+          "de pendientes: tendrás que avisarles por tu cuenta.\n\n¿Continuar?")) break;
+      }
       const sel = document.querySelector('input[name=genmode]:checked');
       ui.genReport = generateMonth(sel?sel.value:"fill");
       render(); break;
