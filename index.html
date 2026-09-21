@@ -625,7 +625,15 @@ function diferirSiCerrado(fn){
     destinoConsulta: txtCelda(enEspera[enEspera.length-1].despues),
     pendiente: true,                                        // aún no está en el cuadrante
     celdas:  enEspera.map(c=>({k:c.clave, valor:c.despues})),  // cómo quedará al confirmarlo
-    previas: enEspera.map(c=>({k:c.clave, valor:c.antes}))     // cómo está ahora
+    previas: enEspera.map(c=>({k:c.clave, valor:c.antes})),    // cómo está ahora
+    // Detalle línea a línea: sin esto, un cambio entre dos facultativos se
+    // resumía en una sola línea que no explicaba nada.
+    detalle: enEspera.map(c=>{
+      const i = c.clave.indexOf("|");
+      const q = state.physicians.find(x=>x.id===c.clave.slice(0,i));
+      return {phys:(q?q.name:""), dia:c.clave.slice(i+1),
+              antes:txtCelda(c.antes), despues:txtCelda(c.despues)};
+    })
   });
   save();
   return resultado;
@@ -1071,7 +1079,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v157";
+const APP_VERSION = "v158";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -4473,10 +4481,19 @@ function viewCambiosAdmvo(mo){
         ? '<div style="margin-top:6px;font-size:13px;color:#991b1b">⛔ Supera el tope de consultas físicas: no se puede ejecutar.</div>'
         : '')+
       '<div style="margin-top:6px;font-size:14px;line-height:1.5">'+
-        '<div><span class="tiny muted">Antes:</span> <b>'+esc(c.origenConsulta||"—")+'</b>'+
-          (c.origenDia?' · '+fmtDate(c.origenDia):'')+'</div>'+
-        '<div><span class="tiny muted">Ahora:</span> <b>'+esc(c.destinoConsulta||"—")+'</b>'+
-          (c.destinoDia?' · '+fmtDate(c.destinoDia):'')+'</div>'+
+        (Array.isArray(c.detalle) && c.detalle.length
+          // Detalle línea a línea: un cambio puede mover varias consultas y
+          // afectar a más de un facultativo, y hay que verlo todo.
+          ? c.detalle.map(x=>
+              '<div style="padding:3px 0;border-bottom:1px solid var(--slate-100)">'+
+                '<b>'+esc(x.phys||"")+'</b> · '+fmtDate(x.dia)+'<br>'+
+                '<span class="tiny muted">tenía</span> '+esc(x.antes||"—")+
+                ' <span class="tiny muted">→ pasa a</span> <b>'+esc(x.despues||"—")+'</b>'+
+              '</div>').join("")
+          : '<div><span class="tiny muted">Antes:</span> <b>'+esc(c.origenConsulta||"—")+'</b>'+
+              (c.origenDia?' · '+fmtDate(c.origenDia):'')+'</div>'+
+            '<div><span class="tiny muted">Ahora:</span> <b>'+esc(c.destinoConsulta||"—")+'</b>'+
+              (c.destinoDia?' · '+fmtDate(c.destinoDia):'')+'</div>')+
       '</div>'+
       '<div class="tiny muted" style="margin-top:4px">Anotado el '+
         new Date(c.at).toLocaleString("es-ES",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})+
