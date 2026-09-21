@@ -1079,7 +1079,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v158";
+const APP_VERSION = "v159";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -4373,6 +4373,14 @@ function viewTraficoAdmvo(mo){
       const quien = (state.physicians.find(x=>x.id===pidSel)||{}).name || "";
       if(a.f) return '<div class="warnbox" style="margin-top:10px">⚠ '+esc(quien)+' tiene <b>'+esc(a.f)+'</b> ese día.</div>';
       if(a[slot]) return '<div class="warnbox" style="margin-top:10px">⚠ Ese turno ya está ocupado con <b>'+esc(a[slot])+'</b>.</div>';
+      // Los tráficos de mañana ocupan despacho físico: si no queda ninguno, se avisa
+      if(slot==="m"){
+        const tope = state.settings.maxMorning||8;
+        const ocupadas = mananasOcupadasDia(diaSel);
+        if(ocupadas >= tope)
+          return '<div class="warnbox" style="margin-top:10px">⚠ Ese día ya están ocupados los <b>'+tope+
+            '</b> despachos de mañana: no queda ninguno libre.</div>';
+      }
       const cod = d.code || (slot==="m"?"TFM1":"TFT1");
       const repetida = state.physicians.some(q=>{
         if(q.id===pidSel) return false;
@@ -4481,19 +4489,35 @@ function viewCambiosAdmvo(mo){
         ? '<div style="margin-top:6px;font-size:13px;color:#991b1b">⛔ Supera el tope de consultas físicas: no se puede ejecutar.</div>'
         : '')+
       '<div style="margin-top:6px;font-size:14px;line-height:1.5">'+
-        (Array.isArray(c.detalle) && c.detalle.length
-          // Detalle línea a línea: un cambio puede mover varias consultas y
-          // afectar a más de un facultativo, y hay que verlo todo.
-          ? c.detalle.map(x=>
+        (function(){
+          // Detalle línea a línea. Los cambios anteriores a la v158 no lo guardan,
+          // pero sí guardaron cómo queda cada celda y cómo estaba: se reconstruye.
+          let det = Array.isArray(c.detalle) && c.detalle.length ? c.detalle : null;
+          if(!det && Array.isArray(c.celdas)){
+            const txt = (v)=> !v ? "(libre)" : [v.m,v.t,v.f].filter(Boolean).join(" / ");
+            const previas = {};
+            (c.previas||[]).forEach(x=>{ if(x && x.k) previas[x.k] = x.valor; });
+            det = c.celdas.map(x=>{
+              if(!x || !x.k) return null;
+              const i = x.k.indexOf("|");
+              const q = state.physicians.find(y=>y.id===x.k.slice(0,i));
+              return {phys:(q?q.name:""), dia:x.k.slice(i+1),
+                      antes:txt(previas[x.k]), despues:txt(x.valor)};
+            }).filter(Boolean);
+          }
+          if(det && det.length){
+            return det.map(x=>
               '<div style="padding:3px 0;border-bottom:1px solid var(--slate-100)">'+
                 '<b>'+esc(x.phys||"")+'</b> · '+fmtDate(x.dia)+'<br>'+
                 '<span class="tiny muted">tenía</span> '+esc(x.antes||"—")+
                 ' <span class="tiny muted">→ pasa a</span> <b>'+esc(x.despues||"—")+'</b>'+
-              '</div>').join("")
-          : '<div><span class="tiny muted">Antes:</span> <b>'+esc(c.origenConsulta||"—")+'</b>'+
+              '</div>').join("");
+          }
+          return '<div><span class="tiny muted">Antes:</span> <b>'+esc(c.origenConsulta||"—")+'</b>'+
               (c.origenDia?' · '+fmtDate(c.origenDia):'')+'</div>'+
             '<div><span class="tiny muted">Ahora:</span> <b>'+esc(c.destinoConsulta||"—")+'</b>'+
-              (c.destinoDia?' · '+fmtDate(c.destinoDia):'')+'</div>')+
+              (c.destinoDia?' · '+fmtDate(c.destinoDia):'')+'</div>';
+        })()+
       '</div>'+
       '<div class="tiny muted" style="margin-top:4px">Anotado el '+
         new Date(c.at).toLocaleString("es-ES",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})+
