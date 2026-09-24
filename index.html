@@ -1079,7 +1079,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v159";
+const APP_VERSION = "v160";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1710,8 +1710,12 @@ function parseRequest(txt){
   try{ r = JSON.parse(chunk); }
   catch(e){ try{ r = JSON.parse(chunk.replace(/[\r\n]+/g," ")); }catch(e2){ return null; } }
   if(!r) return null;
-  if(r.type==="libre"){
+  if(r.type==="libre" || r.type==="permiso"){
     if(!r.dias || !r.dias.length || (!r.pid && !r.phys)) return null;
+    return r;
+  }
+  if(r.type==="actividad"){
+    if(!r.fecha || !r.nueva || (!r.pid && !r.phys)) return null;
     return r;
   }
   if(r.type==="trafico"){
