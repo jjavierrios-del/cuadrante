@@ -1094,7 +1094,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v161";
+const APP_VERSION = "v162";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -6229,12 +6229,15 @@ function generateMonth(mode){
   // Objetivo: que la SUMA de ambas quede pareja para todos a lo largo de 2026.
   // Quien hace RXINT recibe menos ALINTER, de modo que el total de intervencionismo se iguala.
   const intvLoad = {}; state.physicians.forEach(p=>intvLoad[p.id]=0);
+  // RXINT por sí sola, acumulada en el año: se reparte pareja entre quienes la hacen
+  const rxLoad = {}; state.physicians.forEach(p=>rxLoad[p.id]=0);
   {
     const yPref = state.year+"-";
     Object.entries(state.assignments).forEach(([k,a0])=>{ const i=k.indexOf("|"); const pid=k.slice(0,i), dk=k.slice(i+1);
       if(dk.indexOf(yPref)!==0 || intvLoad[pid]===undefined) return;
       const a = officialAt(pid, dk) || a0;
-      if(a && (a.m==="ALINTER"||a.m==="RXINT")) intvLoad[pid]++; });
+      if(a && (a.m==="ALINTER"||a.m==="RXINT")) intvLoad[pid]++;
+      if(a && a.m==="RXINT") rxLoad[pid]++; });
   }
   const monthPrefix = state.year+"-"+pad(ui.month+1);
   Object.entries(state.assignments).forEach(([k,a])=>{
@@ -6428,15 +6431,16 @@ function generateMonth(mode){
   // FASE 2b · RXINT: consulta de mañana los JUEVES (dow 4). Debe cubrirse siempre.
   // Solo la hacen quienes NO tengan "RXINT: No". Reparto equitativo por rondas.
   // =========================================================
-  // RXINT (jueves): se cubre siempre, eligiendo entre quienes la hacen a quien MENOS
-  // intervencionismo total (RXINT+ALINTER) lleva en el año → así la suma se equilibra.
+  // RXINT (jueves): se cubre siempre y se reparte PAREJA entre quienes la hacen,
+  // eligiendo a quien menos RXINT lleva en el año. Después, ALINTER compensa
+  // para que el total de intervencionismo (RXINT+ALINTER) quede igualado.
   {
     labDays.filter(d=>d.dow===4).forEach(d=>{
       const ya = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&a.m==="RXINT";});
       if(ya) return;
       const cand = state.physicians.filter(p=> !p.noRxint && !blockedOn(p,d) && notAbsent(p,d.key) && freeM(p,d.key));
-      const p = pickRound(cand, intvLoad, 1, d.key);
-      if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:"RXINT"}); load[p.id]++; intvLoad[p.id]++; assigned++; }
+      const p = pickRound(cand, rxLoad, 1, d.key);
+      if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:"RXINT"}); load[p.id]++; intvLoad[p.id]++; rxLoad[p.id]++; assigned++; }
       else missing_push(unfilled,d.key,"RXINT");
     });
   }
