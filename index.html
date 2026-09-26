@@ -1025,14 +1025,29 @@ const esManual = c => esTrafico(c) || c==="ADM" || c==="ADMT";
 function poolCodes(){ return MORNING.filter(c=>state.settings.required[c.code] && !esManual(c.code)).map(c=>c.code); }
 function reqAfternoon(){ return AFTERNOON.filter(c=>state.settings.required[c.code] && !esManual(c.code)).map(c=>c.code); }
 
+// Tipo de guardia que corresponde a un día:
+//   · URGF  → sábado, domingo o festivo
+//   · URGLV → lunes, viernes, víspera de festivo o día siguiente a un festivo
+//   · URG   → el resto de días laborables
+function tipoGuardiaDia(dateKey){
+  const pr = dateKey.split("-").map(Number);
+  const dia = new Date(pr[0], pr[1]-1, pr[2]);
+  const dw = dia.getDay();
+  const fest = holidayMap();
+  // Se comprueba si la fecha está en la lista, no su nombre: un festivo sin nombre también cuenta
+  const esFest = (k)=> Object.prototype.hasOwnProperty.call(fest, k);
+  if(dw===0 || dw===6 || esFest(dateKey)) return "URGF";
+  const vecino = (n)=>{ const x = new Date(pr[0], pr[1]-1, pr[2]+n);
+    return x.getFullYear()+"-"+pad(x.getMonth()+1)+"-"+pad(x.getDate()); };
+  if(dw===1 || dw===5 || esFest(vecino(1)) || esFest(vecino(-1))) return "URGLV";
+  return "URG";
+}
+
 // ------------------ Mutaciones ------------------
 function applyCode(pid, dateKey, code){
   marcarDeshacer("edición del cuadrante");
-  if(code==="URG"){
-    const pr = dateKey.split("-").map(Number);
-    const dw = new Date(pr[0],pr[1]-1,pr[2]).getDay();
-    if(dw===0||dw===6||holidayMap()[dateKey]) code="URGF";
-  }
+  // Al pintar una guardia, se pone el tipo que corresponde a ese día
+  if(code==="URG" || code==="URGLV") code = tipoGuardiaDia(dateKey);
   const k = pid+"|"+dateKey;
   const a = Object.assign({}, state.assignments[k]||{});
   const wasUrg = a.f==="URG";
@@ -1079,7 +1094,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v160";
+const APP_VERSION = "v161";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -6140,12 +6155,14 @@ function generateMonth(mode){
     !urgDiaContiguo(p.id, dkey) &&
     !excedeVentana(p.id, dkey);
   };
-  // Víspera de festivo: el día siguiente es festivo. Funciona como un viernes → cuenta como URGLV.
+  // Víspera de festivo (funciona como un viernes) o día siguiente a un festivo
+  // (funciona como un lunes): los dos cuentan como URGLV.
   const esPrefestivo = (dkey)=>{
     const pr = dkey.split("-").map(Number);
-    const d = new Date(pr[0], pr[1]-1, pr[2]);
-    d.setDate(d.getDate()+1);
-    return hsetGlobal.has(keyOf(d.getFullYear(), d.getMonth(), d.getDate()));
+    const antes = new Date(pr[0], pr[1]-1, pr[2]+1);
+    const despues = new Date(pr[0], pr[1]-1, pr[2]-1);
+    return hsetGlobal.has(keyOf(antes.getFullYear(), antes.getMonth(), antes.getDate())) ||
+           hsetGlobal.has(keyOf(despues.getFullYear(), despues.getMonth(), despues.getDate()));
   };
   const isoWeek = (k)=>{ const pr=k.split("-").map(Number); const dt=new Date(Date.UTC(pr[0],pr[1]-1,pr[2]));
     const day=(dt.getUTCDay()+6)%7; dt.setUTCDate(dt.getUTCDate()-day+3);
@@ -6393,7 +6410,7 @@ function generateMonth(mode){
     labDays.forEach(d=>{
       const has = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&(a.f==="URG"||a.f==="URGLV"||a.f==="URGF");});
       if(has) return;
-      // URGLV: lunes, viernes y vísperas de festivo (p. ej. el jueves 24 si el viernes 25 es festivo)
+      // URGLV: lunes, viernes, vísperas de festivo y días siguientes a un festivo
       const esLV = (d.dow===1 || d.dow===5 || esPrefestivo(d.key));
       const cand = state.physicians.filter(p=>
         !p.noUrg && puedeUrgencia(p,d.key) && !blockedOn(p,d,"f") && notAbsent(p,d.key) && freeM(p,d.key) && freeT(p,d.key)
