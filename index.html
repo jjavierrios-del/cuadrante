@@ -1094,7 +1094,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v162";
+const APP_VERSION = "v163";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -6801,8 +6801,10 @@ document.addEventListener("click", e=>{
     }
     case "nav-mas": ui.navMas = !ui.navMas; render(); break;
     case "tab": ui.tab = el.dataset.tab; ui.confirmReset=false; ui.navMas=false; render(); break;
-    case "prev-month": if(ui.month===0){ui.month=11; state.year--;} else ui.month--; save(); render(); break;
-    case "next-month": if(ui.month===11){ui.month=0; state.year++;} else ui.month++; save(); render(); break;
+    // Cambiar de mes es solo mirar: no se guarda ni se publica. Antes cada clic
+    // publicaba el cuadrante entero y difundía a todos el año que se estuviera viendo.
+    case "prev-month": if(ui.month===0){ui.month=11; state.year--;} else ui.month--; render(); break;
+    case "next-month": if(ui.month===11){ui.month=0; state.year++;} else ui.month++; render(); break;
     case "print": window.print(); break;
     case "publish-json": {
       const d = JSON.parse(JSON.stringify(state));
@@ -8039,7 +8041,9 @@ function applyPublished(d){
   state.holidays = d.holidays||DEFAULT_HOLIDAYS.slice();
   state.settings = Object.assign(DEFAULT_SETTINGS(), d.settings||{});
   state.settings.required = Object.assign({}, DEFAULT_REQUIRED, (d.settings&&d.settings.required)||{});
-  state.year = d.year||2026;
+  // Con la sesión abierta, recibir una versión publicada no cambia el año que
+  // se está viendo; al arrancar lo fija después el propio arranque.
+  if(ARRANCANDO) state.year = d.year||2026;
   PUBLISHED_AT = d.publishedAt||null;
 }
 // ---- Actualización automática de la versión publicada ----
@@ -8103,10 +8107,13 @@ async function boot(){
   // tampoco se entra en edición: se pedirá y se comprobará contra el servidor.
   if((hayAdminPass() || PUB_TIENE_PASS===true) && !estaAutenticado()) MODE = "viewer";
   try{ limpiarBandeja(); }catch(e){}
-  // Situarse en el mes en curso (si el cuadrante es de este año)
+  // Al abrir, siempre el mes y el AÑO de hoy. Antes solo se hacía si el año
+  // guardado coincidía con el actual; si se había navegado a otro año, la
+  // aplicación se abría en el mes de hoy pero de ese otro año.
   try{
     const hoy = new Date();
-    if(state.year === hoy.getFullYear()) ui.month = hoy.getMonth();
+    state.year = hoy.getFullYear();
+    ui.month = hoy.getMonth();
   }catch(e){}
   loadStatsView();
   setSave(MODE==="viewer" ? "Solo consulta" : "✓ Guardado");
