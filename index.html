@@ -1029,6 +1029,20 @@ function reqAfternoon(){ return AFTERNOON.filter(c=>state.settings.required[c.co
 //   · URGF  → sábado, domingo o festivo
 //   · URGLV → lunes, viernes, víspera de festivo o día siguiente a un festivo
 //   · URG   → el resto de días laborables
+// En el iPhone, las aplicaciones instaladas en la pantalla de inicio no pueden
+// imprimir: el sistema ignora la orden y el botón parecía no hacer nada.
+function esAppInstaladaIOS(){
+  try{ return window.navigator.standalone === true; }catch(e){ return false; }
+}
+function imprimirVista(){
+  if(esAppInstaladaIOS()){
+    window.alert("El iPhone no permite imprimir desde las aplicaciones instaladas en la pantalla de inicio.\n\n"+
+      "Para imprimir, abre la aplicación en Safari escribiendo su dirección (no desde el icono), "+
+      "ve a esta misma pantalla y pulsa Imprimir. También puedes hacerlo desde el ordenador.");
+    return;
+  }
+  window.print();
+}
 function tipoGuardiaDia(dateKey){
   const pr = dateKey.split("-").map(Number);
   const dia = new Date(pr[0], pr[1]-1, pr[2]);
@@ -1094,7 +1108,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v163";
+const APP_VERSION = "v164";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -6805,7 +6819,7 @@ document.addEventListener("click", e=>{
     // publicaba el cuadrante entero y difundía a todos el año que se estuviera viendo.
     case "prev-month": if(ui.month===0){ui.month=11; state.year--;} else ui.month--; render(); break;
     case "next-month": if(ui.month===11){ui.month=0; state.year++;} else ui.month++; render(); break;
-    case "print": window.print(); break;
+    case "print": imprimirVista(); break;
     case "publish-json": {
       const d = JSON.parse(JSON.stringify(state));
       d.publishedAt = new Date().toISOString();
@@ -6820,7 +6834,7 @@ document.addEventListener("click", e=>{
     case "rot-sub-cuadro": ui.rotSub="cuadro"; render(); break;
     case "rot-sub-residente": ui.rotSub="residente"; render(); break;
     case "rot-sub-puerta": ui.rotSub="puerta"; render(); break;
-    case "rot-print": window.print(); break;
+    case "rot-print": imprimirVista(); break;
     case "rot-guardia-res": { ui.rotGuardiaRc = el.dataset.rc; render(); break; }
     case "guardia-dia": {
       const rc = el.dataset.rc, dk = el.dataset.date;
@@ -6983,8 +6997,8 @@ document.addEventListener("click", e=>{
     case "rot-blockmode": ui.rotBlockMode = !ui.rotBlockMode; render(); break;
     case "rot-blockday": { ui.rotBlockDay = el.dataset.date; renderModal(); break; }
     case "rot-toggleres": { rotToggleRes(el.dataset.date, el.dataset.code); renderModal(); render(); break; }
-    case "rot-print": window.print(); break;
-    case "traf-print": window.print(); break;
+    case "rot-print": imprimirVista(); break;
+    case "traf-print": imprimirVista(); break;
     case "hist-ver": {
       ui.histAbierto = (ui.histAbierto === el.dataset.mk) ? "" : el.dataset.mk;
       render();
@@ -6993,7 +7007,7 @@ document.addEventListener("click", e=>{
     case "hist-imprimir": {
       ui.histAbierto = el.dataset.mk;
       render();
-      setTimeout(()=>window.print(), 300);
+      setTimeout(()=>imprimirVista(), 300);
       break;
     }
     case "hist-descargar": {
@@ -7418,7 +7432,7 @@ document.addEventListener("click", e=>{
       hacerlo();
       break;
     }
-    case "admvo-print": window.print(); break;
+    case "admvo-print": imprimirVista(); break;
     case "admvo-cerrar": {
       if(window.confirm("Cerrar "+MONTHS[ui.month]+" "+state.year+" para los administrativos.\n\n"+
         "A partir de ahora, los cambios que hagas en ese mes NO se aplicarán al cuadrante hasta que administración "+
