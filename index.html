@@ -858,6 +858,7 @@ function loadState(){
       state.rotBloqueados = d.rotBloqueados||{};
       state.traficoHoras = d.traficoHoras||{};
       state.diasLibres = d.diasLibres||{};
+      state.permisosCupo = d.permisosCupo||{};
       state.bandeja = Array.isArray(d.bandeja) ? d.bandeja : [];
       state.historial = d.historial||{};
       state.cerradoAdm = d.cerradoAdm||{};
@@ -1108,7 +1109,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v164";
+const APP_VERSION = "v165";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1863,14 +1864,10 @@ function applyRequestCore(r){
       if(a && a.f && a.f!=="P" && absInfo(a.f))
         return "El "+fmtDate(d)+" ya está como "+(absInfo(a.f)||{label:a.f}).label+".";
     }
-    // Tope anual, contando los ya concedidos
-    const porAnio = {};
-    dias.forEach(d=>{ const y=d.slice(0,4); porAnio[y]=(porAnio[y]||0)+1; });
-    for(const y in porAnio){
-      const ya = permisosDelAnio(p.id, Number(y)).filter(d=>dias.indexOf(d)<0).length;
-      if(ya + porAnio[y] > MAX_PERMISOS)
-        return "Supera el máximo de "+MAX_PERMISOS+" días de permiso en "+y+" (ya tiene "+ya+").";
-    }
+    // Cupo de cada año, contando los ya concedidos y la prórroga de enero
+    const exc = excesoPermisos(p.id, dias);
+    if(exc)
+      return "Supera el cupo de permisos de "+exc.anio+": "+exc.cupo+(exc.cupo===1?" día":" días")+" (sumaría "+exc.usados+").";
     dias.forEach(d=>{ state.assignments[p.id+"|"+d] = {m:null, t:null, f:"P"}; });
     save();
     return null;
@@ -2352,17 +2349,30 @@ function solicitudFormHTML(){
     const dp = ui.reqDraft || (ui.reqDraft={});
     dp.permisos = Array.isArray(dp.permisos) ? dp.permisos : [];
     const total = dp.permisos.length;
-    const anio = (dp.permisos[0]||rq.date||"").slice(0,4) || String(state.year);
-    const yaConcedidos = p ? permisosDelAnio(p.id, Number(anio)).filter(d=>dp.permisos.indexOf(d)<0) : [];
-    const restantes = Math.max(0, MAX_PERMISOS - yaConcedidos.length);
+    // Año de referencia: el del primer día pedido o el de la fecha elegida
+    const hoyP = new Date();
+    const refDia = dp.permisos[0] || dp.nuevoPermiso || rq.date || keyOf(hoyP.getFullYear(), hoyP.getMonth(), hoyP.getDate());
+    const anioRef = Number(refDia.slice(0,4));
+    const enEnero = refDia.slice(5,7)==="01";
+    // Saldos SIN contar lo que se está pidiendo
+    const rep0 = p ? repartoPermisos(p.id, []) : {usados:{}};
+    const queda = (y)=> p ? Math.max(0, cupoPermisos(p.id, y) - (rep0.usados[y]||0)) : 0;
+    const concedidos = p ? permisosDelAnio(p.id, null, true).filter(d=>dp.permisos.indexOf(d)<0) : [];
+    const deAnio = (y)=> concedidos.filter(d=>rep0.asignado[d]===y);
+    const exc = p ? excesoPermisos(p.id, dp.permisos) : null;
     const hmapP = holidayMap();
     const malDia = dp.permisos.find(d=>{ const w=new Date(d).getDay(); return w===0||w===6||hmapP[d]; });
+    const saldoTxt = enEnero
+      ? 'Te quedan <b>'+queda(anioRef-1)+'</b> de '+(anioRef-1)+' (válidos hasta el 31/01/'+anioRef+') y <b>'+queda(anioRef)+'</b> de '+anioRef+'.'
+      : 'Te quedan <b>'+queda(anioRef)+'</b> de los '+(p?cupoPermisos(p.id, anioRef):MAX_PERMISOS)+' de '+anioRef+'.';
+    const yaTxt = [enEnero?anioRef-1:null, anioRef].filter(y=>y!==null && deAnio(y).length)
+      .map(y=>y+': '+deAnio(y).map(fmtDate).join(", ")).join(" · ");
     core = '<p class="tiny" style="margin-top:10px">Facultativo</p>'+
       '<div class="row" style="margin-top:4px">'+physSel("rq-phys", p?p.id:"")+'</div>'+
-      '<p class="tiny" style="margin-top:12px">Días de permiso (máximo '+MAX_PERMISOS+' al año)</p>'+
+      '<p class="tiny" style="margin-top:12px">Días de permiso</p>'+
       '<div class="row" style="margin-top:4px;gap:8px">'+
         '<input type="date" value="'+(dp.nuevoPermiso||rq.date||"")+'" data-field="rq-permisodia" style="padding:7px;flex:1">'+
-        '<button class="btn primary" data-action="req-permiso-add"'+(total>=restantes?' disabled style="opacity:.4"':'')+'>Añadir</button>'+
+        '<button class="btn primary" data-action="req-permiso-add">Añadir</button>'+
       '</div>'+
       (total
         ? '<div style="margin-top:10px">'+dp.permisos.map((f,i)=>
@@ -2371,14 +2381,13 @@ function solicitudFormHTML(){
               '<button class="btn" data-action="req-permiso-del" data-idx="'+i+'" style="padding:4px 8px">Quitar</button>'+
             '</div>').join("")+'</div>'
         : '<p class="muted" style="font-size:13px;margin-top:8px">Aún no has añadido ninguno.</p>')+
-      '<p class="muted" style="font-size:12px;margin-top:8px">Pides <b>'+total+'</b> de los '+restantes+' que te quedan en '+anio+'. '+
+      '<p class="muted" style="font-size:12px;margin-top:8px">'+saldoTxt+' Pides <b>'+total+'</b>. '+
+        'Los días de cada año pueden disfrutarse hasta el 31 de enero del siguiente. '+
         'Solo días laborables. Cada día de permiso <b>cuenta como jornada trabajada</b>, así que no tendrás que recuperarlo.</p>'+
-      (yaConcedidos.length
-        ? '<div class="warnbox" style="margin-top:8px">Ya tienes concedidos en '+anio+': '+yaConcedidos.map(fmtDate).join(", ")+'</div>'
-        : '');
+      (yaTxt ? '<div class="warnbox" style="margin-top:8px">Ya tienes concedidos · '+yaTxt+'</div>' : '');
     ui.reqBloqueo = !total ? "Añade al menos un día."
                   : (malDia ? "El "+fmtDate(malDia)+" no es día laborable."
-                  : (total > restantes ? "Supera los "+MAX_PERMISOS+" días anuales." : null));
+                  : (exc ? "Supera el cupo de permisos de "+exc.anio+" ("+exc.cupo+(exc.cupo===1?" día":" días")+")." : null));
   }else if(rq.type==="trafico"){
     const d3 = ui.reqDraft || (ui.reqDraft={});
     d3.tfSlot = d3.tfSlot || "m";
@@ -3844,9 +3853,45 @@ function extraerSolicitudes(texto){
 }
 
 const MAX_DIAS_LIBRES = 3;   // máximo por facultativo y mes
-const MAX_PERMISOS = 4;      // días de permiso por facultativo y año
+const MAX_PERMISOS = 4;      // cupo por defecto de días de permiso por año
+// Cupo de un facultativo en un año. Lo fija el coordinador en Equipo; si un
+// año no tiene cifra, hereda la del último año que sí la tenga; si ninguno, 4.
+function cupoPermisos(pid, anio){
+  const c = (state.permisosCupo||{})[pid] || {};
+  const y = Number(anio);
+  let mejor = null;
+  Object.keys(c).forEach(k=>{ const ky=Number(k); if(ky<=y && (mejor===null || ky>mejor)) mejor=ky; });
+  return mejor===null ? MAX_PERMISOS : Number(c[mejor]);
+}
+// Reparto de los días de permiso entre años. Los de un año pueden disfrutarse
+// hasta el 31 de enero del siguiente: un permiso de enero se descuenta primero
+// de lo que quede del año anterior y, si ya no queda, del año en curso.
+// Se calcula siempre de nuevo, así que anular un día recoloca el resto.
+// extra: días que aún no están concedidos (para simular una solicitud).
+function repartoPermisos(pid, extra){
+  const dias = permisosDelAnio(pid, null, true).concat(extra||[]);
+  const unicos = Array.from(new Set(dias)).sort();
+  const usados = {}, asignado = {};
+  unicos.forEach(d=>{
+    const y = Number(d.slice(0,4));
+    let cuenta = y;
+    if(d.slice(5,7)==="01" && (usados[y-1]||0) < cupoPermisos(pid, y-1)) cuenta = y-1;
+    usados[cuenta] = (usados[cuenta]||0) + 1;
+    asignado[d] = cuenta;
+  });
+  return {usados, asignado};
+}
+// Primer año que quedaría por encima de su cupo (o null si todo cabe)
+function excesoPermisos(pid, extra){
+  const r = repartoPermisos(pid, extra);
+  for(const y of Object.keys(r.usados).sort()){
+    const cupo = cupoPermisos(pid, y);
+    if(r.usados[y] > cupo) return {anio:Number(y), usados:r.usados[y], cupo:cupo};
+  }
+  return null;
+}
 // Días de permiso ya concedidos en el año
-function permisosDelAnio(pid, anio){
+function permisosDelAnio(pid, anio, todos){
   const y = anio || state.year;
   const out = [];
   Object.entries(state.assignments||{}).forEach(([k,a])=>{
@@ -3854,7 +3899,7 @@ function permisosDelAnio(pid, anio){
     const i = k.indexOf("|");
     if(k.slice(0,i) !== pid) return;
     const fecha = k.slice(i+1);
-    if(fecha.slice(0,4) === String(y)) out.push(fecha);
+    if(todos || fecha.slice(0,4) === String(y)) out.push(fecha);
   });
   return out.sort();
 }
@@ -5257,7 +5302,45 @@ function viewEquipo(){
       '</div></div>';
   });
   html += '</div></div>';
+  html += viewCupoPermisos();
   return html;
+}
+// Días de permiso por facultativo y año: la cifra la decide el coordinador.
+function viewCupoPermisos(){
+  const y = ui.permAnio || new Date().getFullYear();
+  const filas = state.physicians.map(p=>{
+    const r = repartoPermisos(p.id, []);
+    const cupo = cupoPermisos(p.id, y);
+    const propio = ((state.permisosCupo||{})[p.id]||{})[y] !== undefined;
+    const usados = r.usados[y]||0;
+    const queda = cupo - usados;
+    const dias = Object.keys(r.asignado).filter(d=>r.asignado[d]===y).sort();
+    return '<tr>'+
+      '<td style="padding:6px 8px;font-weight:600">'+esc(p.name)+'</td>'+
+      '<td style="padding:6px 8px"><input type="number" min="0" max="30" value="'+cupo+'" data-field="perm-cupo" data-pid="'+p.id+'" '+
+        'style="width:64px;padding:5px;border:1px solid var(--slate-300);border-radius:6px'+(propio?'':';color:var(--slate-500)')+'"'+
+        ' title="'+(propio?'Fijado para '+y:'Heredado: aún no has fijado una cifra para '+y)+'"></td>'+
+      '<td style="padding:6px 8px;text-align:center">'+usados+'</td>'+
+      '<td style="padding:6px 8px;text-align:center;font-weight:700;color:'+(queda<0?'#b91c1c':'inherit')+'">'+queda+'</td>'+
+      '<td style="padding:6px 8px;font-size:12px" class="muted">'+(dias.length?dias.map(fmtDate).join(", "):"—")+'</td>'+
+    '</tr>';
+  }).join("");
+  return '<div class="card" style="margin-top:14px">'+
+    '<div class="row between" style="flex-wrap:wrap;gap:8px"><h2>Días de permiso</h2>'+
+      '<div class="row" style="gap:6px">'+
+        '<button class="btn" data-action="perm-anio" data-delta="-1">‹</button>'+
+        '<b style="min-width:52px;text-align:center">'+y+'</b>'+
+        '<button class="btn" data-action="perm-anio" data-delta="1">›</button>'+
+      '</div></div>'+
+    '<p class="muted" style="margin-top:4px;font-size:13px">Escribe cuántos días corresponden a cada facultativo en '+y+'. '+
+      'Si no fijas una cifra, se hereda la del año anterior (4 por defecto). Los días de '+y+' pueden disfrutarse hasta el 31/01/'+(y+1)+
+      ': un permiso de enero se descuenta primero de lo que quede del año anterior.</p>'+
+    '<div style="overflow-x:auto;margin-top:8px"><table style="border-collapse:collapse;width:100%;font-size:14px">'+
+      '<thead><tr style="text-align:left;border-bottom:1px solid var(--slate-200)">'+
+        '<th style="padding:6px 8px">Facultativo</th><th style="padding:6px 8px">Días</th>'+
+        '<th style="padding:6px 8px;text-align:center">Usados</th><th style="padding:6px 8px;text-align:center">Quedan</th>'+
+        '<th style="padding:6px 8px">Fechas</th></tr></thead>'+
+      '<tbody>'+filas+'</tbody></table></div></div>';
 }
 
 function viewStats(){
@@ -5991,6 +6074,7 @@ function importBackup(file){
       state.rotBloqueados = d.rotBloqueados||{};
       state.traficoHoras = d.traficoHoras||{};
       state.diasLibres = d.diasLibres||{};
+      state.permisosCupo = d.permisosCupo||{};
       state.bandeja = Array.isArray(d.bandeja) ? d.bandeja : [];
       state.historial = d.historial||{};
       state.cerradoAdm = d.cerradoAdm||{};
@@ -7240,6 +7324,7 @@ document.addEventListener("click", e=>{
       ghPublish(true);
       break;
     }
+    case "perm-anio": ui.permAnio = (ui.permAnio || new Date().getFullYear()) + Number(el.dataset.delta||0); render(); break;
     case "req-permiso-add": {
       const dPer = ui.reqDraft = ui.reqDraft || {};
       dPer.permisos = Array.isArray(dPer.permisos) ? dPer.permisos : [];
@@ -7983,6 +8068,17 @@ document.addEventListener("change", e=>{
   if(!field) return;
   if(field==="phys-name"){ const p=state.physicians.find(x=>x.id===el.dataset.pid); if(p){p.name=el.value.trim()||p.name; save(); render();} }
   else if(field==="phys-pct"){ const p=state.physicians.find(x=>x.id===el.dataset.pid); if(p){p.pct=Math.min(100,Math.max(10,Number(el.value)||100)); save(); render();} }
+  else if(field==="perm-cupo"){
+    const y = ui.permAnio || new Date().getFullYear();
+    const n = Math.max(0, Math.min(30, Math.round(Number(el.value))));
+    if(!isNaN(n)){
+      state.permisosCupo = state.permisosCupo || {};
+      state.permisosCupo[el.dataset.pid] = state.permisosCupo[el.dataset.pid] || {};
+      state.permisosCupo[el.dataset.pid][y] = n;
+      save(); render();
+    }
+    return;
+  }
   else if(field==="phys-pref"){ const p=state.physicians.find(x=>x.id===el.dataset.pid); if(p){p.pref=el.value||null; save();} }
   else if(field==="autolib"){ state.settings.autoLibranza = el.checked; save(); }
   else if(field==="urgreq"){ state.settings.urgRequired = el.checked; save(); }
@@ -8046,6 +8142,7 @@ function applyPublished(d){
   state.rotBloqueados = d.rotBloqueados||{};
   state.traficoHoras = d.traficoHoras||{};
   state.diasLibres = d.diasLibres||{};
+  state.permisosCupo = d.permisosCupo||{};
   state.bandeja = Array.isArray(d.bandeja) ? d.bandeja : [];
       state.historial = d.historial||{};
       state.cerradoAdm = d.cerradoAdm||{};
