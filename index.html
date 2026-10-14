@@ -515,8 +515,29 @@ const ROT_CODES = ["R1","R2","R3","R4","R5"];
 function officialAt(pid, dateKey){
   const mk = dateKey.slice(0,7);
   const b = state.baseline && state.baseline[mk];
-  if(b) return b[pid+"|"+dateKey];
-  return state.assignments[pid+"|"+dateKey];
+  const actual = state.assignments[pid+"|"+dateKey];
+  if(!b) return actual;
+  // Vacaciones, baja o permiso puestos después de generar el mes: ese día no se
+  // trabajó, así que no puede seguir contando la consulta de la foto. Los meses
+  // marcados como oficiales no se tocan: sus cifras quedan congeladas.
+  if(actual && ["V","B","P"].indexOf(actual.f)>=0 && !isOfficialMonthKey(mk)) return actual;
+  return b[pid+"|"+dateKey];
+}
+// Fotos que ya no corresponden a nada: el mes se reseteó y su cuadrante no tiene
+// consultas, pero la foto conserva el mes generado y lo seguía contando.
+function limpiarFotosHuerfanas(){
+  if(!state.baseline) return 0;
+  let n = 0;
+  Object.keys(state.baseline).forEach(mk=>{
+    if(isOfficialMonthKey(mk)) return;
+    const foto = state.baseline[mk] || {};
+    const fotoCons = Object.values(foto).some(a=>a && (a.m || a.t));
+    if(!fotoCons) return;
+    const cuadCons = Object.entries(state.assignments||{}).some(([k,a])=>
+      k.slice(k.indexOf("|")+1, k.indexOf("|")+8)===mk && a && (a.m || a.t));
+    if(!cuadCons){ delete state.baseline[mk]; n++; }
+  });
+  return n;
 }
 function baselineMonthKey(mo){ return state.year+"-"+pad(mo+1); }
 function isOfficialMonthKey(mk){ return !!(state.official && state.official[mk]); }
@@ -1109,7 +1130,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v165";
+const APP_VERSION = "v167";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -6329,6 +6350,18 @@ function generateMonth(mode){
   const intvLoad = {}; state.physicians.forEach(p=>intvLoad[p.id]=0);
   // RXINT por sí sola, acumulada en el año: se reparte pareja entre quienes la hacen
   const rxLoad = {}; state.physicians.forEach(p=>rxLoad[p.id]=0);
+  // Reparto de intervencionismo PAREJO CADA MES: primero manda lo que cada uno
+  // lleva en el mes; el acumulado del año solo decide quién se lleva los
+  // sobrantes. Así quien va por detrás se pone al día poco a poco, no de golpe.
+  const intvMes = {}, rxMes = {}; state.physicians.forEach(p=>{intvMes[p.id]=0; rxMes[p.id]=0;});
+  {
+    const mPref = state.year+"-"+pad(ui.month+1);
+    Object.entries(state.assignments).forEach(([k,a])=>{ const i=k.indexOf("|"); const pid=k.slice(0,i);
+      if(k.slice(i+1,i+8)!==mPref || intvMes[pid]===undefined || !a) return;
+      if(a.m==="ALINTER"||a.m==="RXINT") intvMes[pid]++;
+      if(a.m==="RXINT") rxMes[pid]++; });
+  }
+  const mesPrimero = (mes, anual)=>{ const o={}; Object.keys(mes).forEach(id=>o[id]=mes[id]*1000+(anual[id]||0)); return o; };
   {
     const yPref = state.year+"-";
     Object.entries(state.assignments).forEach(([k,a0])=>{ const i=k.indexOf("|"); const pid=k.slice(0,i), dk=k.slice(i+1);
@@ -6537,8 +6570,8 @@ function generateMonth(mode){
       const ya = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&a.m==="RXINT";});
       if(ya) return;
       const cand = state.physicians.filter(p=> !p.noRxint && !blockedOn(p,d) && notAbsent(p,d.key) && freeM(p,d.key));
-      const p = pickRound(cand, rxLoad, 1, d.key);
-      if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:"RXINT"}); load[p.id]++; intvLoad[p.id]++; rxLoad[p.id]++; assigned++; }
+      const p = pickRound(cand, mesPrimero(rxMes, rxLoad), 1, d.key);
+      if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:"RXINT"}); load[p.id]++; intvLoad[p.id]++; rxLoad[p.id]++; intvMes[p.id]++; rxMes[p.id]++; assigned++; }
       else missing_push(unfilled,d.key,"RXINT");
     });
   }
@@ -6554,8 +6587,8 @@ function generateMonth(mode){
       const cand = state.physicians.filter(p=> !p.noInt && !blockedOn(p,d) && notAbsent(p,d.key) && freeM(p,d.key));
       // ALINTER: al de MENOS intervencionismo total (RXINT+ALINTER) en el año.
       // Quien ya acumuló RXINT recibirá menos ALINTER, igualando la suma para todos.
-      const p = pickRound(cand, intvLoad, 1, d.key);
-      if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:"ALINTER"}); load[p.id]++; intvLoad[p.id]++; assigned++; }
+      const p = pickRound(cand, mesPrimero(intvMes, intvLoad), 1, d.key);
+      if(p){ state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{m:"ALINTER"}); load[p.id]++; intvLoad[p.id]++; intvMes[p.id]++; assigned++; }
       else missing_push(unfilled,d.key,"ALINTER");
     });
   }
@@ -6870,6 +6903,9 @@ function resetMonth(all){
     const a = state.assignments[k];
     if(all || a.f==="URG" || a.f==="URGLV" || a.f==="URGF" || (a.f==="L"&&a.auto) || !a.f){ delete state.assignments[k]; n++; }
   });
+  // La foto del mes también se descarta: si no, las estadísticas seguirían
+  // contando el mes generado que se acaba de borrar.
+  if(state.baseline && state.baseline[prefix] && !isOfficialMonthKey(prefix)) delete state.baseline[prefix];
   save(); return n;
 }
 
@@ -8218,6 +8254,7 @@ async function boot(){
   // tampoco se entra en edición: se pedirá y se comprobará contra el servidor.
   if((hayAdminPass() || PUB_TIENE_PASS===true) && !estaAutenticado()) MODE = "viewer";
   try{ limpiarBandeja(); }catch(e){}
+  try{ if(limpiarFotosHuerfanas()) save(); }catch(e){}
   // Al abrir, siempre el mes y el AÑO de hoy. Antes solo se hacía si el año
   // guardado coincidía con el actual; si se había navegado a otro año, la
   // aplicación se abría en el mes de hoy pero de ese otro año.
