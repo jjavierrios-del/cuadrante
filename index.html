@@ -1130,7 +1130,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v167";
+const APP_VERSION = "v168";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -3992,6 +3992,7 @@ function nombreActividad(code){
 }
 
 function generarICS(pid, mo){
+  if(!isOfficial(mo)) return null;   // un mes en borrador no se exporta
   const p = state.physicians.find(x=>x.id===pid);
   if(!p) return null;
   const dim = new Date(state.year, mo+1, 0).getDate();
@@ -4636,7 +4637,8 @@ function viewExportar(){
   const mo  = (ui.expMes===undefined) ? ui.month : ui.expMes;
   const p = state.physicians.find(x=>x.id===pid);
   let turnos = 0;
-  if(p){
+  const mesOficial = isOfficial(mo);
+  if(p && mesOficial){
     const dim = new Date(state.year, mo+1, 0).getDate();
     for(let d=1; d<=dim; d++){
       const a = state.assignments[p.id+"|"+keyOf(state.year,mo,d)];
@@ -4655,8 +4657,9 @@ function viewExportar(){
       MONTHS.map((m,i)=>'<option value="'+i+'"'+(i===mo?" selected":"")+'>'+m+' '+state.year+'</option>').join("")+
     '</select>'+
     '<p class="muted" style="margin-top:12px;font-size:14px">'+
-      (turnos ? 'Se exportarán <b>'+turnos+'</b> turnos de '+esc(p?p.name:"")+' en '+MONTHS[mo]+'.'
-              : 'No hay turnos asignados ese mes.')+'</p>'+
+      (!mesOficial ? MONTHS[mo]+' aún no es <b>oficial</b>: sus turnos estarán disponibles cuando el coordinador lo marque como oficial.'
+        : (turnos ? 'Se exportarán <b>'+turnos+'</b> turnos de '+esc(p?p.name:"")+' en '+MONTHS[mo]+'.'
+              : 'No hay turnos asignados ese mes.'))+'</p>'+
     '<div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap">'+
       '<button class="btn primary" data-action="exp-descargar"'+(turnos?'':' disabled style="opacity:.4"')+'>Descargar calendario</button>'+
     '</div></div>'+
