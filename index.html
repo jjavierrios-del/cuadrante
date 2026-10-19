@@ -1130,7 +1130,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v168";
+const APP_VERSION = "v169";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1979,16 +1979,11 @@ function applyRequestCore(r){
     const pa = state.physicians.find(x=>x.id===r.pidA) || state.physicians.find(x=>x.name===r.physA);
     const pb = state.physicians.find(x=>x.id===r.pidB) || state.physicians.find(x=>x.name===r.physB);
     if(!pa || !pb) return "No se encuentra a alguno de los facultativos del cambio doble.";
-    // Se aplican los dos intercambios de una vez
-    (r.pares||[]).forEach(par=>{
-      const kA = pa.id+"|"+par.a, kB = pb.id+"|"+par.b;
-      const kBA = pb.id+"|"+par.a, kAB = pa.id+"|"+par.b;
-      const cellA = state.assignments[kA] ? JSON.parse(JSON.stringify(state.assignments[kA])) : null;
-      const cellB = state.assignments[kB] ? JSON.parse(JSON.stringify(state.assignments[kB])) : null;
-      if(cellA) state.assignments[kBA] = cellA; else delete state.assignments[kBA];
-      if(cellB) state.assignments[kAB] = cellB; else delete state.assignments[kAB];
-      if(kA!==kAB && kA!==kBA) delete state.assignments[kA];
-      if(kB!==kAB && kB!==kBA) delete state.assignments[kB];
+    // v169: los dos intercambios se simulan juntos sobre el cuadrante original
+    const sim = simularDoble(pa.id, pb.id, r.pares||[]);
+    if(sim.error) return sim.error;
+    Object.entries(sim.cambios).forEach(([k,celda])=>{
+      if(celda) state.assignments[k] = celda; else delete state.assignments[k];
     });
     save();
     return null;
@@ -2568,15 +2563,13 @@ function solicitudFormHTML(){
       '</div>'+
       '<p class="muted" style="font-size:12px;margin-top:8px">Para cuando un cambio de urgencias obliga además a intercambiar otra consulta. Los dos intercambios se autorizan y se aplican juntos.</p>'+
       (function(){
-        const m1 = validarIntercambio(rq.pid, rq.date, rq.pidB, rq.dateB);
-        const m2 = validarIntercambio(rq.pid, rq.date2, rq.pidB, rq.dateB2);
-        const problemas = [];
-        if(m1) problemas.push("1) "+m1);
-        if(m2) problemas.push("2) "+m2);
-        ui.reqBloqueo = problemas.length ? problemas.join("  ") : null;
-        return problemas.length
-          ? '<div class="warnbox" style="margin-top:10px">⚠ <b>Este cambio doble no se puede hacer:</b><br>'+problemas.map(esc).join("<br>")+'</div>'
-          : '<p style="margin-top:10px;font-size:13px;color:var(--emerald-700)"><b>✓ Los dos intercambios son posibles.</b></p>';
+        limpiarAvisos();
+        const motivo = validarDoble(rq.pid, rq.pidB, [{a:rq.date, b:rq.dateB}, {a:rq.date2, b:rq.dateB2}]);
+        ui.reqBloqueo = motivo;
+        return motivo
+          ? '<div class="warnbox" style="margin-top:10px">⚠ <b>Este cambio doble no se puede hacer:</b><br>'+motivo.split(" · ").map(esc).join("<br>")+'</div>'
+          : ('<p style="margin-top:10px;font-size:13px;color:var(--emerald-700)"><b>✓ Los dos intercambios son posibles.</b></p>'+
+             (AVISO_VOLUNTARIO?'<div class="warnbox" style="margin-top:8px">ℹ '+AVISO_VOLUNTARIO+'</div>':''));
       })();
   }else if(rq.type==="intercambio"){
     if(!rq.pidB || !phys.find(x=>x.id===rq.pidB)){
@@ -3382,6 +3375,106 @@ function validarIntercambio(pidA, dateA, pidB, dateB){
   if(cB && !cA) avisos.push(esc(pb.name)+" se quedaría sin nada el "+fmtDate(dateB)+" (el "+fmtDate(dateA)+" de "+esc(pa.name)+" está vacío).");
 
   return avisos.length ? avisos.join(" · ") : null;
+}
+
+// v169: CAMBIO DOBLE. Los dos intercambios se simulan JUNTOS sobre el cuadrante
+// original: una celda que cede un intercambio puede recibir lo del otro.
+function simularDoble(pidA, pidB, pares){
+  const pa = state.physicians.find(x=>x.id===pidA);
+  const pb = state.physicians.find(x=>x.id===pidB);
+  if(!pa || !pb) return {error:"Falta indicar los dos facultativos."};
+  if(pa.id===pb.id) return {error:"Elige dos facultativos distintos."};
+  const leer = k=> state.assignments[k] ? JSON.parse(JSON.stringify(state.assignments[k])) : null;
+  const movs = [], origenes = {}, errores = [];
+  (pares||[]).forEach((par,i)=>{
+    if(!par || !par.a || !par.b){ errores.push((i+1)+") Faltan fechas."); return; }
+    const cA = leer(pa.id+"|"+par.a), cB = leer(pb.id+"|"+par.b);
+    if(!cA && !cB) errores.push((i+1)+") Ninguno de los dos días tiene nada asignado.");
+    else if(cA && !cB) errores.push((i+1)+") "+pa.name+" se quedaría sin nada el "+fmtDate(par.a)+" (el "+fmtDate(par.b)+" de "+pb.name+" está vacío).");
+    else if(cB && !cA) errores.push((i+1)+") "+pb.name+" se quedaría sin nada el "+fmtDate(par.b)+" (el "+fmtDate(par.a)+" de "+pa.name+" está vacío).");
+    if(origenes[pa.id+"|"+par.a] || origenes[pb.id+"|"+par.b]){
+      errores.push("El segundo intercambio repite un día que ya cede el primero ("+
+        (origenes[pa.id+"|"+par.a] ? pa.name+", "+fmtDate(par.a) : pb.name+", "+fmtDate(par.b))+"). Elige otras fechas.");
+      return;
+    }
+    origenes[pa.id+"|"+par.a] = 1; origenes[pb.id+"|"+par.b] = 1;
+    movs.push({de:pa.id+"|"+par.a, a:pb.id+"|"+par.a, celda:cA, quien:pb, fecha:par.a});
+    movs.push({de:pb.id+"|"+par.b, a:pa.id+"|"+par.b, celda:cB, quien:pa, fecha:par.b});
+  });
+  if(errores.length) return {error:errores.join(" · ")};
+  const destinos = {};
+  for(const m of movs){
+    if(destinos[m.a] && m.celda && destinos[m.a].celda)
+      return {error:"Los dos intercambios llevan algo al mismo día ("+m.quien.name+", "+fmtDate(m.fecha)+")."};
+    if(!destinos[m.a] || m.celda) destinos[m.a] = m;
+  }
+  const perdidas = [];
+  Object.values(destinos).forEach(m=>{
+    if(origenes[m.a]) return;                  // esa celda la cede el propio cambio
+    const ya = state.assignments[m.a];
+    if(ya && m.celda) perdidas.push(m.quien.name+" ya tiene "+cellToText(ya)+" el "+fmtDate(m.fecha)+": se perdería.");
+  });
+  if(perdidas.length) return {error:perdidas.join(" · ")};
+  const cambios = {};
+  Object.keys(origenes).forEach(k=>{ cambios[k] = null; });
+  Object.values(destinos).forEach(m=>{ if(m.celda) cambios[m.a] = m.celda; else if(!(m.a in cambios)) cambios[m.a] = null; });
+  return {error:null, cambios:cambios, movs:movs, pa:pa, pb:pb};
+}
+function validarDoble(pidA, pidB, pares){
+  const sim = simularDoble(pidA, pidB, pares);
+  if(sim.error) return sim.error;
+  const espera = mapaEnEspera();
+  const fin = k=> (k in sim.cambios) ? sim.cambios[k] : celdaEfectiva(k, espera);
+  const avisos = [], reducciones = [];
+  const noPuedeHacer = (quien, cod)=>{
+    if(!cod) return null;
+    if((cod==="RHB1"||cod==="RHB2") && quien.noRhb) return "no hace RHB";
+    if(cod==="ALRU" && quien.noAlru) return "no hace ALRU";
+    if(cod==="ALINTER" && quien.noInt) return "no hace ALINTER";
+    if(cod==="ORT" && quien.noOrt) return "no hace ORT";
+    if(cod==="RXINT" && quien.noRxint) return "no hace RXINT";
+    if(cod==="RHBT" && !(quien.pref==="RHB1"||quien.pref==="RHB2")) return "no tiene RHB como consulta habitual (RHBT)";
+    if((cod==="URG"||cod==="URGLV") && quien.noUrg) return "no hace urgencias entre semana";
+    if(cod==="URGF" && quien.noUrgf) return "no hace urgencias de festivo";
+    return null;
+  };
+  const max = state.settings.maxMorning||8;
+  sim.movs.forEach(m=>{
+    const celda = m.celda; if(!celda) return;
+    const quien = m.quien, fecha = m.fecha, dow = new Date(fecha).getDay();
+    [celda.m, celda.t, celda.f].forEach(cod=>{
+      const motivo = noPuedeHacer(quien, cod);
+      if(motivo) avisos.push(quien.name+" "+motivo+" ("+cod+").");
+    });
+    if(ocupaDespacho(celda.m)){
+      let antes = 0, despues = 0;
+      state.physicians.forEach(q=>{
+        const k = q.id+"|"+fecha;
+        const x0 = celdaEfectiva(k, espera), x1 = fin(k);
+        if(x0 && ocupaDespacho(x0.m)) antes++;
+        if(x1 && ocupaDespacho(x1.m)) despues++;
+      });
+      if(despues > max && despues > antes)
+        avisos.push("El "+fmtDate(fecha)+" ya están ocupadas las "+max+" consultas físicas de mañana.");
+    }
+    ["m","t"].forEach(sl=>{
+      const cod = celda[sl]; if(!cod) return;
+      const otro = state.physicians.some(q=>{
+        if(q.id===quien.id) return false;
+        const x = fin(q.id+"|"+fecha);
+        return x && x[sl]===cod;
+      });
+      if(otro) avisos.push("La consulta "+cod+" ya la pasa otro compañero el "+fmtDate(fecha)+".");
+    });
+    const slotCelda = celda.f ? "f" : (celda.m ? "m" : "t");
+    if(bloqueaTurno(quien, dow, slotCelda)){
+      avisarReduccion(quien, dow, slotCelda);
+      if(reducciones.indexOf(AVISO_VOLUNTARIO) < 0) reducciones.push(AVISO_VOLUNTARIO);
+    }
+  });
+  if(reducciones.length) AVISO_VOLUNTARIO = reducciones.join("<br>");
+  const unicos = avisos.filter((x,i)=>avisos.indexOf(x)===i);
+  return unicos.length ? unicos.join(" · ") : null;
 }
 
 // Consulta de Tráfico: comprueba día, turno y hueco físico
@@ -4929,7 +5022,14 @@ function viewSolicitudes(){
       }else if(r.type==="doble"){
         ficha = '<p style="font-size:14px"><b>Solicitante:</b> '+esc(r.by||"(sin nombre)")+' · <b>CAMBIO DOBLE</b></p>'+
           '<p style="font-size:14px;margin-top:4px">Entre <b>'+esc(r.physA||"")+'</b> y <b>'+esc(r.physB||"")+'</b></p>'+
-          (r.pares||[]).map((par,i)=>'<p style="font-size:14px;margin-top:4px">'+(i+1)+') '+fmtDate(par.a)+'  ⇄  '+fmtDate(par.b)+'</p>').join("")+
+          (function(){
+            const da = state.physicians.find(x=>x.id===r.pidA) || state.physicians.find(x=>x.name===r.physA);
+            const db = state.physicians.find(x=>x.id===r.pidB) || state.physicians.find(x=>x.name===r.physB);
+            const c = (q,f)=> q ? cellToText(state.assignments[q.id+"|"+f]) : "";
+            return (r.pares||[]).map((par,i)=>'<p style="font-size:14px;margin-top:4px">'+(i+1)+') '+
+              esc(r.physA||"")+' cede '+fmtDate(par.a)+' ('+c(da,par.a)+')  ⇄  '+
+              esc(r.physB||"")+' cede '+fmtDate(par.b)+' ('+c(db,par.b)+')</p>').join("");
+          })()+
           (r.note?'<p style="font-size:14px;margin-top:4px"><b>Motivo:</b> '+esc(r.note)+'</p>':'');
       }else if(r.type==="move"){
         const pm = state.physicians.find(x=>x.id===r.pid) || state.physicians.find(x=>x.name===r.phys);
@@ -4961,6 +5061,11 @@ function viewSolicitudes(){
       else if(r.type==="ceder") validarCesion(r.pidA, r.date, r.part, r.pidB);
       else if(r.type==="trafico") validarTrafico(r.pid, r.date, r.slot, r.code);
       else if(r.type==="swap") validarIntercambio(r.pidA, r.dateA, r.pidB, r.dateB);
+      else if(r.type==="doble"){
+        const da = state.physicians.find(x=>x.id===r.pidA) || state.physicians.find(x=>x.name===r.physA);
+        const db = state.physicians.find(x=>x.id===r.pidB) || state.physicians.find(x=>x.name===r.physB);
+        if(da && db) validarDoble(da.id, db.id, r.pares||[]);
+      }
     }catch(e){}
     const avisoVol = AVISO_VOLUNTARIO
       ? '<div class="warnbox" style="margin-top:8px">ℹ '+AVISO_VOLUNTARIO+'</div>' : '';
