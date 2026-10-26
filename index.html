@@ -523,6 +523,17 @@ function officialAt(pid, dateKey){
   if(actual && ["V","B","P"].indexOf(actual.f)>=0 && !isOfficialMonthKey(mk)) return actual;
   return b[pid+"|"+dateKey];
 }
+// v170: recorre las celdas del cuadrante Y las de las fotos oficiales. Si un cambio
+// pactado vacía un día (p. ej. la mañana pasa a la tarde de otro día), la celda
+// desaparece del cuadrante pero sigue contando en el cómputo oficial.
+function entradasConFoto(){
+  const out = Object.entries(state.assignments||{});
+  const vistas = new Set(Object.keys(state.assignments||{}));
+  Object.values(state.baseline||{}).forEach(foto=>{
+    Object.keys(foto||{}).forEach(k=>{ if(!vistas.has(k)){ vistas.add(k); out.push([k, null]); } });
+  });
+  return out;
+}
 // Fotos que ya no corresponden a nada: el mes se reseteó y su cuadrante no tiene
 // consultas, pero la foto conserva el mes generado y lo seguía contando.
 function limpiarFotosHuerfanas(){
@@ -1130,7 +1141,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v169";
+const APP_VERSION = "v170";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -5480,7 +5491,7 @@ function viewStats(){
   const statsTo = Math.max(ui.statsFrom, ui.statsTo);
   const res = state.physicians.map(p=>({p,turnos:0,URGLV:0,URG:0,URGF:0,AL:0,ALRU:0,ALT:0,INT:0,RHB:0,ORT:0,RXINT:0,TRAF:0,ADM:0,aus:0}));
   const byId = Object.fromEntries(res.map(r=>[r.p.id,r]));
-  Object.entries(state.assignments).forEach(([k,a0])=>{
+  entradasConFoto().forEach(([k,a0])=>{
     const i=k.indexOf("|"); const pid=k.slice(0,i), date=k.slice(i+1);
     const r = byId[pid]; if(!r) return;
     const [y,m] = date.split("-").map(Number);
@@ -6472,7 +6483,7 @@ function generateMonth(mode){
   const mesPrimero = (mes, anual)=>{ const o={}; Object.keys(mes).forEach(id=>o[id]=mes[id]*1000+(anual[id]||0)); return o; };
   {
     const yPref = state.year+"-";
-    Object.entries(state.assignments).forEach(([k,a0])=>{ const i=k.indexOf("|"); const pid=k.slice(0,i), dk=k.slice(i+1);
+    entradasConFoto().forEach(([k,a0])=>{ const i=k.indexOf("|"); const pid=k.slice(0,i), dk=k.slice(i+1);
       if(dk.indexOf(yPref)!==0 || intvLoad[pid]===undefined) return;
       const a = officialAt(pid, dk) || a0;
       if(a && (a.m==="ALINTER"||a.m==="RXINT")) intvLoad[pid]++;
@@ -6490,10 +6501,11 @@ function generateMonth(mode){
   // URGLV por reiniciar el contador cada mes.
   {
     const yPref = state.year+"-";
-    Object.entries(state.assignments).forEach(([k,a0])=>{
+    entradasConFoto().forEach(([k,a0])=>{
       const i=k.indexOf("|"); const pid=k.slice(0,i), dk=k.slice(i+1);
       if(dk.indexOf(yPref)!==0 || urgLoad[pid]===undefined) return;
       const a = officialAt(pid, dk) || a0;   // cómputo OFICIAL
+      if(!a) return;
       if(a.f==="URG") urgLoad[pid]++;
       else if(a.f==="URGLV") urglvLoad[pid]++;
       else if(a.f==="URGF") urgfLoad[pid]++;
@@ -6503,7 +6515,7 @@ function generateMonth(mode){
   const alruLoad = {}; state.physicians.forEach(p=>alruLoad[p.id]=0);
   {
     const yPref = state.year+"-";
-    Object.entries(state.assignments).forEach(([k,a0])=>{
+    entradasConFoto().forEach(([k,a0])=>{
       const i=k.indexOf("|"); const pid=k.slice(0,i), dk=k.slice(i+1);
       if(dk.indexOf(yPref)!==0 || alruLoad[pid]===undefined) return;
       const a = officialAt(pid, dk) || a0;
@@ -6712,7 +6724,7 @@ function generateMonth(mode){
       // para que de octubre a diciembre roten y no recaiga siempre en el mismo.
       const ortYear={}; state.physicians.forEach(p=>ortYear[p.id]=0);
       const yPref = state.year+"-";
-      Object.entries(state.assignments).forEach(([k,a0])=>{ const i=k.indexOf("|"); const pid=k.slice(0,i), dk=k.slice(i+1);
+      entradasConFoto().forEach(([k,a0])=>{ const i=k.indexOf("|"); const pid=k.slice(0,i), dk=k.slice(i+1);
         if(dk.indexOf(yPref)!==0 || ortYear[pid]===undefined) return;
         const a = officialAt(pid, dk) || a0;
         if(a && a.m==="ORT") ortYear[pid]++; });
