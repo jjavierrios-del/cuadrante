@@ -1341,7 +1341,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v175";
+const APP_VERSION = "v176";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2765,6 +2765,243 @@ function haceCuanto(iso){
   const d = Math.round(h/24);
   if(d <= 7) return d===1 ? "ayer" : "hace "+d+" días";
   return t.toLocaleDateString("es-ES",{day:"2-digit",month:"2-digit",year:"2-digit"});
+}
+
+// ------------------ Buscar opciones (v176) ------------------
+// El facultativo dice qué quiere soltar (una consulta o una guardia) y la aplicación
+// propone cambios viables, de más simple a más complejo. No aplica nada: cada opción
+// se prueba con los mismos validadores del formulario y con la simulación de aprobación.
+// Al elegir una, se abre la solicitud ya rellena.
+const BUSCA_MS = 2500;       // tiempo máximo de búsqueda
+const BUSCA_VENTANA = 21;    // días antes y después del día de partida
+function buscaDiaTxt(k){
+  const pr = k.split("-").map(Number);
+  return ["dom","lun","mar","mié","jue","vie","sáb"][new Date(pr[0],pr[1]-1,pr[2]).getDay()]+" "+fmtDate(k);
+}
+function buscarOpciones(pid, dia, part, prefer){
+  const P = state.physicians.find(x=>x.id===pid);
+  const z = cadenaParte(part);
+  const grupos = [];
+  if(!P || !/^\d{4}-\d{2}-\d{2}$/.test(dia||"") || !z.cod) return {grupos:grupos, error:"Elige el día y qué quieres cambiar."};
+  const cel0 = state.assignments[pid+"|"+dia] || {};
+  if(!(z.slot==="f" ? cel0.f===z.cod : (!cel0.f && cel0[z.slot]===z.cod))) return {grupos:grupos, error:"Ese día ya no tienes eso asignado."};
+  const t0 = Date.now(); const fuera = ()=> Date.now()-t0 > BUSCA_MS;
+  const hmap = holidayMap();
+  const hoy = new Date(); const hoyK = keyOf(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
+  const pr = dia.split("-").map(Number); const base = new Date(pr[0],pr[1]-1,pr[2]);
+  // Días candidatos: los de alrededor, de más cercano a más lejano; el preferido, primero
+  const todos = [];
+  for(let i=-BUSCA_VENTANA; i<=BUSCA_VENTANA; i++){
+    const d2 = new Date(base); d2.setDate(base.getDate()+i);
+    const k = keyOf(d2.getFullYear(), d2.getMonth(), d2.getDate());
+    if(k > hoyK) todos.push({k:k, w:d2.getDay(), lejos:Math.abs(i)});
+  }
+  const prefOk = prefer && /^\d{4}-\d{2}-\d{2}$/.test(prefer) && prefer > hoyK;
+  if(prefOk && !todos.some(x=>x.k===prefer)){ const q = prefer.split("-").map(Number); todos.push({k:prefer, w:new Date(q[0],q[1]-1,q[2]).getDay(), lejos:0}); }
+  todos.sort((a,b)=> ((prefOk && b.k===prefer)?1:0) - ((prefOk && a.k===prefer)?1:0) || a.lejos-b.lejos || a.k.localeCompare(b.k));
+  const laborables = todos.filter(x=>x.w!==0 && x.w!==6 && !hmap[x.k]);
+  const cel = (id,k)=> state.assignments[id+"|"+k] || null;
+  const otros = state.physicians.filter(x=>x.id!==pid);
+  const viable = r => { try{ return applyRequest(r, true)===null; }catch(e){ return false; } };
+  const turno = sl => sl==="m" ? "mañana" : "tarde";
+  // Prueba una opción con el validador del formulario (si lo hay) y con la simulación de aprobación
+  const probar = (r, validar)=>{
+    limpiarAvisos();
+    let motivo = null;
+    if(validar){ try{ motivo = validar(); }catch(e){ motivo = "error"; } }
+    const aviso = AVISO_VOLUNTARIO; limpiarAvisos();
+    if(motivo) return null;
+    if(!viable(r)) return null;
+    return {aviso:aviso};
+  };
+  const nuevoGrupo = (titulo, nota)=>{ const g = {titulo:titulo, nota:nota||"", opciones:[]}; grupos.push(g); return g; };
+  const cadena = pasos => ({v:11, type:"cadena", by:"", note:"", pasos:pasos});
+  const probarCadena = pasos => {
+    const r = cadena(pasos); const sim = cadenaSimular(r);
+    if(sim.error || !viable(r)) return null;
+    return {req:r, avisos:sim.avisos||[]};
+  };
+
+  if(z.slot!=="f"){
+    // ===== Quiere soltar una CONSULTA =====
+    const sl = z.slot, cod = z.cod;
+    const g1 = nuevoGrupo("Llevarla tú a otro día", "No necesitas a nadie: ese día tienes el turno libre y hay sitio.");
+    for(const d of laborables){
+      if(g1.opciones.length>=5 || fuera()) break;
+      if(d.k===dia) continue;
+      const c = cel(pid, d.k); if(c && (c.f || c[sl])) continue;
+      const r = {v:3, type:"move", by:"", note:"", pid:pid, phys:P.name, dateFrom:dia, part:part, code:cod, dateTo:d.k, slot:sl};
+      const res = probar(r, ()=>validarMovimiento(pid, dia, part, d.k, sl));
+      if(res) g1.opciones.push({txt:"Pasar "+cod+" ("+turno(sl)+") al "+buscaDiaTxt(d.k), avisos:res.aviso?[res.aviso]:[], avisoHtml:true, req:r});
+    }
+    const g2 = nuevoGrupo("Intercambiar con un compañero", "Tú haces su consulta y él hace la tuya.");
+    for(const d of laborables){
+      if(g2.opciones.length>=6 || fuera()) break;
+      for(const Q of otros){
+        if(g2.opciones.length>=6 || fuera()) break;
+        const c = cel(Q.id, d.k); if(!c || c.f || !c[sl] || esTrafico(c[sl])) continue;
+        if(d.k===dia && c[sl]===cod) continue;
+        const r = {v:8, type:"consultas", by:"", note:"", pidA:pid, physA:P.name, fA:dia, slotA:sl, pidB:Q.id, physB:Q.name, fB:d.k, slotB:sl, desplaza:true};
+        const res = probar(r, ()=>validarIntercambioConsultas(pid, dia, sl, Q.id, d.k, sl));
+        if(res) g2.opciones.push({txt:Q.name+": su "+c[sl]+" del "+buscaDiaTxt(d.k)+" por tu "+cod+" del "+buscaDiaTxt(dia), avisos:res.aviso?[res.aviso]:[], avisoHtml:true, req:r});
+      }
+    }
+    const g3 = nuevoGrupo("Cederla a un compañero", "Él la asume ese mismo día; tú quedas con un turno menos.");
+    for(const Q of otros){
+      if(g3.opciones.length>=4 || fuera()) break;
+      const c = cel(Q.id, dia); if(c && (c.f || c[sl])) continue;
+      const r = {v:5, type:"ceder", by:"", note:"", pidA:pid, physA:P.name, pidB:Q.id, physB:Q.name, date:dia, part:part};
+      const res = probar(r, ()=>validarCesion(pid, dia, part, Q.id));
+      if(res) g3.opciones.push({txt:Q.name+" asume tu "+cod+" del "+buscaDiaTxt(dia), avisos:res.aviso?[res.aviso]:[], avisoHtml:true, req:r});
+    }
+    if(!g1.opciones.length && !g2.opciones.length && !g3.opciones.length){
+      // Nada simple: rotación entre tres
+      const g4 = nuevoGrupo("Rotación entre tres", "No hay un cambio directo; estos encajan entre tres compañeros.");
+      const tienen = [];
+      laborables.forEach(d=>otros.forEach(Q=>{ const c = cel(Q.id, d.k); if(c && !c.f && c[sl] && !esTrafico(c[sl])) tienen.push({q:Q, k:d.k, c:c[sl]}); }));
+      busca3: for(const a of tienen){ for(const b of tienen){
+        if(g4.opciones.length>=3 || fuera()) break busca3;
+        if(a.q.id===b.q.id) continue;
+        const res = probarCadena([
+          {t:"ceder", pidA:pid, physA:P.name, pidB:a.q.id, physB:a.q.name, date:dia, part:part},
+          {t:"ceder", pidA:a.q.id, physA:a.q.name, pidB:b.q.id, physB:b.q.name, date:a.k, part:sl+":"+a.c},
+          {t:"ceder", pidA:b.q.id, physA:b.q.name, pidB:pid, physB:P.name, date:b.k, part:sl+":"+b.c}]);
+        if(res) g4.opciones.push({txt:res.req.pasos.map(cadenaPasoTexto).join(" → "), avisos:res.avisos, req:res.req});
+      } }
+    }
+  }else{
+    // ===== Quiere soltar una GUARDIA =====
+    const g = z.cod;
+    const guardias = [];
+    todos.forEach(d=>otros.forEach(Q=>{ const c = cel(Q.id, d.k); if(c && esCodGuardia(c.f)) guardias.push({q:Q, k:d.k, f:c.f}); }));
+    const g1 = nuevoGrupo("Guardia por guardia", "Tú haces la suya y él hace la tuya.");
+    for(const x of guardias){
+      if(g1.opciones.length>=6 || fuera()) break;
+      const res = probarCadena([
+        {t:"ceder", pidA:pid, physA:P.name, pidB:x.q.id, physB:x.q.name, date:dia, part:"f:"+g},
+        {t:"ceder", pidA:x.q.id, physA:x.q.name, pidB:pid, physB:P.name, date:x.k, part:"f:"+x.f}]);
+      if(res) g1.opciones.push({txt:x.q.name+": su guardia del "+buscaDiaTxt(x.k)+" por la tuya del "+buscaDiaTxt(dia), avisos:res.avisos, req:res.req});
+    }
+    const g2 = nuevoGrupo("Guardia por dos consultas", "Él asume tu guardia y tú haces dos consultas suyas.");
+    for(const Q of otros){
+      if(g2.opciones.length>=4 || fuera()) break;
+      const cq = cel(Q.id, dia); if(cq && (cq.f || cq.m || cq.t)) continue;
+      // Consultas de Q que tú podrías hacer (tienes ese turno libre)
+      const suyas = [];
+      laborables.forEach(d=>{ if(d.k===dia) return; const c = cel(Q.id, d.k); if(!c || c.f) return;
+        const sl = c.m ? "m" : (c.t ? "t" : ""); if(!sl || esTrafico(c[sl])) return;
+        const mia = cel(pid, d.k); if(mia && (mia.f || mia[sl])) return;
+        suyas.push({k:d.k, sl:sl, c:c[sl]}); });
+      let hecho = false;
+      for(let i=0; i<suyas.length && i<4 && !hecho; i++) for(let j=i+1; j<suyas.length && j<5 && !hecho; j++){
+        if(fuera()) break;
+        const a = suyas[i], b = suyas[j];
+        const r = {v:7, type:"urg2", by:"", note:"", pidA:pid, physA:P.name, pidB:Q.id, physB:Q.name, dateU:dia, f1:a.k, f2:b.k, mov1:"", slot1:"m", mov2:"", slot2:"m"};
+        const res = probar(r, ()=>validarUrg2(pid, dia, Q.id, a.k, b.k));
+        if(!res) continue;
+        // Los avisos (guardias por semana, turnos) se calculan con la cadena equivalente
+        const sim = cadenaSimular(cadena([{t:"urg2", pidA:pid, physA:P.name, pidB:Q.id, physB:Q.name, dateU:dia, f1:a.k, part1:a.sl+":"+a.c, f2:b.k, part2:b.sl+":"+b.c}]));
+        g2.opciones.push({txt:Q.name+" asume tu guardia del "+buscaDiaTxt(dia)+" y tú haces su "+a.c+" del "+buscaDiaTxt(a.k)+" y su "+b.c+" del "+buscaDiaTxt(b.k),
+                          avisos:(sim.avisos||[]), req:r});
+        hecho = true;
+      }
+    }
+    if(!g1.opciones.length && !g2.opciones.length){
+      const g3 = nuevoGrupo("Rotación entre tres", "No hay un cambio directo; estos encajan entre tres compañeros.");
+      busca3g: for(const a of guardias){ for(const b of guardias){
+        if(g3.opciones.length>=3 || fuera()) break busca3g;
+        if(a.q.id===b.q.id) continue;
+        const res = probarCadena([
+          {t:"ceder", pidA:pid, physA:P.name, pidB:a.q.id, physB:a.q.name, date:dia, part:"f:"+g},
+          {t:"ceder", pidA:a.q.id, physA:a.q.name, pidB:b.q.id, physB:b.q.name, date:a.k, part:"f:"+a.f},
+          {t:"ceder", pidA:b.q.id, physA:b.q.name, pidB:pid, physB:P.name, date:b.k, part:"f:"+b.f}]);
+        if(res) g3.opciones.push({txt:res.req.pasos.map(cadenaPasoTexto).join(" → "), avisos:res.avisos, req:res.req});
+      } }
+    }
+  }
+  limpiarAvisos();
+  // Dentro de cada grupo, primero las opciones sin avisos (el orden por cercanía se mantiene entre iguales)
+  grupos.forEach(g=>{ g.opciones = g.opciones.map((o,i)=>({o:o,i:i})).sort((x,y)=> (x.o.avisos||[]).length-(y.o.avisos||[]).length || x.i-y.i).map(x=>x.o); });
+  return {grupos:grupos.filter(x=>x.opciones.length), agotado:fuera(), ms:Date.now()-t0};
+}
+// Deja el formulario manual relleno con la opción elegida
+function buscarUsar(req){
+  const hoyRef = (ui.reqModal||{}).date;
+  ui.reqNote = "";
+  if(req.type==="move"){
+    ui.reqModal = {tab:true, type:"mover", pid:req.pid, date:req.dateFrom, dateB:req.dateTo};
+    ui.reqDraft = {movePart:req.part, moveSlot:req.slot};
+  }else if(req.type==="consultas"){
+    ui.reqModal = {tab:true, type:"consultas", pid:req.pidA, date:req.fA, pidB:req.pidB, dateB:req.fB};
+    ui.reqDraft = {slotA:req.slotA, slotB:req.slotB, moverDesplazada:true};
+  }else if(req.type==="ceder"){
+    ui.reqModal = {tab:true, type:"ceder", pid:req.pidA, date:req.date, pidB:req.pidB};
+    ui.reqDraft = {cedePart:req.part};
+  }else if(req.type==="urg2"){
+    ui.reqModal = {tab:true, type:"urg2", pid:req.pidA, date:req.dateU, pidB:req.pidB, dateB:req.f1, dateB2:req.f2};
+    ui.reqDraft = {};
+  }else if(req.type==="cadena"){
+    const primero = cadenaParticipantes(req)[0];
+    ui.reqModal = {tab:true, type:"cadena", pid:primero, date:cadenaFechas(req)[0] || hoyRef};
+    ui.reqDraft = {pasos:JSON.parse(JSON.stringify(req.pasos))};
+  }
+  ui.reqModo = "manual";
+}
+function buscarFormHTML(){
+  const phys = state.physicians;
+  const yo = miFacultativo();
+  const b = ui.busq = ui.busq || {};
+  if(yo) b.pid = yo.id;
+  if(!b.pid || !phys.find(x=>x.id===b.pid)) b.pid = (phys[0]||{}).id;
+  if(!b.dia){ const n = new Date(); b.dia = (ui.reqModal||{}).date || keyOf(n.getFullYear(), n.getMonth(), n.getDate()); }
+  const est = 'width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px';
+  const tit = t => '<p class="tiny" style="margin-top:10px">'+t+'</p>';
+  const partes = cadenaPartes(b.pid, b.dia, {guardia:true});
+  if(b.part && !partes.some(o=>o.v===b.part)) b.part = "";
+  if(!b.part && partes.length===1) b.part = partes[0].v;
+  ui.reqBloqueo = "Elige primero una de las opciones.";
+  let h = '<p class="muted" style="margin-top:10px;font-size:13px">Di qué quieres cambiar y te propongo con quién o a qué día, respetando las reglas del cuadrante. Después lo envías como siempre.</p>'+
+    tit("Facultativo")+
+    (yo ? '<div style="padding:9px 10px;border:1px solid var(--slate-300);border-radius:8px;background:var(--slate-50);font-size:14px;margin-top:4px"><b>'+esc(yo.name)+'</b> <span class="tiny muted">· tú</span></div>'
+        : '<select data-field="rq-bq-pid" style="'+est+'">'+phys.map(x=>'<option value="'+x.id+'"'+(b.pid===x.id?" selected":"")+'>'+esc(x.name)+'</option>').join("")+'</select>')+
+    tit("Día que quieres cambiar")+
+    '<input type="date" data-field="rq-bq-dia" value="'+esc(b.dia||"")+'" style="'+est+'">'+
+    tit("Qué quieres soltar")+
+    (partes.length
+      ? '<select data-field="rq-bq-part" style="'+est+'"><option value="">—</option>'+partes.map(o=>'<option value="'+esc(o.v)+'"'+(b.part===o.v?" selected":"")+'>'+esc(o.txt)+'</option>').join("")+'</select>'
+      : '<p class="muted" style="font-size:13px;margin-top:4px">Ese día no tienes consulta ni guardia.</p>')+
+    tit("¿A qué día prefieres llevarlo? (opcional)")+
+    '<input type="date" data-field="rq-bq-prefer" value="'+esc(b.prefer||"")+'" style="'+est+'">'+
+    '<div class="row" style="margin-top:12px"><button class="btn primary" style="flex:1" data-action="rq-buscar"'+(b.part?'':' disabled style="flex:1;opacity:.4"')+'>Buscar opciones</button></div>';
+  const res = b.res;
+  if(res){
+    if(res.error){
+      h += '<div class="warnbox" style="margin-top:10px">⚠ '+esc(res.error)+'</div>';
+    }else if(!res.grupos.length){
+      h += '<div class="warnbox" style="margin-top:10px">No he encontrado ningún cambio posible en los '+BUSCA_VENTANA+' días de alrededor. Prueba con otro día preferido o pide el cambio con «Solicitud manual».</div>';
+    }else{
+      h += '<div id="bq-res" style="margin-top:12px">'+res.grupos.map((g,gi)=>
+        '<div style="margin-top:12px"><b style="font-size:14px">'+esc(g.titulo)+'</b>'+
+        (g.nota?'<p class="muted" style="font-size:12px;margin-top:2px">'+esc(g.nota)+'</p>':'')+
+        g.opciones.map((o,oi)=>
+          '<div style="margin-top:8px;padding:9px 10px;border:1px solid var(--slate-200);border-radius:10px">'+
+            '<div style="font-size:14px">'+esc(o.txt)+'</div>'+
+            (o.avisos||[]).map(a=>'<div style="font-size:12px;color:#92400e;margin-top:4px">ℹ '+(o.avisoHtml ? a : esc(a))+'</div>').join("")+
+            '<div class="row" style="margin-top:8px"><button class="btn" data-action="rq-bq-usar" data-g="'+gi+'" data-i="'+oi+'">Usar esta opción</button></div>'+
+          '</div>').join("")+'</div>').join("")+
+        (res.agotado?'<p class="muted" style="font-size:12px;margin-top:10px">La búsqueda se ha cortado por tiempo: puede haber más opciones. Indica un día preferido para afinar.</p>':'')+
+        '<p class="muted" style="font-size:12px;margin-top:10px">Son propuestas: tienes que acordarlo con el compañero, y el coordinador lo aprueba como siempre.</p></div>';
+    }
+  }
+  return h;
+}
+// Zona de solicitud de la pestaña: «Buscar opciones» o el formulario de siempre
+function solicitudZonaHTML(){
+  const modo = ui.reqModo==="buscar" ? "buscar" : "manual";
+  return '<div class="seg" style="margin-top:10px">'+
+      '<button class="'+(modo==="buscar"?"on":"")+'" data-action="rq-modo" data-modo="buscar">Buscar opciones</button>'+
+      '<button class="'+(modo==="manual"?"on":"")+'" data-action="rq-modo" data-modo="manual">Solicitud manual</button></div>'+
+    (modo==="buscar" ? buscarFormHTML() : solicitudFormHTML());
 }
 
 function solicitudFormHTML(){
@@ -5663,7 +5900,7 @@ function viewSolicitudes(){
              '<button class="btn" data-action="yo-cambiar" style="padding:4px 10px;font-size:13px">No soy yo</button></div>' : '')+
       '<h2>Solicitar un cambio</h2>'+
       '<p class="muted" style="margin-top:2px">Elige facultativo, fecha y tu propuesta; la solicitud le llegará al coordinador para su autorización.</p>'+
-      solicitudFormHTML()+'</div>';
+      solicitudZonaHTML()+'</div>';
     h += viewMisSolicitudes();
     if(log.length){
       h += '<div class="card"><div class="row between"><h2>Enviadas desde este dispositivo</h2><button class="btn" data-action="reqlog-clear">Vaciar</button></div><div style="margin-top:8px">'+
@@ -5691,8 +5928,8 @@ function viewSolicitudes(){
     }
     return h + '<div class="card"><h2>Aplicar un cambio</h2>'+
       '<p class="muted" style="margin-top:2px">Prepara aquí el cambio y aplícalo directamente, sin pasar por el circuito de solicitudes.</p>'+
-      solicitudFormHTML()+
-      '<div class="row" style="margin-top:12px"><button class="btn primary" style="flex:1" data-action="req-aplicar-directo">Aplicar ahora</button></div>'+
+      solicitudZonaHTML()+
+      (ui.reqModo==="buscar" ? '' : '<div class="row" style="margin-top:12px"><button class="btn primary" style="flex:1" data-action="req-aplicar-directo">Aplicar ahora</button></div>')+
       '</div>';
   }
 
@@ -8402,6 +8639,28 @@ document.addEventListener("click", e=>{
       break;
     }
     case "perm-anio": ui.permAnio = (ui.permAnio || new Date().getFullYear()) + Number(el.dataset.delta||0); render(); break;
+    case "rq-modo": {
+      ui.reqModo = el.dataset.modo==="buscar" ? "buscar" : "manual";
+      (ui.reqModal && ui.reqModal.tab) ? render() : renderModal();
+      break;
+    }
+    case "rq-buscar": {
+      const bqB = ui.busq = ui.busq || {};
+      setSave("Buscando…");
+      try{ bqB.res = buscarOpciones(bqB.pid, bqB.dia, bqB.part, bqB.prefer); }
+      catch(e){ bqB.res = {grupos:[], error:"No se ha podido completar la búsqueda."}; }
+      setSave(MODE==="viewer" ? "Solo consulta" : "✓ Guardado");
+      render();
+      break;
+    }
+    case "rq-bq-usar": {
+      const resU = (ui.busq||{}).res;
+      const opU = resU && resU.grupos && resU.grupos[Number(el.dataset.g)] ? resU.grupos[Number(el.dataset.g)].opciones[Number(el.dataset.i)] : null;
+      if(!opU) break;
+      buscarUsar(opU.req);
+      render();
+      break;
+    }
     case "rq-cadena-add": {
       const dCa = ui.reqDraft = ui.reqDraft || {};
       dCa.pasos = Array.isArray(dCa.pasos) ? dCa.pasos : [];
@@ -9142,6 +9401,13 @@ document.addEventListener("change", e=>{
     else if(fld==="rq-u2mov2"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.mov2=el.value; rqRefresh(); }
     else if(fld==="rq-u2slot1"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.slot1=el.value; rqRefresh(); }
     else if(fld==="rq-u2slot2"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.slot2=el.value; rqRefresh(); }
+    else if(fld.indexOf("rq-bq-")===0){
+      const bq = (ui.busq = ui.busq || {}); const campoB = fld.slice(6);
+      bq[campoB] = el.value;
+      if(campoB==="pid" || campoB==="dia") bq.part = "";
+      bq.res = null;                               // al cambiar la pregunta, las respuestas anteriores no valen
+      rqRefresh();
+    }
     else if(fld.indexOf("rq-cp-")===0){
       const dC = (ui.reqDraft = ui.reqDraft || {}); const cpC = (dC.cp = dC.cp || {}); const campo = fld.slice(6);
       cpC[campo] = el.value;
