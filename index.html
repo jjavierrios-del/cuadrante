@@ -1341,7 +1341,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v176";
+const APP_VERSION = "v177";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1416,15 +1416,18 @@ function copiaHechaHoy(){
 function marcarCopiaHecha(){
   try{ localStorage.setItem(KEY_ULT_COPIA, new Date().toISOString().slice(0,10)); }catch(e){}
 }
+let COPIANDO = false;                                // evita lanzar dos copias a la vez
 function copiaDiariaAuto(){
   if(MODE !== "editor") return;                     // solo el coordinador
-  if(copiaHechaHoy()) return;
+  if(COPIANDO || copiaHechaHoy()) return;
   const b = state.buzon||{};
   if(!b.url || !buzonClavePublicar()) return;       // sin servidor configurado
   if(!state.physicians.length) return;
+  COPIANDO = true;
   guardarCopiaServidor("Copia diaria automática").then(err=>{
+    COPIANDO = false;
     if(!err){ marcarCopiaHecha(); setSave("✓ Copia diaria guardada"); }
-  });
+  }, ()=>{ COPIANDO = false; });
 }
 
 async function traficoServidor(pid, fecha, slot, code, hora, quitar){
@@ -2796,10 +2799,24 @@ function buscarOpciones(pid, dia, part, prefer){
     const k = keyOf(d2.getFullYear(), d2.getMonth(), d2.getDate());
     if(k > hoyK) todos.push({k:k, w:d2.getDay(), lejos:Math.abs(i)});
   }
-  const prefOk = prefer && /^\d{4}-\d{2}-\d{2}$/.test(prefer) && prefer > hoyK;
-  if(prefOk && !todos.some(x=>x.k===prefer)){ const q = prefer.split("-").map(Number); todos.push({k:prefer, w:new Date(q[0],q[1]-1,q[2]).getDay(), lejos:0}); }
-  todos.sort((a,b)=> ((prefOk && b.k===prefer)?1:0) - ((prefOk && a.k===prefer)?1:0) || a.lejos-b.lejos || a.k.localeCompare(b.k));
+  // v177: destinos elegidos por el facultativo (hasta 3 días, cada uno con su turno).
+  // Si los indica, solo se buscan cambios hacia esos días; si no, en los días de alrededor.
+  const dest = (Array.isArray(prefer) ? prefer : (prefer ? [{k:prefer, sl:""}] : []))
+    .filter(x=>x && /^\d{4}-\d{2}-\d{2}$/.test(x.k||"") && x.k > hoyK).slice(0,3)
+    .map(x=>({k:x.k, sl:(x.sl==="m"||x.sl==="t") ? x.sl : ""}));
+  const hayDest = dest.length>0;
+  if(hayDest){
+    todos.length = 0;
+    dest.forEach((x,i)=>{ if(todos.some(y=>y.k===x.k)) return; const q = x.k.split("-").map(Number); todos.push({k:x.k, w:new Date(q[0],q[1]-1,q[2]).getDay(), lejos:i}); });
+  }
+  todos.sort((a,b)=> a.lejos-b.lejos || a.k.localeCompare(b.k));
   const laborables = todos.filter(x=>x.w!==0 && x.w!==6 && !hmap[x.k]);
+  // Turnos en los que se busca cada día: los pedidos para ese destino o, si no se indica, el de partida
+  const turnosDe = (k, porDefecto)=>{
+    if(!hayDest) return [porDefecto];
+    const out = []; dest.filter(x=>x.k===k).forEach(x=>{ const t = x.sl || porDefecto; if(t && out.indexOf(t)<0) out.push(t); });
+    return out;
+  };
   const cel = (id,k)=> state.assignments[id+"|"+k] || null;
   const otros = state.physicians.filter(x=>x.id!==pid);
   const viable = r => { try{ return applyRequest(r, true)===null; }catch(e){ return false; } };
@@ -2826,25 +2843,25 @@ function buscarOpciones(pid, dia, part, prefer){
     // ===== Quiere soltar una CONSULTA =====
     const sl = z.slot, cod = z.cod;
     const g1 = nuevoGrupo("Llevarla tú a otro día", "No necesitas a nadie: ese día tienes el turno libre y hay sitio.");
-    for(const d of laborables){
+    for(const d of laborables){ for(const slT of turnosDe(d.k, sl)){
       if(g1.opciones.length>=5 || fuera()) break;
-      if(d.k===dia) continue;
-      const c = cel(pid, d.k); if(c && (c.f || c[sl])) continue;
-      const r = {v:3, type:"move", by:"", note:"", pid:pid, phys:P.name, dateFrom:dia, part:part, code:cod, dateTo:d.k, slot:sl};
-      const res = probar(r, ()=>validarMovimiento(pid, dia, part, d.k, sl));
-      if(res) g1.opciones.push({txt:"Pasar "+cod+" ("+turno(sl)+") al "+buscaDiaTxt(d.k), avisos:res.aviso?[res.aviso]:[], avisoHtml:true, req:r});
-    }
+      if(d.k===dia && slT===sl) continue;
+      const c = cel(pid, d.k); if(c && (c.f || c[slT])) continue;
+      const r = {v:3, type:"move", by:"", note:"", pid:pid, phys:P.name, dateFrom:dia, part:part, code:cod, dateTo:d.k, slot:slT};
+      const res = probar(r, ()=>validarMovimiento(pid, dia, part, d.k, slT));
+      if(res) g1.opciones.push({txt:"Pasar "+cod+" ("+turno(sl)+") al "+buscaDiaTxt(d.k)+(slT!==sl?" por la "+turno(slT):""), avisos:res.aviso?[res.aviso]:[], avisoHtml:true, req:r});
+    } }
     const g2 = nuevoGrupo("Intercambiar con un compañero", "Tú haces su consulta y él hace la tuya.");
     for(const d of laborables){
       if(g2.opciones.length>=6 || fuera()) break;
-      for(const Q of otros){
+      for(const Q of otros){ for(const slT of turnosDe(d.k, sl)){
         if(g2.opciones.length>=6 || fuera()) break;
-        const c = cel(Q.id, d.k); if(!c || c.f || !c[sl] || esTrafico(c[sl])) continue;
-        if(d.k===dia && c[sl]===cod) continue;
-        const r = {v:8, type:"consultas", by:"", note:"", pidA:pid, physA:P.name, fA:dia, slotA:sl, pidB:Q.id, physB:Q.name, fB:d.k, slotB:sl, desplaza:true};
-        const res = probar(r, ()=>validarIntercambioConsultas(pid, dia, sl, Q.id, d.k, sl));
-        if(res) g2.opciones.push({txt:Q.name+": su "+c[sl]+" del "+buscaDiaTxt(d.k)+" por tu "+cod+" del "+buscaDiaTxt(dia), avisos:res.aviso?[res.aviso]:[], avisoHtml:true, req:r});
-      }
+        const c = cel(Q.id, d.k); if(!c || c.f || !c[slT] || esTrafico(c[slT])) continue;
+        if(d.k===dia && slT===sl && c[slT]===cod) continue;
+        const r = {v:8, type:"consultas", by:"", note:"", pidA:pid, physA:P.name, fA:dia, slotA:sl, pidB:Q.id, physB:Q.name, fB:d.k, slotB:slT, desplaza:true};
+        const res = probar(r, ()=>validarIntercambioConsultas(pid, dia, sl, Q.id, d.k, slT));
+        if(res) g2.opciones.push({txt:Q.name+": su "+c[slT]+" ("+turno(slT)+") del "+buscaDiaTxt(d.k)+" por tu "+cod+" ("+turno(sl)+") del "+buscaDiaTxt(dia), avisos:res.aviso?[res.aviso]:[], avisoHtml:true, req:r});
+      } }
     }
     const g3 = nuevoGrupo("Cederla a un compañero", "Él la asume ese mismo día; tú quedas con un turno menos.");
     for(const Q of otros){
@@ -2890,6 +2907,7 @@ function buscarOpciones(pid, dia, part, prefer){
       const suyas = [];
       laborables.forEach(d=>{ if(d.k===dia) return; const c = cel(Q.id, d.k); if(!c || c.f) return;
         const sl = c.m ? "m" : (c.t ? "t" : ""); if(!sl || esTrafico(c[sl])) return;
+        if(hayDest && turnosDe(d.k, sl).indexOf(sl)<0) return;        // el turno pedido para ese destino no es el que se entregaría
         const mia = cel(pid, d.k); if(mia && (mia.f || mia[sl])) return;
         suyas.push({k:d.k, sl:sl, c:c[sl]}); });
       let hecho = false;
@@ -2970,15 +2988,24 @@ function buscarFormHTML(){
     (partes.length
       ? '<select data-field="rq-bq-part" style="'+est+'"><option value="">—</option>'+partes.map(o=>'<option value="'+esc(o.v)+'"'+(b.part===o.v?" selected":"")+'>'+esc(o.txt)+'</option>').join("")+'</select>'
       : '<p class="muted" style="font-size:13px;margin-top:4px">Ese día no tienes consulta ni guardia.</p>')+
-    tit("¿A qué día prefieres llevarlo? (opcional)")+
-    '<input type="date" data-field="rq-bq-prefer" value="'+esc(b.prefer||"")+'" style="'+est+'">'+
+    tit("¿A qué días te vendría bien? (opcional, hasta 3)")+
+    [1,2,3].map(i=>
+      '<div class="row" style="gap:6px;margin-top:4px;align-items:center">'+
+        '<input type="date" data-field="rq-bq-d'+i+'" value="'+esc(b["d"+i]||"")+'" style="flex:1;padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
+        (cadenaParte(b.part).slot==="f" ? '' :
+          '<select data-field="rq-bq-s'+i+'" style="width:132px;padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
+            [["","Mismo turno"],["m","Mañana"],["t","Tarde"]].map(o=>'<option value="'+o[0]+'"'+((b["s"+i]||"")===o[0]?" selected":"")+'>'+o[1]+'</option>').join("")+'</select>')+
+      '</div>').join("")+
+    '<p class="muted" style="font-size:12px;margin-top:4px">Si no indicas ninguno, busco en los '+BUSCA_VENTANA+' días de alrededor.</p>'+
     '<div class="row" style="margin-top:12px"><button class="btn primary" style="flex:1" data-action="rq-buscar"'+(b.part?'':' disabled style="flex:1;opacity:.4"')+'>Buscar opciones</button></div>';
   const res = b.res;
   if(res){
     if(res.error){
       h += '<div class="warnbox" style="margin-top:10px">⚠ '+esc(res.error)+'</div>';
     }else if(!res.grupos.length){
-      h += '<div class="warnbox" style="margin-top:10px">No he encontrado ningún cambio posible en los '+BUSCA_VENTANA+' días de alrededor. Prueba con otro día preferido o pide el cambio con «Solicitud manual».</div>';
+      h += '<div class="warnbox" style="margin-top:10px">'+(res.conDestinos
+        ? 'No he encontrado ningún cambio posible hacia esos días y turnos. Prueba con otros, o déjalos en blanco para que busque en los días de alrededor.'
+        : 'No he encontrado ningún cambio posible en los '+BUSCA_VENTANA+' días de alrededor. Indica días concretos o pide el cambio con «Solicitud manual».')+'</div>';
     }else{
       h += '<div id="bq-res" style="margin-top:12px">'+res.grupos.map((g,gi)=>
         '<div style="margin-top:12px"><b style="font-size:14px">'+esc(g.titulo)+'</b>'+
@@ -2989,7 +3016,7 @@ function buscarFormHTML(){
             (o.avisos||[]).map(a=>'<div style="font-size:12px;color:#92400e;margin-top:4px">ℹ '+(o.avisoHtml ? a : esc(a))+'</div>').join("")+
             '<div class="row" style="margin-top:8px"><button class="btn" data-action="rq-bq-usar" data-g="'+gi+'" data-i="'+oi+'">Usar esta opción</button></div>'+
           '</div>').join("")+'</div>').join("")+
-        (res.agotado?'<p class="muted" style="font-size:12px;margin-top:10px">La búsqueda se ha cortado por tiempo: puede haber más opciones. Indica un día preferido para afinar.</p>':'')+
+        (res.agotado?'<p class="muted" style="font-size:12px;margin-top:10px">La búsqueda se ha cortado por tiempo: puede haber más opciones. Indica días concretos para afinar.</p>':'')+
         '<p class="muted" style="font-size:12px;margin-top:10px">Son propuestas: tienes que acordarlo con el compañero, y el coordinador lo aprueba como siempre.</p></div>';
     }
   }
@@ -8647,7 +8674,8 @@ document.addEventListener("click", e=>{
     case "rq-buscar": {
       const bqB = ui.busq = ui.busq || {};
       setSave("Buscando…");
-      try{ bqB.res = buscarOpciones(bqB.pid, bqB.dia, bqB.part, bqB.prefer); }
+      const destB = [1,2,3].map(i=>({k:bqB["d"+i]||"", sl:bqB["s"+i]||""})).filter(x=>x.k);
+      try{ bqB.res = buscarOpciones(bqB.pid, bqB.dia, bqB.part, destB); bqB.res.conDestinos = destB.length>0; }
       catch(e){ bqB.res = {grupos:[], error:"No se ha podido completar la búsqueda."}; }
       setSave(MODE==="viewer" ? "Solo consulta" : "✓ Guardado");
       render();
@@ -9642,6 +9670,9 @@ async function boot(){
   // salvo que exista una publicación más reciente sin resolver.
   ARRANCANDO = false;
   if(NEWER) setSave("⚠ Hay una versión más reciente publicada");
+  // v177: la copia diaria se hace al abrir la aplicación (antes solo al entrar en Solicitudes),
+  // y antes de archivar, para que la copia del día incluya lo que el archivado va a retirar.
+  setTimeout(()=>{ try{ copiaDiariaAuto(); }catch(e){} }, 3000);
   setTimeout(()=>{ try{ archivarPendientes(false); }catch(e){} }, 8000);
 }
 boot();
