@@ -1341,7 +1341,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v174";
+const APP_VERSION = "v175";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1808,6 +1808,15 @@ function buildRequestText(){
   const noteEl = document.getElementById("rq-note");
   const note = (noteEl ? noteEl.value : (ui.reqNote||"")).trim();
   const name = (document.getElementById("rq-name")||{value:""}).value.trim();
+  if(rq.type==="cadena"){
+    const payload = cadenaPayload(name, note);
+    return "Solicitud de CAMBIO EN CADENA\n"+
+      "Solicitante: "+(name||"(sin nombre)")+"\n"+
+      payload.pasos.map((x,i)=>(i+1)+") "+cadenaPasoTexto(x)).join("\n")+"\n"+
+      "Se aplican todos a la vez o ninguno.\n"+
+      (note?("Motivo: "+note+"\n"):"")+
+      "\n[SOLICITUD]"+JSON.stringify(payload);
+  }
   if(rq.type==="libre"){
     const pa = state.physicians.find(x=>x.id===rq.pid);
     const d5 = ui.reqDraft||{};
@@ -1972,6 +1981,11 @@ function parseRequest(txt){
   try{ r = JSON.parse(chunk); }
   catch(e){ try{ r = JSON.parse(chunk.replace(/[\r\n]+/g," ")); }catch(e2){ return null; } }
   if(!r) return null;
+  if(r.type==="cadena"){
+    if(!Array.isArray(r.pasos) || !r.pasos.length || r.pasos.length > CADENA_MAX_PASOS) return null;
+    if(r.pasos.some(x=>!x || typeof x!=="object" || !x.t)) return null;
+    return r;
+  }
   if(r.type==="libre" || r.type==="permiso"){
     if(!r.dias || !r.dias.length || (!r.pid && !r.phys)) return null;
     return r;
@@ -2042,6 +2056,7 @@ function applyRequest(r, soloComprobar){
 }
 function applyRequestCore(r){
   marcarDeshacer("solicitud aplicada");
+  if(r.type==="cadena") return cadenaAplicar(r);
   if(r.type==="consultas"){
     const pa = state.physicians.find(x=>x.id===r.pidA) || state.physicians.find(x=>x.name===r.physA);
     const pb = state.physicians.find(x=>x.id===r.pidB) || state.physicians.find(x=>x.name===r.physB);
@@ -2322,6 +2337,8 @@ function resumenSolicitud(r){
     case "trafico": return n(r.phys)+" · Tráfico "+esc(r.code||"")+" el "+fmtDate(r.date)+(r.hora?" a las "+esc(r.hora):"");
     case "libre":   return n(r.phys)+" · no disponible "+(r.dias||[]).map(fmtDate).join(", ");
     case "permiso": return n(r.phys)+" · permiso "+(r.dias||[]).map(fmtDate).join(", ");
+    case "cadena":  return "Cambio en cadena · "+(r.pasos||[]).length+" pasos · "+
+                      cadenaParticipantes(r).map(i=>{ const q = state.physicians.find(x=>x.id===i); return q ? esc(q.name) : ""; }).filter(Boolean).join(", ");
     case "actividad": return n(r.phys)+" · "+sinHtml(r.actual||"—")+" → "+sinHtml(r.nueva||"—")+" el "+fmtDate(r.fecha);
     default:        return n(r.phys)+" · "+fmtDate(r.date);
   }
@@ -2334,6 +2351,9 @@ function detalleSolicitud(r){
     '<span style="font-size:14px;text-align:right"><b>'+valor+'</b></span></div>');
   fila("Tipo", etiquetaTipo(r.type));
   switch(r.type){
+    case "cadena":
+      (r.pasos||[]).forEach((x,i)=> fila("Paso "+(i+1), esc(cadenaPasoTexto(x))));
+      break;
     case "move":
       fila("Facultativo", esc(r.phys||""));
       fila("Consulta", esc(partLabel(r.part||"")));
@@ -2389,9 +2409,345 @@ function detalleSolicitud(r){
   return L.join("");
 }
 
+// ------------------ Cambio en cadena (v175) ------------------
+// Varios pasos (hasta 4) que se aplican JUNTOS o no se aplica ninguno. Solo se valida
+// el resultado final, así una rotación entre tres no falla por el estado intermedio.
+// Pasos: ceder (consulta o guardia), urg2 (guardia por dos consultas),
+//        actividad (reconvertir una AL/ALT) y mover (llevar una AL/ALT a otro día).
+// Reglas decididas por Javier:
+//   · Ninguna consulta desaparece: solo se traspasan, se mueven o se reconvierten.
+//   · Solo una AL o ALT puede reconvertirse o cambiar de día; el resto de actividades
+//     (INT, RXINT, ALRU, RHB, ORT, urgencias, tráficos) siguen en su día, las pase quien las pase.
+//   · Una AL solo se reconvierte en una actividad que ese día no esté ya cubierta; ALRU es la
+//     única que puede duplicarse.
+//   · Las reglas de reparto de guardias (una por semana, no seguidas) avisan, pero no impiden.
+const CADENA_MAX_PASOS = 4;
+const CADENA_REPETIBLES = ["ALRU","ADM","ADMT"];      // pueden coincidir en dos facultativos
+const esAL = c => /^ALT?\d+$/.test(String(c||""));    // AL1…AL7 y ALT1…ALT5
+const esCodGuardia = c => c==="URG" || c==="URGLV" || c==="URGF";
+function cadenaFac(pid, nombre){
+  return state.physicians.find(x=>x.id===pid) || state.physicians.find(x=>x.name===nombre) || null;
+}
+function cadenaParte(part){
+  const t = String(part||""); const i = t.indexOf(":");
+  return i<0 ? {slot:"", cod:""} : {slot:t.slice(0,i), cod:t.slice(i+1)};
+}
+// Actividades en las que puede reconvertirse una AL (mañana) o una ALT (tarde)
+function cadenaReconversiones(slot){
+  const grupo = slot==="t" ? "T" : "M";
+  return Object.keys(byCode).filter(c=> byCode[c].group===grupo && !esAL(c) && !esTrafico(c) && c!=="ADM" && c!=="ADMT");
+}
+function cadenaPerfil(p, cod){
+  if((cod==="RHB1"||cod==="RHB2") && p.noRhb) return "no hace RHB";
+  if(cod==="ALRU" && p.noAlru) return "no hace ALRU";
+  if(cod==="ALINTER" && p.noInt) return "no hace ALINTER";
+  if(cod==="ORT" && p.noOrt) return "no hace ORT";
+  if(cod==="RXINT" && p.noRxint) return "no hace RXINT";
+  if((cod==="URG"||cod==="URGLV") && p.noUrg) return "no hace urgencias entre semana";
+  if(cod==="URGF" && p.noUrgf) return "no hace urgencias de festivo";
+  return "";
+}
+function cadenaFechas(r){
+  const f = [];
+  (r.pasos||[]).forEach(x=>{ [x.date, x.dateTo, x.dateU, x.f1, x.f2].forEach(d=>{ if(d && typeof d==="string" && d.indexOf("-")>0) f.push(d); }); });
+  return f.sort();
+}
+function cadenaParticipantes(r){
+  const ids = [];
+  (r.pasos||[]).forEach(x=>{ [x.pid, x.pidA, x.pidB].forEach(i=>{ if(i && ids.indexOf(i)<0) ids.push(i); }); });
+  return ids;
+}
+// Texto de un paso, para el mensaje, la bandeja y el registro
+function cadenaPasoTexto(x){
+  const nom = (pid, n)=>{ const q = cadenaFac(pid, n); return q ? q.name : sinHtml(n||"?"); };
+  const turno = sl => sl==="m" ? "mañana" : (sl==="t" ? "tarde" : "día completo");
+  if(x.t==="ceder"){
+    const z = cadenaParte(x.part);
+    return nom(x.pidA,x.physA)+" cede "+sinHtml(z.cod)+(z.slot==="f"?"":" ("+turno(z.slot)+")")+" del "+fmtDate(x.date)+" a "+nom(x.pidB,x.physB)+
+      (x.como ? ", que la pasa como "+sinHtml(x.como) : "");
+  }
+  if(x.t==="urg2"){
+    const a = cadenaParte(x.part1), b = cadenaParte(x.part2);
+    return nom(x.pidA,x.physA)+" cede su guardia del "+fmtDate(x.dateU)+" a "+nom(x.pidB,x.physB)+" a cambio de "+
+      sinHtml(a.cod)+" ("+turno(a.slot)+") del "+fmtDate(x.f1)+" y "+sinHtml(b.cod)+" ("+turno(b.slot)+") del "+fmtDate(x.f2);
+  }
+  if(x.t==="actividad"){
+    const z = cadenaParte(x.part);
+    return nom(x.pid,x.phys)+" reconvierte "+sinHtml(z.cod)+" en "+sinHtml(x.nueva)+" el "+fmtDate(x.date)+" ("+turno(z.slot)+")";
+  }
+  if(x.t==="mover"){
+    const z = cadenaParte(x.part);
+    return nom(x.pid,x.phys)+" mueve "+sinHtml(z.cod)+" ("+turno(z.slot)+") del "+fmtDate(x.date)+" al "+fmtDate(x.dateTo);
+  }
+  return "Paso no reconocido";
+}
+// Simula la cadena completa sobre el cuadrante actual, sin tocarlo.
+// Devuelve {error} o {celdas:{clave:celda|null}, horas:[{de,a}], avisos:[…]}.
+function cadenaSimular(r){
+  const pasos = Array.isArray(r.pasos) ? r.pasos : [];
+  if(!pasos.length) return {error:"La cadena no tiene ningún paso."};
+  if(pasos.length > CADENA_MAX_PASOS) return {error:"Una cadena admite como máximo "+CADENA_MAX_PASOS+" pasos."};
+  const hmap = holidayMap();
+  const W = {};                                   // copia de trabajo: solo las celdas tocadas
+  const orig = k => state.assignments[k] ? Object.assign({m:null,t:null,f:null}, state.assignments[k]) : {m:null,t:null,f:null};
+  const get = k => (W[k] = W[k] || orig(k));
+  const tiene = (cel, sl, cod)=> sl==="f" ? cel.f===cod : (!cel.f && cel[sl]===cod);
+  const quitas = [], altas = [], horas = [];
+  const dow = dk => { const pr = dk.split("-").map(Number); return new Date(pr[0],pr[1]-1,pr[2]).getDay(); };
+  const esFecha = dk => typeof dk==="string" && /^\d{4}-\d{2}-\d{2}$/.test(dk);
+
+  // 1) Cada paso se traduce en retiradas y altas
+  for(let i=0; i<pasos.length; i++){
+    const x = pasos[i] || {}; const n = "Paso "+(i+1)+": ";
+    if(x.t==="ceder"){
+      const A = cadenaFac(x.pidA,x.physA), B = cadenaFac(x.pidB,x.physB), z = cadenaParte(x.part);
+      if(!A || !B) return {error:n+"no se encuentra a alguno de los facultativos."};
+      if(A.id===B.id) return {error:n+"quien cede y quien recibe deben ser distintos."};
+      if(!esFecha(x.date) || !z.cod || ["m","t","f"].indexOf(z.slot)<0) return {error:n+"faltan datos."};
+      let cod = z.cod;
+      if(x.como){
+        if(!esAL(z.cod)) return {error:n+"solo una consulta AL o ALT puede reconvertirse ("+sinHtml(z.cod)+" no)."};
+        if(cadenaReconversiones(z.slot).indexOf(x.como)<0) return {error:n+sinHtml(x.como)+" no es una actividad válida para ese turno."};
+        cod = x.como;
+      }
+      quitas.push({p:A, dia:x.date, slot:z.slot, cod:z.cod, n:n});
+      altas.push({p:B, dia:x.date, slot:z.slot, cod:cod, n:n, horaDe:(esTrafico(z.cod) ? A.id+"|"+x.date+"|"+z.slot : "")});
+    }else if(x.t==="urg2"){
+      const A = cadenaFac(x.pidA,x.physA), B = cadenaFac(x.pidB,x.physB);
+      if(!A || !B) return {error:n+"no se encuentra a alguno de los facultativos."};
+      if(A.id===B.id) return {error:n+"quien cede la guardia y quien la asume deben ser distintos."};
+      if(!esFecha(x.dateU) || !esFecha(x.f1) || !esFecha(x.f2)) return {error:n+"faltan fechas."};
+      const g = orig(A.id+"|"+x.dateU).f;
+      if(!esCodGuardia(g)) return {error:n+A.name+" no tiene guardia el "+fmtDate(x.dateU)+"."};
+      const z1 = cadenaParte(x.part1), z2 = cadenaParte(x.part2);
+      if(x.f1===x.f2 && z1.slot===z2.slot) return {error:n+"las dos consultas que se entregan deben ser distintas."};
+      for(const z of [z1,z2]){ if(["m","t"].indexOf(z.slot)<0 || !z.cod) return {error:n+"hay que indicar las dos consultas que se entregan."}; }
+      quitas.push({p:A, dia:x.dateU, slot:"f", cod:g, n:n});
+      altas.push({p:B, dia:x.dateU, slot:"f", cod:g, n:n});
+      [[x.f1,z1],[x.f2,z2]].forEach(par=>{
+        quitas.push({p:B, dia:par[0], slot:par[1].slot, cod:par[1].cod, n:n});
+        altas.push({p:A, dia:par[0], slot:par[1].slot, cod:par[1].cod, n:n, horaDe:(esTrafico(par[1].cod) ? B.id+"|"+par[0]+"|"+par[1].slot : "")});
+      });
+    }else if(x.t==="actividad"){
+      const P = cadenaFac(x.pid,x.phys), z = cadenaParte(x.part);
+      if(!P) return {error:n+"no se encuentra al facultativo."};
+      if(!esFecha(x.date) || ["m","t"].indexOf(z.slot)<0 || !z.cod || !x.nueva) return {error:n+"faltan datos."};
+      if(!esAL(z.cod)) return {error:n+"solo una consulta AL o ALT puede reconvertirse ("+sinHtml(z.cod)+" no)."};
+      if(cadenaReconversiones(z.slot).indexOf(x.nueva)<0) return {error:n+sinHtml(x.nueva)+" no es una actividad válida para ese turno."};
+      quitas.push({p:P, dia:x.date, slot:z.slot, cod:z.cod, n:n});
+      altas.push({p:P, dia:x.date, slot:z.slot, cod:x.nueva, n:n});
+    }else if(x.t==="mover"){
+      const P = cadenaFac(x.pid,x.phys), z = cadenaParte(x.part);
+      if(!P) return {error:n+"no se encuentra al facultativo."};
+      if(!esFecha(x.date) || !esFecha(x.dateTo) || ["m","t"].indexOf(z.slot)<0 || !z.cod) return {error:n+"faltan datos."};
+      if(x.date===x.dateTo) return {error:n+"el día de destino es el mismo."};
+      if(!esAL(z.cod)) return {error:n+"solo una consulta AL o ALT puede cambiar de día ("+sinHtml(z.cod)+" debe seguir en el suyo)."};
+      const w = dow(x.dateTo);
+      if(w===0 || w===6 || hmap[x.dateTo]) return {error:n+"el "+fmtDate(x.dateTo)+" no es laborable."};
+      quitas.push({p:P, dia:x.date, slot:z.slot, cod:z.cod, n:n});
+      altas.push({p:P, dia:x.dateTo, slot:z.slot, cod:z.cod, n:n});
+    }else{
+      return {error:n+"tipo de paso no reconocido."};
+    }
+  }
+  // 2) Primero todas las retiradas…
+  for(const q of quitas){
+    const cel = get(q.p.id+"|"+q.dia);
+    if(!tiene(cel, q.slot, q.cod))
+      return {error:q.n+q.p.name+" no tiene "+sinHtml(q.cod)+" el "+fmtDate(q.dia)+(q.slot==="f"?"":" por la "+(q.slot==="m"?"mañana":"tarde"))+"."};
+    cel[q.slot] = null;
+  }
+  // 3) …y después todas las altas, ya sobre el resultado
+  const avisos = [];
+  const dias7 = ["domingos","lunes","martes","miércoles","jueves","viernes","sábados"];
+  for(const a of altas){
+    const k = a.p.id+"|"+a.dia, cel = get(k), w = dow(a.dia);
+    const ocupado = a.slot==="f" ? (cel.f || cel.m || cel.t) : (cel.f || cel[a.slot]);
+    if(ocupado){
+      const txt = cel.f ? (absInfo(cel.f) ? absInfo(cel.f).label : cel.f) : [cel.m, cel.t].filter(Boolean).join(" + ");
+      return {error:a.n+a.p.name+" ya tiene "+sinHtml(txt)+" el "+fmtDate(a.dia)+" y no puede asumir "+sinHtml(a.cod)+"."};
+    }
+    const perfil = cadenaPerfil(a.p, a.cod);
+    if(perfil) return {error:a.n+a.p.name+" "+perfil+"."};
+    if(a.slot==="f"){
+      if(bloqueaGuardia(a.p, w)) return {error:a.n+a.p.name+" no hace guardias los "+dias7[w]+"."};
+    }else{
+      if(a.slot==="t" && w===5) return {error:a.n+"los viernes no hay consulta de tarde."};
+      if(bloqueaTurno(a.p, w, a.slot)) avisos.push(a.p.name+" tiene reducción de jornada la "+(a.slot==="t"?"tarde":"mañana")+" de los "+dias7[w]+": lo haría de forma voluntaria.");
+    }
+    if((state.diasLibres||{})[k]) avisos.push(a.p.name+" tiene marcado el "+fmtDate(a.dia)+" como no disponible.");
+    cel[a.slot] = a.cod;
+    if(a.horaDe) horas.push({de:a.horaDe, a:k+"|"+a.slot});
+  }
+  // 4) Resultado final: ninguna consulta repetida en los días tocados (salvo ALRU y administrativas)
+  const vista = k => W[k] || state.assignments[k] || null;
+  const diasTocados = {}; Object.keys(W).forEach(k=>{ diasTocados[k.slice(k.indexOf("|")+1)] = 1; });
+  for(const dia of Object.keys(diasTocados)){
+    for(const sl of ["m","t"]){
+      const cuenta = {};
+      state.physicians.forEach(p=>{ const c = vista(p.id+"|"+dia); if(c && !c.f && c[sl]) (cuenta[c[sl]] = cuenta[c[sl]] || []).push(p.name); });
+      for(const cod of Object.keys(cuenta)){
+        if(cuenta[cod].length>1 && CADENA_REPETIBLES.indexOf(cod)<0){
+          const antes = state.physicians.filter(p=>{ const c = state.assignments[p.id+"|"+dia]; return c && !c.f && c[sl]===cod; }).length;
+          if(cuenta[cod].length > antes)
+            return {error:"El "+fmtDate(dia)+" la consulta "+sinHtml(cod)+" quedaría repetida ("+cuenta[cod].join(" y ")+"). Solo ALRU puede duplicarse."};
+        }
+      }
+    }
+  }
+  // 5) Avisos que no impiden el cambio
+  const esU = c => !!c && esCodGuardia(c.f);
+  altas.filter(a=>a.slot==="f").forEach(a=>{
+    const pr = a.dia.split("-").map(Number); const base = new Date(pr[0],pr[1]-1,pr[2]);
+    const lun = new Date(base); lun.setDate(base.getDate()-((base.getDay()+6)%7));
+    let enSemana = 0;
+    for(let i=0;i<7;i++){ const d2 = new Date(lun); d2.setDate(lun.getDate()+i); if(esU(vista(a.p.id+"|"+keyOf(d2.getFullYear(),d2.getMonth(),d2.getDate())))) enSemana++; }
+    if(enSemana>1) avisos.push(a.p.name+" tendría "+enSemana+" guardias la semana del "+fmtDate(keyOf(lun.getFullYear(),lun.getMonth(),lun.getDate()))+".");
+    [-1,1].forEach(s=>{ const d2 = new Date(base); d2.setDate(base.getDate()+s);
+      if(esU(vista(a.p.id+"|"+keyOf(d2.getFullYear(),d2.getMonth(),d2.getDate())))) avisos.push(a.p.name+" tendría guardias en días seguidos ("+fmtDate(a.dia)+")."); });
+  });
+  const balance = {};
+  Object.keys(W).forEach(k=>{ const pid = k.slice(0,k.indexOf("|")); balance[pid] = (balance[pid]||0) + turnosOf(W[k]) - turnosOf(state.assignments[k]); });
+  Object.keys(balance).forEach(pid=>{
+    const p = state.physicians.find(x=>x.id===pid); const b = balance[pid];
+    if(p && b!==0) avisos.push(p.name+" queda con "+Math.abs(b)+" turno"+(Math.abs(b)>1?"s":"")+(b<0?" menos":" más")+".");
+  });
+  const celdas = {};
+  Object.keys(W).forEach(k=>{ const c = W[k]; celdas[k] = (!c.m && !c.t && !c.f) ? null : c; });
+  return {celdas:celdas, horas:horas, avisos:avisos.filter((x,i,l)=>l.indexOf(x)===i)};
+}
+function cadenaAplicar(r){
+  const sim = cadenaSimular(r);
+  if(sim.error) return sim.error;
+  Object.keys(sim.celdas).forEach(k=>{ if(sim.celdas[k]) state.assignments[k] = sim.celdas[k]; else delete state.assignments[k]; });
+  sim.horas.forEach(h=>{
+    state.traficoHoras = state.traficoHoras || {};
+    if(state.traficoHoras[h.de]){ state.traficoHoras[h.a] = state.traficoHoras[h.de]; delete state.traficoHoras[h.de]; }
+  });
+  save();
+  return null;
+}
+// ---- Formulario del cambio en cadena ----
+function cadenaPartes(pid, dia, opc){
+  const a = state.assignments[pid+"|"+dia] || {}; const out = [];
+  opc = opc || {};
+  if(a.f){ if(opc.guardia && esCodGuardia(a.f)) out.push({v:"f:"+a.f, txt:a.f+" (guardia)"}); return out; }
+  ["m","t"].forEach(sl=>{ const c = a[sl]; if(!c) return; if(opc.soloAL && !esAL(c)) return; out.push({v:sl+":"+c, txt:c+" ("+(sl==="m"?"mañana":"tarde")+")"}); });
+  return out;
+}
+// Convierte lo que hay en el formulario en un paso. Devuelve {paso} o {error}.
+function cadenaPasoBorrador(cp){
+  const nom = pid => { const q = state.physicians.find(x=>x.id===pid); return q ? q.name : ""; };
+  const k = cp.k || "ceder";
+  if(k==="ceder"){
+    if(!cp.a || !cp.b || !cp.d || !cp.part) return {error:"Elige quién cede, qué día, qué cede y a quién."};
+    const paso = {t:"ceder", pidA:cp.a, physA:nom(cp.a), pidB:cp.b, physB:nom(cp.b), date:cp.d, part:cp.part};
+    if(cp.como && esAL(cadenaParte(cp.part).cod)) paso.como = cp.como;
+    return {paso:paso};
+  }
+  if(k==="urg2"){
+    if(!cp.a || !cp.b || !cp.d || !cp.d1 || !cp.p1 || !cp.d2 || !cp.p2) return {error:"Elige la guardia, quién la asume y las dos consultas que entrega."};
+    return {paso:{t:"urg2", pidA:cp.a, physA:nom(cp.a), pidB:cp.b, physB:nom(cp.b), dateU:cp.d, f1:cp.d1, part1:cp.p1, f2:cp.d2, part2:cp.p2}};
+  }
+  if(k==="actividad"){
+    if(!cp.a || !cp.d || !cp.part || !cp.como) return {error:"Elige el facultativo, el día, la consulta y la nueva actividad."};
+    return {paso:{t:"actividad", pid:cp.a, phys:nom(cp.a), date:cp.d, part:cp.part, nueva:cp.como}};
+  }
+  if(k==="mover"){
+    if(!cp.a || !cp.d || !cp.part || !cp.d2) return {error:"Elige el facultativo, el día, la consulta y el día de destino."};
+    return {paso:{t:"mover", pid:cp.a, phys:nom(cp.a), date:cp.d, part:cp.part, dateTo:cp.d2}};
+  }
+  return {error:"Tipo de paso no reconocido."};
+}
+function cadenaPayload(name, note){
+  const d = ui.reqDraft || {};
+  return {v:11, type:"cadena", by:name||"", note:note||"", pasos:(d.pasos||[]).slice(0, CADENA_MAX_PASOS)};
+}
+function cadenaFormHTML(){
+  const phys = state.physicians;
+  const d = ui.reqDraft || (ui.reqDraft = {});
+  d.pasos = Array.isArray(d.pasos) ? d.pasos : [];
+  const yo = miFacultativo();
+  const cp = d.cp = d.cp || {};
+  cp.k = cp.k || "ceder";
+  if(!cp.a || !phys.find(x=>x.id===cp.a)) cp.a = (yo ? yo.id : (phys[0]||{}).id);
+  if(!cp.d) cp.d = (ui.reqModal||{}).date || "";
+  const est = 'width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px';
+  const tit = t => '<p class="tiny" style="margin-top:10px">'+t+'</p>';
+  const selFac = (campo, val, excluir)=>'<select data-field="rq-cp-'+campo+'" style="'+est+'"><option value="">—</option>'+
+    phys.filter(x=>x.id!==excluir).map(x=>'<option value="'+x.id+'"'+(val===x.id?" selected":"")+'>'+esc(x.name)+'</option>').join("")+'</select>';
+  const fecha = (campo, val)=>'<input type="date" data-field="rq-cp-'+campo+'" value="'+esc(val||"")+'" style="'+est+'">';
+  const selPartes = (campo, val, lista, vacio)=> lista.length
+    ? '<select data-field="rq-cp-'+campo+'" style="'+est+'"><option value="">—</option>'+lista.map(o=>'<option value="'+esc(o.v)+'"'+(val===o.v?" selected":"")+'>'+esc(o.txt)+'</option>').join("")+'</select>'
+    : '<p class="muted" style="font-size:13px;margin-top:4px">'+vacio+'</p>';
+  const selComo = (val, slot, opcional)=>'<select data-field="rq-cp-como" style="'+est+'">'+
+    '<option value="">'+(opcional?"La pasa igual, sin cambiar":"—")+'</option>'+
+    cadenaReconversiones(slot).map(c=>'<option value="'+c+'"'+(val===c?" selected":"")+'>'+c+'</option>').join("")+'</select>';
+
+  let h = '<p class="muted" style="margin-top:10px;font-size:13px">Varios cambios que se aplican <b>todos a la vez o ninguno</b>: sirve para cambios entre tres o en cadena. Máximo '+CADENA_MAX_PASOS+' pasos.</p>';
+  if(d.pasos.length){
+    h += '<div id="cadena-pasos" style="margin-top:8px">'+d.pasos.map((x,i)=>
+      '<div class="row between" style="gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--slate-100)">'+
+        '<span style="font-size:14px"><b>'+(i+1)+'.</b> '+esc(cadenaPasoTexto(x))+'</span>'+
+        '<button class="btn" data-action="rq-cadena-del" data-i="'+i+'" style="padding:3px 9px;font-size:13px">Quitar</button></div>').join("")+'</div>';
+  }
+  if(d.pasos.length < CADENA_MAX_PASOS){
+    h += '<div style="margin-top:12px;padding:10px;border:1px dashed var(--slate-300);border-radius:10px">'+
+      '<b style="font-size:14px">Añadir paso '+(d.pasos.length+1)+'</b>'+
+      tit("Qué se hace")+
+      '<select data-field="rq-cp-k" style="'+est+'">'+
+        [["ceder","Ceder una consulta o una guardia a un compañero"],["urg2","Cambiar una guardia por dos consultas"],
+         ["actividad","Reconvertir una consulta AL en otra actividad"],["mover","Mover una consulta AL a otro día"]]
+          .map(o=>'<option value="'+o[0]+'"'+(cp.k===o[0]?" selected":"")+'>'+o[1]+'</option>').join("")+'</select>';
+    if(cp.k==="ceder"){
+      const partes = cadenaPartes(cp.a, cp.d, {guardia:true});
+      const z = cadenaParte(cp.part);
+      h += tit("Quién cede")+selFac("a", cp.a)+tit("Qué día")+fecha("d", cp.d)+
+        tit("Qué cede")+selPartes("part", cp.part, partes, "Ese día no tiene nada que ceder.")+
+        tit("A quién")+selFac("b", cp.b, cp.a)+
+        (esAL(z.cod) ? tit("¿Quien la recibe la pasa como otra actividad?")+selComo(cp.como, z.slot, true) : '');
+    }else if(cp.k==="urg2"){
+      const guardia = cadenaPartes(cp.a, cp.d, {guardia:true}).filter(o=>o.v.indexOf("f:")===0);
+      h += tit("Quién cede la guardia")+selFac("a", cp.a)+tit("Día de la guardia")+fecha("d", cp.d)+
+        (guardia.length ? '' : '<p class="muted" style="font-size:13px;margin-top:4px">Ese día no tiene guardia.</p>')+
+        tit("Quién la asume")+selFac("b", cp.b, cp.a)+
+        tit("Primera consulta que entrega: día y consulta")+fecha("d1", cp.d1)+
+          (cp.b && cp.d1 ? selPartes("p1", cp.p1, cadenaPartes(cp.b, cp.d1), "Ese día no tiene consulta.") : '')+
+        tit("Segunda consulta que entrega: día y consulta")+fecha("d2", cp.d2)+
+          (cp.b && cp.d2 ? selPartes("p2", cp.p2, cadenaPartes(cp.b, cp.d2), "Ese día no tiene consulta.") : '');
+    }else if(cp.k==="actividad"){
+      const partes = cadenaPartes(cp.a, cp.d, {soloAL:true});
+      h += tit("Facultativo")+selFac("a", cp.a)+tit("Qué día")+fecha("d", cp.d)+
+        tit("Consulta que reconvierte (solo AL o ALT)")+selPartes("part", cp.part, partes, "Ese día no tiene ninguna AL o ALT.")+
+        (cp.part ? tit("Nueva actividad")+selComo(cp.como, cadenaParte(cp.part).slot, false) : '');
+    }else{
+      const partes = cadenaPartes(cp.a, cp.d, {soloAL:true});
+      h += tit("Facultativo")+selFac("a", cp.a)+tit("Qué día")+fecha("d", cp.d)+
+        tit("Consulta que mueve (solo AL o ALT)")+selPartes("part", cp.part, partes, "Ese día no tiene ninguna AL o ALT.")+
+        tit("A qué día")+fecha("d2", cp.d2);
+    }
+    h += '<div class="row" style="margin-top:10px"><button class="btn" data-action="rq-cadena-add">Añadir este paso</button></div></div>';
+  }
+  // Validación de la cadena completa
+  let motivo = null, avisos = [];
+  if(d.pasos.length < 2) motivo = "Añade al menos dos pasos.";
+  else{
+    const r = cadenaPayload("", "");
+    if(yo && cadenaParticipantes(r).indexOf(yo.id)<0) motivo = "Tú debes participar en al menos uno de los pasos.";
+    if(!motivo){ try{ motivo = applyRequest(r, true); }catch(e){ motivo = "No se ha podido comprobar la cadena."; } }
+    if(!motivo){ const sim = cadenaSimular(r); avisos = sim.avisos || []; }
+  }
+  ui.reqBloqueo = motivo;
+  h += motivo
+    ? '<div class="warnbox" style="margin-top:10px">⚠ <b>'+(d.pasos.length<2 ? "Todavía no se puede enviar:" : "No se puede solicitar este cambio:")+'</b><br>'+esc(motivo)+'</div>'
+    : ('<p style="margin-top:10px;font-size:13px;color:var(--emerald-700)"><b>✓ La cadena completa es posible.</b></p>'+
+       avisos.map(a=>'<div class="warnbox" style="margin-top:8px">ℹ '+esc(a)+'</div>').join(""));
+  return h;
+}
+
 function etiquetaTipo(t){
   const m = {actividad:"Cambio de actividad", permiso:"Días de permiso", consultas:"Intercambio de consultas", swap:"Intercambio", move:"Mover consulta", doble:"Cambio doble", ceder:"Cesión",
-             urg2:"Urgencia × 2", trafico:"Tráfico", libre:"No disponibilidad"};
+             urg2:"Urgencia × 2", trafico:"Tráfico", libre:"No disponibilidad", cadena:"Cambio en cadena"};
   return m[t] || "Cambio";
 }
 function haceCuanto(iso){
@@ -2450,7 +2806,9 @@ function solicitudFormHTML(){
   if(yo) rq.pid = yo.id;                 // el dispositivo identificado solo pide para sí
   limpiarAvisos();
   let core;
-  if(rq.type==="consultas"){
+  if(rq.type==="cadena"){
+    core = cadenaFormHTML();
+  }else if(rq.type==="consultas"){
     if(!rq.pidB || !phys.find(x=>x.id===rq.pidB)){
       const alt = phys.find(x=>!p || x.id!==p.id) || p; rq.pidB = alt ? alt.id : null;
     }
@@ -2864,6 +3222,7 @@ function solicitudFormHTML(){
       '<option value="libre"'+(rq.type==="libre"?" selected":"")+'>Pedir días de no disponibilidad</option>'+
       '<option value="actividad"'+(rq.type==="actividad"?" selected":"")+'>Cambiar la actividad del día</option>'+
       '<option value="permiso"'+(rq.type==="permiso"?" selected":"")+'>Pedir días de permiso</option>'+
+      '<option value="cadena"'+(rq.type==="cadena"?" selected":"")+'>Cambio en cadena (entre tres o varios pasos)</option>'+
     '</select>'+
     core+
     '<input type="text" id="rq-name" placeholder="Tu nombre" value="'+esc(name || (miFacultativo()?miFacultativo().name:""))+'" data-field="rq-name" style="width:100%;padding:8px;margin-top:10px;border:1px solid var(--slate-300);border-radius:8px">'+
@@ -4099,6 +4458,7 @@ function fechaRelevante(r){
     case "libre":   (r.dias||[]).forEach(meter); break;
     case "permiso": (r.dias||[]).forEach(meter); break;
     case "actividad": meter(r.fecha); break;
+    case "cadena":  cadenaFechas(r).forEach(meter); break;
     default:        meter(r.date);
   }
   return f.length ? f.sort()[f.length-1] : "";
@@ -5424,7 +5784,12 @@ function viewSolicitudes(){
         (r.note?'<p style="font-size:14px;margin-top:4px"><b>Motivo:</b> '+esc(r.note)+'</p>':'')+
         warns.map(w=>'<p style="font-size:12px;color:#92400e;margin-top:4px">⚠ '+w+'</p>').join("");
     }else{
-      if(r.type==="libre"){
+      if(r.type==="cadena"){
+        ficha = '<p style="font-size:14px"><b>Solicitante:</b> '+esc(r.by||"(sin nombre)")+' · <b>CAMBIO EN CADENA</b></p>'+
+          (r.pasos||[]).map((x,i)=>'<p style="font-size:14px;margin-top:4px"><b>'+(i+1)+'.</b> '+esc(cadenaPasoTexto(x))+'</p>').join("")+
+          (r.note?'<p style="font-size:14px;margin-top:4px"><b>Motivo:</b> '+esc(r.note)+'</p>':'')+
+          '<p style="font-size:12px;margin-top:6px" class="muted">Se aplican todos los pasos a la vez; si alguno no es posible, no se aplica ninguno.</p>';
+      }else if(r.type==="libre"){
         ficha = '<p style="font-size:14px"><b>Solicitante:</b> '+esc(r.by||"(sin nombre)")+' · <b>DÍAS DE NO DISPONIBILIDAD</b></p>'+
           '<p style="font-size:14px;margin-top:4px"><b>'+esc(r.phys||"")+'</b> pide no trabajar:</p>'+
           '<p style="font-size:14px;margin-top:4px">'+(r.dias||[]).map(fmtDate).join(" · ")+'</p>'+
@@ -5496,6 +5861,10 @@ function viewSolicitudes(){
       else if(r.type==="ceder") validarCesion(r.pidA, r.date, r.part, r.pidB);
       else if(r.type==="trafico") validarTrafico(r.pid, r.date, r.slot, r.code);
       else if(r.type==="swap") validarIntercambio(r.pidA, r.dateA, r.pidB, r.dateB);
+      else if(r.type==="cadena"){
+        const simC = cadenaSimular(r);
+        if(simC.avisos && simC.avisos.length) AVISO_VOLUNTARIO = simC.avisos.map(esc).join("<br>");
+      }
       else if(r.type==="doble"){
         const da = state.physicians.find(x=>x.id===r.pidA) || state.physicians.find(x=>x.name===r.physA);
         const db = state.physicians.find(x=>x.id===r.pidB) || state.physicians.find(x=>x.name===r.physB);
@@ -5645,7 +6014,8 @@ function viewIncoherencias(){
 // leído de la bandeja publicada.
 function misSolicitudes(pid){
   const p = state.physicians.find(x=>x.id===pid); if(!p) return [];
-  const mia = r => !!r && ([r.pid, r.pidA, r.pidB].indexOf(pid)>=0 || [r.phys, r.physA, r.physB].indexOf(p.name)>=0);
+  const mia = r => !!r && ([r.pid, r.pidA, r.pidB].indexOf(pid)>=0 || [r.phys, r.physA, r.physB].indexOf(p.name)>=0 ||
+                           (r.type==="cadena" && cadenaParticipantes(r).indexOf(pid)>=0));
   const esperas = [];
   Object.keys(state.cambiosAdm||{}).forEach(mk=>{ (state.cambiosAdm[mk]||[]).forEach(c=>{ if(c && c.pendiente && c.at) esperas.push(Date.parse(c.at)); }); });
   return bandeja().filter(it=>it && mia(it.req)).map(it=>{
@@ -8032,6 +8402,23 @@ document.addEventListener("click", e=>{
       break;
     }
     case "perm-anio": ui.permAnio = (ui.permAnio || new Date().getFullYear()) + Number(el.dataset.delta||0); render(); break;
+    case "rq-cadena-add": {
+      const dCa = ui.reqDraft = ui.reqDraft || {};
+      dCa.pasos = Array.isArray(dCa.pasos) ? dCa.pasos : [];
+      if(dCa.pasos.length >= CADENA_MAX_PASOS){ window.alert("Una cadena admite como máximo "+CADENA_MAX_PASOS+" pasos."); break; }
+      const rPaso = cadenaPasoBorrador(dCa.cp || {});
+      if(rPaso.error){ window.alert(rPaso.error); break; }
+      dCa.pasos.push(rPaso.paso);
+      dCa.cp = {k:(dCa.cp||{}).k || "ceder"};
+      (ui.reqModal && ui.reqModal.tab) ? render() : renderModal();
+      break;
+    }
+    case "rq-cadena-del": {
+      const dCd = ui.reqDraft || {};
+      if(Array.isArray(dCd.pasos)) dCd.pasos.splice(Number(el.dataset.i), 1);
+      (ui.reqModal && ui.reqModal.tab) ? render() : renderModal();
+      break;
+    }
     case "req-permiso-add": {
       const dPer = ui.reqDraft = ui.reqDraft || {};
       dPer.permisos = Array.isArray(dPer.permisos) ? dPer.permisos : [];
@@ -8469,6 +8856,10 @@ document.addEventListener("click", e=>{
               case "libre":
                 entry = {at:ahora, by:rq0.by||"", phys:rq0.phys||"", date:(rq0.dias&&rq0.dias[0])||"",
                          prop:"No disponible: "+(rq0.dias||[]).map(fmtDate).join(", ")}; break;
+              case "cadena":
+                entry = {at:ahora, by:rq0.by||"", date:cadenaFechas(rq0)[0]||"",
+                         phys:cadenaParticipantes(rq0).map(i=>{ const q = state.physicians.find(x=>x.id===i); return q ? q.name : ""; }).filter(Boolean).join(", "),
+                         prop:"Cambio en cadena: "+(rq0.pasos||[]).map(cadenaPasoTexto).join(" · ")}; break;
               case "permiso":
                 entry = {at:ahora, by:rq0.by||"", phys:rq0.phys||"", date:(rq0.dias&&rq0.dias[0])||"",
                          prop:"Permiso: "+(rq0.dias||[]).map(fmtDate).join(", ")}; break;
@@ -8751,6 +9142,18 @@ document.addEventListener("change", e=>{
     else if(fld==="rq-u2mov2"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.mov2=el.value; rqRefresh(); }
     else if(fld==="rq-u2slot1"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.slot1=el.value; rqRefresh(); }
     else if(fld==="rq-u2slot2"){ ui.reqDraft=ui.reqDraft||{}; ui.reqDraft.slot2=el.value; rqRefresh(); }
+    else if(fld.indexOf("rq-cp-")===0){
+      const dC = (ui.reqDraft = ui.reqDraft || {}); const cpC = (dC.cp = dC.cp || {}); const campo = fld.slice(6);
+      cpC[campo] = el.value;
+      // Al cambiar de qué se parte, lo elegido después deja de valer
+      if(campo==="k"){ dC.cp = {k:el.value, a:cpC.a, d:cpC.d}; }
+      else if(campo==="a" || campo==="d"){ cpC.part = ""; cpC.como = ""; }
+      else if(campo==="part"){ cpC.como = ""; }
+      else if(campo==="b"){ cpC.p1 = ""; cpC.p2 = ""; }
+      else if(campo==="d1"){ cpC.p1 = ""; }
+      else if(campo==="d2"){ cpC.p2 = ""; }
+      rqRefresh();
+    }
     else if(fld==="rq-name"){ ui.reqName = el.value; try{ localStorage.setItem(KEY_REQNAME, el.value.trim()); }catch(e2){} }
     return;
   }
