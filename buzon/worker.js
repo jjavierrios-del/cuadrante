@@ -62,7 +62,6 @@ function construirICS(datos, pid, meses) {
   const asg = datos.assignments || {};
   const horasTf = datos.traficoHoras || {};
   const libres = datos.diasLibres || {};
-  const year = datos.year || new Date().getFullYear();
   const sello = new Date().toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
   const L = [];
   let n = 0;
@@ -91,7 +90,14 @@ function construirICS(datos, pid, meses) {
       "END:VEVENT");
   };
 
-  for (const mo of meses) {
+  for (const par of meses) {
+    // Cada elemento es [año, mes]; se aceptan también números sueltos (mes del año publicado)
+    const year = Array.isArray(par) ? par[0] : (datos.year || new Date().getFullYear());
+    const mo = Array.isArray(par) ? par[1] : par;
+    // Solo se publican los meses que el coordinador ha marcado como OFICIALES.
+    // Mientras tanto el mes es un borrador y no llega a los calendarios; una vez
+    // oficial, se publica y recoge también todos los cambios posteriores.
+    if (!(datos.official && datos.official[year + "-" + pad2(mo + 1)])) continue;
     const dim = new Date(year, mo + 1, 0).getDate();
     for (let d = 1; d <= dim; d++) {
       const dk = year + "-" + pad2(mo + 1) + "-" + pad2(d);
@@ -150,6 +156,62 @@ const CORS = {
   "Access-Control-Allow-Headers": "Content-Type",
   "Cache-Control": "no-store"
 };
+
+// Guarda el cuadrante reintentando si dos personas escriben a la vez.
+// GitHub responde 409 cuando la versión que teníamos ha quedado atrás;
+// en ese caso se vuelve a leer y se aplica el cambio sobre lo más reciente.
+async function editarCuadrante(env, mensaje, modificar) {
+  const rama = env.GH_BRANCH || "main";
+  const api = "https://api.github.com/repos/" + env.GH_OWNER + "/" + env.GH_REPO + "/contents/data.json";
+  const cabeceras = {
+    "Authorization": "Bearer " + env.GITHUB_TOKEN,
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": "buzon-cuadrante"
+  };
+  for (let intento = 0; intento < 4; intento++) {
+    const actual = await fetch(api + "?ref=" + encodeURIComponent(rama) + "&t=" + Date.now(), { headers: cabeceras });
+    if (!actual.ok) return { error: "No se ha podido leer el cuadrante.", status: 502 };
+    const meta = await actual.json();
+    let datos;
+    try {
+      const bin = atob(String(meta.content || "").replace(/\n/g, ""));
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      datos = JSON.parse(new TextDecoder().decode(bytes));
+    } catch (e) { return { error: "Cuadrante ilegible.", status: 502 }; }
+
+    const r = modificar(datos);
+    if (r && r.error) return r;                    // el cambio no procede
+    if (r && r.sinCambios) return { ok: true };
+
+    datos.publishedAt = new Date().toISOString();
+    datos.publishedBy = "administrativo";
+    const texto = JSON.stringify(datos);
+    const binario = bytesABinario(new TextEncoder().encode(texto));
+    const guardar = await fetch(api, {
+      method: "PUT",
+      headers: { ...cabeceras, "Content-Type": "application/json" },
+      body: JSON.stringify({ message: mensaje, content: btoa(binario), branch: rama, sha: meta.sha })
+    });
+    if (guardar.ok) return { ok: true, extra: r && r.extra };
+    if (guardar.status !== 409) {
+      return { error: "No se ha podido guardar (" + guardar.status + ").", status: 502 };
+    }
+    // Choque: alguien guardó primero. Se espera un poco y se reintenta.
+    await new Promise(res => setTimeout(res, 250 + intento * 350));
+  }
+  return { error: "El cuadrante está recibiendo muchos cambios a la vez. Inténtalo de nuevo.", status: 409 };
+}
+
+function bytesABinario(bytes) {
+  let out = "";
+  const BLOQUE = 0x8000;
+  for (let i = 0; i < bytes.length; i += BLOQUE) {
+    out += String.fromCharCode.apply(null, bytes.subarray(i, i + BLOQUE));
+  }
+  return out;
+}
 
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
@@ -247,8 +309,15 @@ export default {
         const datos = await r.json().catch(() => null);
         if (!datos) return new Response("Cuadrante ilegible", { status: 502, headers: CORS });
 
-        // Todo el año, para que el calendario tenga siempre el mes en curso y los siguientes
-        const meses = [0,1,2,3,4,5,6,7,8,9,10,11];
+        // Ventana móvil en torno a HOY: dos meses atrás y doce por delante.
+        // Antes se tomaba solo el año publicado, que cambia según el mes que el
+        // coordinador tenga abierto; al cruzar de año se perdían meses.
+        const hoy = new Date();
+        const meses = [];
+        for (let i = -2; i <= 12; i++) {
+          const f = new Date(hoy.getFullYear(), hoy.getMonth() + i, 1);
+          meses.push([f.getFullYear(), f.getMonth()]);
+        }
         const ics = construirICS(datos, pid, meses);
         if (!ics) return new Response("Facultativo no encontrado", { status: 404, headers: CORS });
 
@@ -268,38 +337,6 @@ export default {
         if (!cuerpo) return json({ error: "Petición mal formada." }, 400);
         const vale = !!env.CLAVE_PUBLICAR && cuerpo.clave === env.CLAVE_PUBLICAR;
         return json({ ok: true, valida: vale });
-      }
-
-      // ---------- Copias de seguridad guardadas en el servidor ----------
-      if (request.method === "POST" && ruta === "/copia") {
-        const cuerpo = await request.json().catch(() => null);
-        if (!cuerpo) return json({ error: "Petición mal formada." }, 400);
-        if (!env.CLAVE_ADMIN || cuerpo.admin !== env.CLAVE_ADMIN) {
-          return json({ error: "Clave de administración incorrecta." }, 403);
-        }
-        if (!cuerpo.datos) return json({ error: "Faltan los datos." }, 400);
-        const texto = typeof cuerpo.datos === "string" ? cuerpo.datos : JSON.stringify(cuerpo.datos);
-        if (texto.length > 20 * 1024 * 1024) return json({ error: "Copia demasiado grande." }, 413);
-        const id = "copia:" + new Date().toISOString().replace(/[:.]/g, "-");
-        // Se conservan 180 días
-        await env.BUZON.put(id, texto, { expirationTtl: 60 * 60 * 24 * 180 });
-        return json({ ok: true, id: id, tamano: texto.length });
-      }
-      if (request.method === "GET" && ruta === "/copias") {
-        const clave = url.searchParams.get("admin") || "";
-        if (!env.CLAVE_ADMIN || clave !== env.CLAVE_ADMIN) {
-          return json({ error: "Clave de administración incorrecta." }, 403);
-        }
-        const lista = await env.BUZON.list({ prefix: "copia:" });
-        const ids = lista.keys.map(k => k.name).sort().reverse();
-        // Si se pide una concreta, se devuelve entera
-        const pedir = url.searchParams.get("id");
-        if (pedir) {
-          const v = await env.BUZON.get(pedir);
-          if (!v) return json({ error: "No se encuentra esa copia." }, 404);
-          return new Response(v, { headers: { "Content-Type": "application/json; charset=utf-8", ...CORS } });
-        }
-        return json({ ok: true, total: ids.length, copias: ids });
       }
 
       // ---------- Copias de seguridad guardadas en el servidor ----------
@@ -355,6 +392,98 @@ export default {
         });
       }
 
+      // ---------- Los administrativos ponen o quitan consultas de Tráfico ----------
+      // Solo pueden tocar códigos de tráfico y nunca sobrescriben nada.
+      if (request.method === "POST" && ruta === "/trafico") {
+        const cuerpo = await request.json().catch(() => null);
+        if (!cuerpo) return json({ error: "Petición mal formada." }, 400);
+        if (!env.CLAVE_ADMVO || cuerpo.clave !== env.CLAVE_ADMVO) {
+          return json({ error: "Contraseña de administrativo incorrecta." }, 403);
+        }
+        if (!env.GITHUB_TOKEN || !env.GH_OWNER || !env.GH_REPO) {
+          return json({ error: "El servidor no tiene configurado el destino en GitHub." }, 500);
+        }
+        const pid = String(cuerpo.pid || "");
+        const fecha = String(cuerpo.fecha || "");
+        const slot = String(cuerpo.slot || "");
+        const code = String(cuerpo.code || "");
+        const quitar = cuerpo.quitar === true;
+        const hora = String(cuerpo.hora || "");
+
+        if (!pid || !/^\d{4}-\d{2}-\d{2}$/.test(fecha)) return json({ error: "Faltan datos." }, 400);
+        if (slot !== "m" && slot !== "t") return json({ error: "Turno no válido." }, 400);
+        // Solo códigos de tráfico
+        const esTrafico = (c) => /^TFM[123]$/.test(c) || /^TFT[123]$/.test(c);
+        if (!quitar && !esTrafico(code)) return json({ error: "Solo se pueden poner consultas de Tráfico." }, 400);
+        if (!quitar && slot === "m" && !/^TFM[123]$/.test(code)) return json({ error: "Ese código no es de mañana." }, 400);
+        if (!quitar && slot === "t" && !/^TFT[123]$/.test(code)) return json({ error: "Ese código no es de tarde." }, 400);
+
+        // Ni fin de semana ni festivo
+        const dow = new Date(fecha + "T12:00:00Z").getUTCDay();
+        if (dow === 0 || dow === 6) return json({ error: "Ese día es fin de semana." }, 400);
+
+        const res = await editarCuadrante(env,
+          "Administrativo: " + (quitar ? "quita" : "pone") + " tráfico " + fecha,
+          (datos) => {
+            if ((datos.holidays || []).some(h => h.date === fecha)) return { error: "Ese día es festivo.", status: 400 };
+            const persona = (datos.physicians || []).find(x => x.id === pid);
+            if (!persona) return { error: "No se encuentra al facultativo.", status: 404 };
+            datos.assignments = datos.assignments || {};
+            const k = pid + "|" + fecha;
+            const celda = datos.assignments[k] || { m: null, t: null, f: null };
+            if (quitar) {
+              if (!esTrafico(celda[slot] || "")) return { error: "Ahí no hay una consulta de Tráfico.", status: 400 };
+              const quitado = celda[slot];
+              celda[slot] = null;
+              if (!celda.m && !celda.t && !celda.f) delete datos.assignments[k];
+              else datos.assignments[k] = celda;
+              if (datos.traficoHoras) delete datos.traficoHoras[pid + "|" + fecha + "|" + slot];
+              datos.avisosTrafico = (datos.avisosTrafico || []).concat([{
+                at: new Date().toISOString(), accion: "quitar", por: "administración",
+                phys: persona.name, fecha, slot, code: quitado, visto: false
+              }]);
+            } else {
+              if (celda.f) return { error: "Ese día tiene " + celda.f + " asignado.", status: 409 };
+              if (celda[slot]) return { error: "Ese turno ya está ocupado con " + celda[slot] + ".", status: 409 };
+              const repetida = (datos.physicians || []).some(q => {
+                if (q.id === pid) return false;
+                const x = datos.assignments[q.id + "|" + fecha];
+                return x && x[slot] === code;
+              });
+              if (repetida) return { error: "La consulta " + code + " ya la tiene otro compañero ese día.", status: 409 };
+              // Los tráficos de mañana ocupan despacho físico
+              if (slot === "m") {
+                const tope = (datos.settings && datos.settings.maxMorning) || 8;
+                const sinDespacho = ["RXINT", "ADM", "ADMT"];
+                let ocupadas = 0;
+                (datos.physicians || []).forEach(q => {
+                  const x = datos.assignments[q.id + "|" + fecha];
+                  if (x && x.m && sinDespacho.indexOf(x.m) < 0) ocupadas++;
+                });
+                if (ocupadas >= tope) {
+                  return { error: "Ese día ya están ocupados los " + tope + " despachos de mañana.", status: 409 };
+                }
+              }
+              celda[slot] = code;
+              datos.assignments[k] = { m: celda.m || null, t: celda.t || null, f: null };
+              if (hora) {
+                datos.traficoHoras = datos.traficoHoras || {};
+                datos.traficoHoras[pid + "|" + fecha + "|" + slot] = hora;
+              }
+              datos.avisosTrafico = (datos.avisosTrafico || []).concat([{
+                at: new Date().toISOString(), accion: "poner", por: "administración",
+                phys: persona.name, fecha, slot, code, hora, visto: false
+              }]);
+            }
+            if (datos.avisosTrafico && datos.avisosTrafico.length > 100) {
+              datos.avisosTrafico = datos.avisosTrafico.slice(-100);
+            }
+            return {};
+          });
+        if (res.error) return json({ error: res.error }, res.status || 502);
+        return json({ ok: true });
+      }
+
       // ---------- Los administrativos marcan un cambio como reajustado ----------
       // Solo tocan ese indicador: el resto del cuadrante queda intacto.
       if (request.method === "POST" && ruta === "/ejecutado") {
@@ -369,71 +498,40 @@ export default {
         const mk = String(cuerpo.mk || ""), id = String(cuerpo.id || "");
         if (!mk || !id) return json({ error: "Faltan datos del cambio." }, 400);
 
-        const rama = env.GH_BRANCH || "main";
-        const api = "https://api.github.com/repos/" + env.GH_OWNER + "/" + env.GH_REPO + "/contents/data.json";
-        const cabeceras = {
-          "Authorization": "Bearer " + env.GITHUB_TOKEN,
-          "Accept": "application/vnd.github+json",
-          "X-GitHub-Api-Version": "2022-11-28",
-          "User-Agent": "buzon-cuadrante"
-        };
-
-        // Leer el cuadrante publicado
-        const actual = await fetch(api + "?ref=" + encodeURIComponent(rama), { headers: cabeceras });
-        if (!actual.ok) return json({ error: "No se ha podido leer el cuadrante." }, 502);
-        const meta = await actual.json();
-        let datos;
-        try {
-          const bin = atob(String(meta.content || "").replace(/\n/g, ""));
-          const bytes = new Uint8Array(bin.length);
-          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-          datos = JSON.parse(new TextDecoder().decode(bytes));
-        } catch (e) { return json({ error: "Cuadrante ilegible." }, 502); }
-
-        // Marcar SOLO ese cambio
-        const lista = (datos.cambiosAdm || {})[mk] || [];
-        const c = lista.find(x => x && x.id === id);
-        if (!c) return json({ error: "No se encuentra ese cambio." }, 404);
-        if (cuerpo.valor === false) {
-          // Se deshace: el cuadrante vuelve a como estaba y queda de nuevo en espera
-          delete c.ejecutado; delete c.ejecutadoAt;
-          if (Array.isArray(c.previas)) {
-            datos.assignments = datos.assignments || {};
-            c.previas.forEach(x => {
-              if (x && x.k) { if (x.valor) datos.assignments[x.k] = x.valor; else delete datos.assignments[x.k]; }
-            });
-            c.pendiente = true;
-          }
-        } else {
-          // Se ejecuta: ahora sí se aplica al cuadrante
-          if (c.pendiente && Array.isArray(c.celdas)) {
-            datos.assignments = datos.assignments || {};
-            c.celdas.forEach(x => {
-              if (x && x.k) { if (x.valor) datos.assignments[x.k] = x.valor; else delete datos.assignments[x.k]; }
-            });
-            delete c.pendiente;
-          }
-          c.ejecutado = true; c.ejecutadoAt = new Date().toISOString();
-        }
-        datos.publishedAt = new Date().toISOString();
-        datos.publishedBy = "administrativo";
-
-        // Guardar de vuelta
-        const texto = JSON.stringify(datos);
-        const bytes2 = new TextEncoder().encode(texto);
-        let binario = "";
-        for (const b of bytes2) binario += String.fromCharCode(b);
-        const guardar = await fetch(api, {
-          method: "PUT",
-          headers: { ...cabeceras, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            message: "Administrativo: cambio " + (cuerpo.valor === false ? "pendiente" : "reajustado"),
-            content: btoa(binario),
-            branch: rama,
-            sha: meta.sha
-          })
-        });
-        if (!guardar.ok) return json({ error: "No se ha podido guardar (" + guardar.status + ")." }, 502);
+        const res = await editarCuadrante(env,
+          "Administrativo: cambio " + (cuerpo.valor === false ? "pendiente" : "reajustado"),
+          (datos) => {
+            const lista = (datos.cambiosAdm || {})[mk] || [];
+            const c = lista.find(x => x && x.id === id);
+            if (!c) return { error: "No se encuentra ese cambio.", status: 404 };
+            if (cuerpo.valor === false) {
+              // Se deshace: el cuadrante vuelve a como estaba y queda de nuevo en espera
+              delete c.ejecutado; delete c.ejecutadoAt;
+              if (Array.isArray(c.previas)) {
+                datos.assignments = datos.assignments || {};
+                c.previas.forEach(x => {
+                  if (x && x.k) { if (x.valor) datos.assignments[x.k] = x.valor; else delete datos.assignments[x.k]; }
+                });
+                c.pendiente = true;
+              }
+            } else {
+              // Si ya constaba como hecho, no se repite
+              if (c.ejecutado) return { sinCambios: true };
+              if (c.pendiente && Array.isArray(c.celdas)) {
+                datos.assignments = datos.assignments || {};
+                // No se ejecuta si dejara algún día por encima del tope de despachos
+                const errTope = excesoTopeServidor(datos, c.celdas);
+                if (errTope) return { error: errTope, status: 409 };
+                c.celdas.forEach(x => {
+                  if (x && x.k) { if (x.valor) datos.assignments[x.k] = x.valor; else delete datos.assignments[x.k]; }
+                });
+                delete c.pendiente;
+              }
+              c.ejecutado = true; c.ejecutadoAt = new Date().toISOString();
+            }
+            return {};
+          });
+        if (res.error) return json({ error: res.error }, res.status || 502);
         return json({ ok: true, ejecutado: cuerpo.valor !== false });
       }
 
@@ -464,10 +562,7 @@ export default {
 
         // Codificar el contenido en base64, respetando tildes y eñes
         const texto = JSON.stringify(cuerpo.data);
-        const bytes = new TextEncoder().encode(texto);
-        let binario = "";
-        for (const b of bytes) binario += String.fromCharCode(b);
-        const contenido = btoa(binario);
+        const contenido = btoa(bytesABinario(new TextEncoder().encode(texto)));
 
         // Averiguar la versión actual del archivo (GitHub la exige para sobrescribir)
         let sha = null;
@@ -501,3 +596,30 @@ export default {
     }
   }
 };
+
+// v150: tope de consultas físicas de mañana (RXINT, ADM y ADMT no ocupan despacho)
+function excesoTopeServidor(datos, celdas) {
+  const SIN_DESPACHO = ["RXINT", "ADM", "ADMT"];
+  const max = (datos.settings && datos.settings.maxMorning) || 8;
+  const ids = new Set((datos.physicians || []).map(p => p.id));
+  const contar = (vista) => {
+    const n = {};
+    Object.keys(vista).forEach(k => {
+      const i = k.indexOf("|"); if (i < 0 || !ids.has(k.slice(0, i))) return;
+      const a = vista[k];
+      if (a && a.m && SIN_DESPACHO.indexOf(a.m) < 0) { const d = k.slice(i + 1); n[d] = (n[d] || 0) + 1; }
+    });
+    return n;
+  };
+  const actual = datos.assignments || {};
+  const antes = contar(actual);
+  const v = Object.assign({}, actual);
+  celdas.forEach(x => { if (x && x.k) { if (x.valor) v[x.k] = x.valor; else delete v[x.k]; } });
+  const despues = contar(v);
+  const dias = Object.keys(despues).filter(d => despues[d] > max && despues[d] > (antes[d] || 0)).sort();
+  if (!dias.length) return null;
+  const fmt = d => d.split("-").reverse().join("/");
+  return "No hay hueco físico: " + dias.map(d => "el " + fmt(d) + " ya están ocupadas las " + max +
+    " consultas físicas de mañana (quedarían " + despues[d] + ")").join("; ") +
+    ". No se puede marcar como reajustado. Avisa al coordinador.";
+}
