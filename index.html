@@ -1141,7 +1141,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v170";
+const APP_VERSION = "v171";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -4806,6 +4806,207 @@ function viewExportar(){
       '<b>Guardias</b>, de entre semana o de festivo: de 9:00 a 21:00<br>'+
       '<b>Consultas de Tráfico</b>: desde la hora indicada, con 4 horas de duración<br>'+
       '<b>Vacaciones, bajas y permisos</b>: como evento de día completo</p>'+
+    '</div>'+
+    viewHorasExtras();
+}
+
+// ------------------ Horas extras del mes (v171) ------------------
+// Resumen mensual para nóminas: guardias de sábado, domingo y festivo (URGF),
+// consultas de Tráfico y horas de festivo especial. Se calcula sobre el cuadrante
+// ACTUAL (quién hizo realmente cada cosa), no sobre la foto oficial.
+// Solo lo ve el coordinador.
+const KEY_NOMINA = "cuadrante-nomina-v1";   // ID de nómina y nombre completo: solo en este dispositivo, nunca se publican
+const HE_HORAS_GUARDIA = 12;
+const HE_FESTIVOS_DEF = [
+  "2026-01-01","2026-01-06","2026-02-28","2026-04-02","2026-04-03","2026-04-24","2026-05-01",
+  "2026-06-04","2026-08-15","2026-10-12","2026-11-01","2026-12-06","2026-12-08","2026-12-25",
+  "2027-01-01","2027-01-06","2027-02-28","2027-03-25","2027-03-26","2027-04-16","2027-05-01",
+  "2027-05-27","2027-08-15","2027-10-12","2027-11-01","2027-12-06","2027-12-08","2027-12-25"
+];
+// Nombre completo de cada facultativo, en el orden de la plantilla de nóminas.
+// Se puede corregir desde Exportar; un facultativo nuevo sale con su nombre corto hasta rellenarlo.
+const HE_NOMBRES_DEF = [
+  ["BRAVO","BRAVO PANIAGUA, MARIA MERCEDES"],
+  ["GONZALEZ","GONZALEZ CARMONA, OBDULIA ESPERANZA"],
+  ["LOBO","LOBO MANCHA, FRANCISCO"],
+  ["PASTOR","PASTOR MAÑOSA, CAROLINA"],
+  ["PONS","PONS SARACIBAR, YAMILETH"],
+  ["PORRUA","PORRUA DEL SAZ, ANA"],
+  ["PRIETO","PRIETO LUCENA, JUAN RAFAEL"],
+  ["RIOS","RIOS GARCIA, JOSE JAVIER"],
+  ["ROBLES","ROBLES PEREZ DE AZPILLAGA, MARIA ALEJANDRA"],
+  ["RODRIGUEZ","RODRIGUEZ PAJUELO, NURIA"],
+  ["SUAREZ","SUAREZ RUIZ, JULIA"],
+  ["VAZQUEZ","VAZQUEZ SOUSA, MARIA DEL CARMEN"],
+  ["GALIANA","GALIANA CALERO, FCO DE PAULA"]
+];
+function heNombreDef(corto){
+  const i = HE_NOMBRES_DEF.findIndex(x=>x[0]===String(corto||"").trim().toUpperCase());
+  return {orden: i<0 ? 999 : i, nombre: i<0 ? "" : HE_NOMBRES_DEF[i][1]};
+}
+function heCfg(){
+  const c = (state.settings && state.settings.horasExtras) || {};
+  const num = (v, def)=> (typeof v==="number" && isFinite(v) && v>=0) ? v : def;
+  return {
+    eurGuardia: num(c.eurGuardia, 39.31),
+    eurTrafico: num(c.eurTrafico, 315),
+    eurFE:      num(c.eurFE, 22.15),
+    festivos:   Array.isArray(c.festivos) ? c.festivos.slice() : HE_FESTIVOS_DEF.slice()
+  };
+}
+function heSetCfg(campo, valor){
+  const c = heCfg();
+  c[campo] = valor;
+  state.settings.horasExtras = c;
+  save();
+}
+function nominaLeer(){
+  try{ const o = JSON.parse(localStorage.getItem(KEY_NOMINA)||"{}"); return (o && typeof o==="object") ? o : {}; }
+  catch(e){ return {}; }
+}
+function nominaGuardar(o){ try{ localStorage.setItem(KEY_NOMINA, JSON.stringify(o)); }catch(e){} }
+function heVisible(){ return MODE==="editor" && estaAutenticado(); }
+function heMesSel(){ return (ui.heMes===undefined) ? ui.month : ui.heMes; }
+
+function horasExtrasMes(mo){
+  const cfg = heCfg();
+  const fe = {}; cfg.festivos.forEach(d=>{ fe[d]=true; });
+  const nom = nominaLeer();
+  const dim = new Date(state.year, mo+1, 0).getDate();
+  const filas = state.physicians.map(p=>{
+    const n = nom[p.id] || {};
+    const def = heNombreDef(p.name);
+    const f = {pid:p.id, corto:p.name, id:String(n.id||""), nombre:String(n.nombre||"") || def.nombre || p.name, orden:def.orden,
+               diasG:[], diasT:[], diasFE:[]};
+    for(let d=1; d<=dim; d++){
+      const k = keyOf(state.year, mo, d);
+      const a = state.assignments[p.id+"|"+k];
+      if(!a) continue;
+      if(a.f==="URGF") f.diasG.push(d);
+      if((a.f==="URG"||a.f==="URGLV"||a.f==="URGF") && fe[k]) f.diasFE.push(d);
+      if(!a.f){ if(esTrafico(a.m)) f.diasT.push(d); if(esTrafico(a.t)) f.diasT.push(d); }
+    }
+    f.hG = f.diasG.length*HE_HORAS_GUARDIA;  f.eG = f.hG*cfg.eurGuardia;
+    f.nT = f.diasT.length;                   f.eT = f.nT*cfg.eurTrafico;
+    f.hFE = f.diasFE.length*HE_HORAS_GUARDIA; f.eFE = f.hFE*cfg.eurFE;
+    return f;
+  });
+  filas.sort((a,b)=>(a.orden-b.orden) || a.nombre.localeCompare(b.nombre,"es"));
+  const tot = {hG:0,eG:0,nT:0,eT:0,hFE:0,eFE:0};
+  filas.forEach(f=>{ Object.keys(tot).forEach(c=>{ tot[c]+=f[c]; }); });
+  return {mo:mo, year:state.year, cfg:cfg, filas:filas, tot:tot};
+}
+const heEur = n => n.toLocaleString("es-ES",{minimumFractionDigits:2, maximumFractionDigits:2});
+
+// Hoja que Excel abre directamente, con la misma disposición que la plantilla de nóminas.
+function horasExtrasXLS(mo){
+  const r = horasExtrasMes(mo);
+  const nG = Math.max(4, ...r.filas.map(f=>f.diasG.length));
+  const nT = Math.max(5, ...r.filas.map(f=>f.diasT.length));
+  const nH = 5;
+  const r2 = v=>Math.round(v*100)/100;
+  const num = (v, dec)=>'<td x:num="'+r2(v)+'" style="text-align:right">'+(dec?heEur(v):String(v))+'</td>';
+  const txt = (t, st)=>'<td'+(st?' style="'+st+'"':'')+'>'+esc(t)+'</td>';
+  const dias = (lista, n)=>{ let h=""; for(let i=0;i<n;i++) h += (lista[i]!==undefined) ? '<td x:num="'+lista[i]+'" style="text-align:center;background:#d9d9d9"><b>'+lista[i]+'</b></td>' : '<td style="background:#d9d9d9"></td>'; return h; };
+  const rep = (t, n)=>{ let h=""; for(let i=0;i<n;i++) h+=t; return h; };
+  const AM='background:#ffff00;font-weight:bold;text-align:center', VE='background:#92d050;font-weight:bold;text-align:center', AZ='background:#bdd7ee;font-weight:bold;text-align:center';
+  const th = t=>'<td style="'+AZ+'">'+t+'</td>';
+  let h = '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">'+
+    '<head><meta charset="utf-8"><style>td{font-family:Garamond,serif;font-size:10pt;white-space:nowrap}</style></head><body>'+
+    '<table border="1" cellspacing="0">';
+  h += '<tr><td colspan="'+(8+nG+nT+nH+2)+'" style="font-weight:bold;font-size:12pt">Horas extras · Rehabilitación y Aparato Locomotor · '+MONTHS[mo]+' '+r.year+'</td></tr>';
+  // Códigos de concepto y tarifas
+  h += '<tr><td></td><td></td>'+
+    '<td style="'+AM+'">2086</td>'+num(r.cfg.eurGuardia,true)+rep('<td></td>',nG)+
+    '<td style="'+AM+'">2071</td>'+num(r.cfg.eurTrafico,true)+rep('<td></td>',nT)+
+    '<td style="'+AM+'">2054</td><td></td>'+rep('<td></td>',nH)+
+    '<td style="'+AM+'">2037</td>'+num(r.cfg.eurFE,true)+'</tr>';
+  h += '<tr><td></td><td></td>'+
+    '<td colspan="'+(2+nG)+'" style="'+VE+'">GUARDIAS</td>'+
+    '<td colspan="'+(2+nT)+'" style="'+VE+'">CEX TRAFICO / ACTIVIDAD VARIABLE 3</td>'+
+    '<td colspan="'+(2+nH)+'" style="'+VE+'">HORAS EXTRAS</td>'+
+    '<td colspan="2" style="'+VE+'">FESTIVO ESPECIAL</td></tr>';
+  h += '<tr>'+th('ID')+th('APELLIDOS Y NOMBRE')+
+    th('Horas guardias')+th('€ Horas Guardias')+rep(th('Día'),nG)+
+    th('Núm cex')+th('€ AV3')+rep(th('Día'),nT)+
+    th('Núm horas extras')+th('€ Horas extras')+rep(th('Día'),nH)+
+    th('H. Festivo especial')+th('€ FE')+'</tr>';
+  r.filas.forEach(f=>{
+    h += '<tr>'+txt(f.id,"text-align:right")+txt(f.nombre)+
+      (f.hG ? num(f.hG,false) : txt("-","text-align:center"))+num(f.eG,true)+dias(f.diasG,nG)+
+      (f.nT ? num(f.nT,false) : txt("-","text-align:center"))+num(f.eT,true)+dias(f.diasT,nT)+
+      txt("-","text-align:center")+txt("-","text-align:center")+dias([],nH)+
+      (f.hFE ? num(f.hFE,true) : '<td></td>')+num(f.eFE,true)+'</tr>';
+  });
+  const tt = (v,dec)=>'<td x:num="'+r2(v)+'" style="'+AM+'">'+(dec?heEur(v):String(v))+'</td>';
+  h += '<tr><td></td><td style="font-weight:bold;text-align:right">TOTAL</td>'+
+    tt(r.tot.hG,true)+tt(r.tot.eG,true)+rep('<td></td>',nG)+
+    tt(r.tot.nT,true)+tt(r.tot.eT,true)+rep('<td></td>',nT)+
+    tt(0,true)+tt(0,true)+rep('<td></td>',nH)+
+    tt(r.tot.hFE,true)+tt(r.tot.eFE,true)+'</tr>';
+  h += '</table></body></html>';
+  return h;
+}
+
+function viewHorasExtras(){
+  if(!heVisible()) return '';
+  const mo = heMesSel();
+  const r = horasExtrasMes(mo);
+  const nom = nominaLeer();
+  const inp = 'padding:6px;border:1px solid var(--slate-300);border-radius:6px;font-size:13px';
+  const celda = 'padding:4px 6px;border-bottom:1px solid var(--slate-200)';
+  const conDatos = r.filas.filter(f=>f.hG||f.nT||f.hFE);
+  let h = '<div class="card" style="margin-top:10px"><h2>Horas extras del mes</h2>'+
+    '<p class="muted" style="margin-top:2px;font-size:14px">Guardias de sábado, domingo y festivo, consultas de Tráfico y festivos especiales, tal como están hoy en el cuadrante. Solo lo ve el coordinador.</p>'+
+    '<p class="tiny" style="margin-top:12px">Mes</p>'+
+    '<select data-field="he-mes" style="width:100%;padding:9px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+
+      MONTHS.map((m,i)=>'<option value="'+i+'"'+(i===mo?" selected":"")+'>'+m+' '+state.year+'</option>').join("")+
+    '</select>';
+  if(!conDatos.length){
+    h += '<p class="muted" style="margin-top:12px;font-size:14px">No hay guardias de festivo ni tráficos en '+MONTHS[mo]+'.</p>';
+  }else{
+    h += '<div style="overflow-x:auto;margin-top:12px"><table id="he-tabla" style="border-collapse:collapse;font-size:13px;width:100%">'+
+      '<tr style="text-align:left"><th style="'+celda+'">Facultativo</th><th style="'+celda+'">Guardias</th><th style="'+celda+'">Tráficos</th><th style="'+celda+'">Festivo especial</th></tr>'+
+      conDatos.map(f=>'<tr><td style="'+celda+'"><b>'+esc(f.corto)+'</b></td>'+
+        '<td style="'+celda+'">'+(f.hG ? f.hG+' h <span class="muted">(días '+f.diasG.join(", ")+')</span>' : '—')+'</td>'+
+        '<td style="'+celda+'">'+(f.nT ? f.nT+' <span class="muted">(días '+f.diasT.join(", ")+')</span>' : '—')+'</td>'+
+        '<td style="'+celda+'">'+(f.hFE ? f.hFE+' h <span class="muted">(día '+f.diasFE.join(", ")+')</span>' : '—')+'</td></tr>').join("")+
+      '<tr style="font-weight:bold"><td style="'+celda+'">Total</td>'+
+        '<td style="'+celda+'">'+r.tot.hG+' h · '+heEur(r.tot.eG)+' €</td>'+
+        '<td style="'+celda+'">'+r.tot.nT+' · '+heEur(r.tot.eT)+' €</td>'+
+        '<td style="'+celda+'">'+r.tot.hFE+' h · '+heEur(r.tot.eFE)+' €</td></tr>'+
+      '</table></div>';
+  }
+  h += '<div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap">'+
+      '<button class="btn primary" data-action="he-descargar">Descargar hoja de horas extras</button></div>'+
+    '<details style="margin-top:14px"><summary style="cursor:pointer;font-size:14px"><b>Nombres completos e ID de nómina</b></summary>'+
+      '<p class="muted" style="font-size:12px;margin-top:6px">Son los que aparecen en la hoja descargada. Los nombres ya vienen puestos; lo que cambies aquí y los ID se guardan solo en este dispositivo.</p>'+
+      state.physicians.map(p=>{
+        const n = nom[p.id] || {};
+        return '<div class="row" style="gap:6px;margin-top:6px;align-items:center;flex-wrap:wrap">'+
+          '<span style="min-width:92px;font-size:13px"><b>'+esc(p.name)+'</b></span>'+
+          '<input type="text" inputmode="numeric" data-field="he-nom-id" data-pid="'+p.id+'" value="'+esc(n.id||"")+'" placeholder="ID" style="width:74px;'+inp+'">'+
+          '<input type="text" data-field="he-nom-nombre" data-pid="'+p.id+'" value="'+esc(n.nombre||heNombreDef(p.name).nombre)+'" placeholder="APELLIDOS, NOMBRE" style="flex:1;min-width:180px;'+inp+'">'+
+        '</div>';
+      }).join("")+
+    '</details>'+
+    '<p class="muted" style="font-size:12px;margin-top:10px">Los importes y la lista de festivos especiales se cambian en Ajustes → Horas extras.</p>'+
+    '</div>';
+  return h;
+}
+function viewAjustesHorasExtras(){
+  const c = heCfg();
+  const fechas = c.festivos.slice().sort().map(d=>d.split("-").reverse().join("/")).join("\n");
+  const fila = (texto, campo, valor)=>'<label class="row" style="margin-top:10px;font-size:14px">'+texto+
+    '<input type="number" min="0" step="0.01" value="'+valor+'" data-field="'+campo+'" style="width:90px;text-align:center"></label>';
+  return '<div class="card"><h2>Horas extras</h2>'+
+    '<p class="muted" style="margin-top:2px;font-size:13px">Importes que se aplican en Exportar → Horas extras del mes.</p>'+
+    fila('Hora de guardia de festivo (€):', 'he-eur-g', c.eurGuardia)+
+    fila('Consulta de Tráfico (€):', 'he-eur-t', c.eurTrafico)+
+    fila('Hora de festivo especial (€):', 'he-eur-fe', c.eurFE)+
+    '<p class="tiny" style="margin-top:12px">Festivos especiales (una fecha por línea, día/mes/año)</p>'+
+    '<textarea data-field="he-festivos" rows="8" style="width:100%;margin-top:4px;padding:8px;border:1px solid var(--slate-300);border-radius:8px;font-family:monospace;font-size:13px">'+esc(fechas)+'</textarea>'+
+    '<p class="muted" style="font-size:12px;margin-top:4px">Quien tenga la guardia en una de estas fechas suma '+HE_HORAS_GUARDIA+' horas de festivo especial.</p>'+
     '</div>';
 }
 
@@ -5702,6 +5903,7 @@ function viewAjustes(){
     'Desactivado: se prioriza cubrir el mínimo de mañanas, aunque algún facultativo trabaje de más.</span></span></label>'+
     '<p class="muted" style="margin-top:12px;font-size:13px">La guardia de urgencias (URG/URGLV) computa como <b>2 jornadas laborales</b> y no genera libranza. En festivo o fin de semana se registra como <b>URGF</b> (se retribuye aparte y no suma jornadas).</p></div>';
 
+  html += viewAjustesHorasExtras();
   html += '<div class="card"><h2>Cobertura diaria</h2>'+
     '<label class="row" style="margin-top:10px;font-size:14px;cursor:pointer">'+
     '<input type="checkbox" data-field="urgreq" '+(state.settings.urgRequired!==false?"checked":"")+' style="width:16px;height:16px;accent-color:var(--teal-700)"> '+
@@ -7285,6 +7487,12 @@ document.addEventListener("click", e=>{
       }catch(e){ window.prompt("Copia esta dirección:", txt); }
       break;
     }
+    case "he-descargar": {
+      if(!heVisible()) break;
+      const moH = heMesSel();
+      download("horas-extras-"+MONTHS[moH].toLowerCase()+"-"+state.year+".xls", "\uFEFF"+horasExtrasXLS(moH), "application/vnd.ms-excel;charset=utf-8");
+      break;
+    }
     case "exp-descargar": {
       const pidE = ui.expPid || (state.physicians[0]||{}).id;
       const moE  = (ui.expMes===undefined) ? ui.month : ui.expMes;
@@ -8274,6 +8482,28 @@ document.addEventListener("change", e=>{
   else if(field==="stats-to"){ ui.statsTo = Number(el.value); render(); }
   else if(field==="req-email"){ state.settings.reqEmail = el.value.trim(); save(); }
   else if(field==="req-phone"){ state.settings.reqPhone = el.value.replace(/[^0-9+ ]/g,"").trim(); save(); }
+  else if(field==="he-mes"){ ui.heMes = Number(el.value); render(); }
+  else if(field==="he-eur-g" || field==="he-eur-t" || field==="he-eur-fe"){
+    const v = Number(String(el.value).replace(",","."));
+    if(isFinite(v) && v>=0) heSetCfg({"he-eur-g":"eurGuardia","he-eur-t":"eurTrafico","he-eur-fe":"eurFE"}[field], Math.round(v*100)/100);
+  }
+  else if(field==="he-festivos"){
+    const lista = [];
+    String(el.value).split(/[\n;,]+/).forEach(t=>{
+      const m = t.trim().match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/);
+      if(!m) return;
+      const k = m[3]+"-"+pad(Number(m[2]))+"-"+pad(Number(m[1]));
+      if(lista.indexOf(k)<0) lista.push(k);
+    });
+    heSetCfg("festivos", lista.sort()); render();
+  }
+  else if(field==="he-nom-id" || field==="he-nom-nombre"){
+    if(!heVisible()) return;
+    const o = nominaLeer(); const pid = el.dataset.pid;
+    o[pid] = o[pid] || {};
+    if(field==="he-nom-id") o[pid].id = el.value.trim(); else o[pid].nombre = el.value.trim().toUpperCase();
+    nominaGuardar(o);   // no redibuja: se puede seguir escribiendo en el siguiente campo
+  }
 });
 
 document.addEventListener("keydown", e=>{
