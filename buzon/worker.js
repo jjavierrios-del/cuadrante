@@ -535,6 +535,57 @@ export default {
         return json({ ok: true, ejecutado: cuerpo.valor !== false });
       }
 
+      // ---------- Archivar un mes pasado (v174) ----------
+      // Guarda en el repositorio archivo/AAAA-MM.json con lo que la aplicación retira
+      // del cuadrante publicado. Solo escribe ese archivo: no toca data.json.
+      if (request.method === "POST" && ruta === "/archivar") {
+        const cuerpo = await request.json().catch(() => null);
+        if (!cuerpo) return json({ error: "Petición mal formada." }, 400);
+        if (!env.CLAVE_PUBLICAR || cuerpo.clave !== env.CLAVE_PUBLICAR) {
+          return json({ error: "Contraseña de publicación incorrecta." }, 403);
+        }
+        if (!env.GITHUB_TOKEN || !env.GH_OWNER || !env.GH_REPO) {
+          return json({ error: "El servidor no tiene configurado el destino en GitHub." }, 500);
+        }
+        const mes = String(cuerpo.mes || "");
+        if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(mes)) return json({ error: "Mes no válido." }, 400);
+        if (!cuerpo.datos || typeof cuerpo.datos !== "object") return json({ error: "Faltan los datos del archivo." }, 400);
+        const texto = JSON.stringify(cuerpo.datos);
+        if (texto.length > 1500000) return json({ error: "Archivo demasiado grande." }, 413);
+
+        const rama = env.GH_BRANCH || "main";
+        const api = "https://api.github.com/repos/" + env.GH_OWNER + "/" + env.GH_REPO + "/contents/archivo/" + mes + ".json";
+        const cabeceras = {
+          "Authorization": "Bearer " + env.GITHUB_TOKEN,
+          "Accept": "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "buzon-cuadrante"
+        };
+        let sha = null;
+        const actual = await fetch(api + "?ref=" + encodeURIComponent(rama), { headers: cabeceras });
+        if (actual.ok) {
+          const a = await actual.json().catch(() => null);
+          if (a && a.sha) sha = a.sha;
+        } else if (actual.status !== 404) {
+          return json({ error: "No se ha podido comprobar el archivo (" + actual.status + ")." }, 502);
+        }
+        const guardar = await fetch(api, {
+          method: "PUT",
+          headers: { ...cabeceras, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: "Archivo del mes " + mes,
+            content: btoa(bytesABinario(new TextEncoder().encode(texto))),
+            branch: rama,
+            ...(sha ? { sha } : {})
+          })
+        });
+        if (!guardar.ok) {
+          const err = await guardar.text().catch(() => "");
+          return json({ error: "GitHub ha rechazado el archivo (" + guardar.status + "): " + err.slice(0, 200) }, 502);
+        }
+        return json({ ok: true, mes: mes, bytes: texto.length });
+      }
+
       // ---------- Publicar el cuadrante en GitHub ----------
       // El token de GitHub vive aquí, en el servidor. La aplicación solo envía
       // una contraseña, de modo que ningún dispositivo guarda el token.

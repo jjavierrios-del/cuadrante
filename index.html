@@ -515,6 +515,8 @@ let state = {
   // Meses cerrados para administrativos: fecha del cierre y cambios hechos después
   cerradoAdm: {},
   cambiosAdm: {},
+  // Meses cuyos datos antiguos se han pasado al archivo (v174)
+  archivado: {},
   // Tráficos puestos o quitados por administración, para avisarte
   avisosTrafico: [],
   // Buzón de solicitudes (Cloudflare Worker). La dirección y la clave de envío se
@@ -850,9 +852,166 @@ function marcarEjecutado(mk, id, quien){
   save();
 }
 
+// ------------------ Archivo de meses pasados (v174) ------------------
+// Cuando un mes ha terminado, lo que ya no hace falta a diario sale del archivo
+// publicado (data.json) y se guarda en archivo/AAAA-MM.json, consultable desde Historial:
+//   · los cambios de administración ya reajustados,
+//   · las solicitudes ya resueltas de ese mes.
+// El cuadrante del mes, su foto oficial y la copia que muestra el Historial NO se tocan.
+// Nada se borra hasta que el servidor confirma que el archivo se ha guardado.
+const ARCHIVO_MEM = {};            // meses del archivo ya descargados en esta sesión
+const ARCHIVO_DIAS_GRACIA = 7;     // un mes se archiva pasados 7 días de su final
+let ARCHIVANDO = false;
+function mesRelevanteSolicitud(r){ const f = fechaRelevante(r); return f ? f.slice(0,7) : ""; }
+function archivoPaquete(mk){
+  const limpia = it => { const c = JSON.parse(JSON.stringify(it)); if(c.req && typeof c.req==="object") delete c.req.note; delete c.texto; delete c.motivo; delete c.firma; return c; };
+  return {
+    cambiosAdm: ((state.cambiosAdm||{})[mk]||[]).filter(c=>c && c.ejecutado===true && !c.pendiente),
+    solicitudes: bandeja().filter(it=>it && it.estado!=="pendiente" && mesRelevanteSolicitud(it.req)===mk).map(limpia),
+    historial: null          // la copia del cuadrante oficial se queda en el Historial (decisión de Javier)
+  };
+}
+function mesesArchivables(){
+  const hoy = new Date();
+  const lim = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate()-ARCHIVO_DIAS_GRACIA);
+  const limMk = lim.getFullYear()+"-"+pad(lim.getMonth()+1);      // solo meses anteriores a este
+  const cand = {};
+  Object.keys(state.cambiosAdm||{}).forEach(mk=>{ cand[mk]=1; });
+  bandeja().forEach(it=>{ const mk = it ? mesRelevanteSolicitud(it.req) : ""; if(mk) cand[mk]=1; });
+  return Object.keys(cand).filter(mk=>/^\d{4}-\d{2}$/.test(mk) && mk < limMk).sort().filter(mk=>{
+    const q = archivoPaquete(mk);
+    return q.cambiosAdm.length || q.solicitudes.length || q.historial;
+  });
+}
+function archivoUrls(mk){
+  const raw = repoRawUrl();
+  const out = [];
+  if(raw) out.push(raw.replace(/data\.json$/, "archivo/"+mk+".json")+"?t="+Date.now());
+  out.push("archivo/"+mk+".json");
+  return out;
+}
+// Lee un mes del archivo. Devuelve {ok:true, datos:{…}|null} o {ok:false} si no se ha podido saber.
+async function archivoLeer(mk){
+  let alguno404 = false;
+  for(const u of archivoUrls(mk)){
+    try{
+      const r = await fetch(u, {cache:"no-store"});
+      if(r.ok){
+        const d = await r.json().catch(()=>null);
+        if(d && typeof d==="object" && (d.cambiosAdm || d.solicitudes || d.historial)) return {ok:true, datos:d};
+      }else if(r.status===404){ alguno404 = true; }
+    }catch(e){}
+  }
+  return alguno404 ? {ok:true, datos:null} : {ok:false};
+}
+async function archivarMes(mk){
+  const q = archivoPaquete(mk);
+  if(!q.cambiosAdm.length && !q.solicitudes.length && !q.historial) return null;
+  const b = state.buzon||{};
+  // Si ese mes ya tenía archivo (se reabrió y se volvió a cerrar, por ejemplo), se suma a lo que había
+  const previo = await archivoLeer(mk);
+  if(!previo.ok) return "No se ha podido comprobar el archivo de "+mk+".";
+  const ant = previo.datos || {};
+  const unir = (viejos, nuevos)=>{ const ids = {}; const out = [];
+    (viejos||[]).concat(nuevos||[]).forEach(x=>{ if(!x) return; const id = x.id || JSON.stringify(x); if(ids[id]) return; ids[id]=1; out.push(x); }); return out; };
+  const datos = {
+    mes: mk, archivadoAt: new Date().toISOString(),
+    cambiosAdm: unir(ant.cambiosAdm, q.cambiosAdm),
+    solicitudes: unir(ant.solicitudes, q.solicitudes),
+    historial: q.historial || ant.historial || null
+  };
+  let r, d;
+  try{
+    r = await fetch((b.url||"").replace(/\/+$/,"")+"/archivar", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({clave: buzonClavePublicar(), mes: mk, datos: datos})
+    });
+    d = await r.json().catch(()=>null);
+  }catch(e){ return "Sin conexión con el servidor."; }
+  if(!r.ok || !d || !d.ok) return (d && d.error) ? d.error : "El servidor no ha guardado el archivo ("+r.status+").";
+  // Guardado y confirmado: ahora sí se retira de los datos del día a día
+  const idsC = {}; q.cambiosAdm.forEach(c=>{ idsC[c.id]=1; });
+  if(state.cambiosAdm && state.cambiosAdm[mk]){
+    state.cambiosAdm[mk] = state.cambiosAdm[mk].filter(c=>!(c && idsC[c.id]));
+    if(!state.cambiosAdm[mk].length && !cerradoAdmvoPorClave(mk)) delete state.cambiosAdm[mk];
+  }
+  const idsS = {}; q.solicitudes.forEach(x=>{ idsS[x.id]=1; });
+  state.bandeja = bandeja().filter(it=>!(it && idsS[it.id]));
+  const hst = datos.historial;
+  state.archivado = state.archivado || {};
+  state.archivado[mk] = {
+    at: datos.archivadoAt, cambios: datos.cambiosAdm.length, solicitudes: datos.solicitudes.length,
+    historial: !!hst, guardado: hst ? hst.guardado : "",
+    asignaciones: hst ? Object.keys(hst.assignments||{}).length : 0, facultativos: hst ? (hst.physicians||[]).length : 0
+  };
+  ARCHIVO_MEM[mk] = datos;
+  return null;
+}
+// Archiva todos los meses que toque. manual = lo ha pedido el coordinador con el botón.
+async function archivarPendientes(manual){
+  if(ARCHIVANDO) return;
+  if(MODE!=="editor" || !estaAutenticado() || NEWER || !publicaPorServidor()){
+    if(manual) window.alert("Ahora no se puede archivar: hace falta estar en modo edición, con la publicación configurada y al día.");
+    return;
+  }
+  const meses = mesesArchivables();
+  if(!meses.length){ if(manual) window.alert("No hay meses pasados pendientes de archivar."); return; }
+  ARCHIVANDO = true;
+  const hechos = []; let fallo = null;
+  try{
+    for(const mk of meses){
+      setSave("Archivando "+mk+"…");
+      fallo = await archivarMes(mk);
+      if(fallo) break;
+      hechos.push(mk);
+    }
+  }catch(e){ fallo = "Error al archivar: "+((e && e.message) || e); }
+  ARCHIVANDO = false;
+  if(hechos.length){ save(); render(); setSave("✓ Archivado: "+hechos.join(", ")); }
+  if(fallo){ setSave("⚠ "+fallo); if(manual) window.alert("No se ha podido archivar:\n\n"+fallo+"\n\nNo se ha borrado nada."); }
+}
+// Copia del cuadrante oficial de un mes, esté en los datos o ya en el archivo (si se ha descargado)
+function historialDe(mk){
+  return ((state.historial||{})[mk]) || ((ARCHIVO_MEM[mk]||{}).historial) || null;
+}
+// Ejecuta fn cuando la copia del mes esté disponible, descargándola del archivo si hace falta
+function conHistorial(mk, fn){
+  if(historialDe(mk)){ fn(); return; }
+  if(!((state.archivado||{})[mk])){ window.alert("No se encuentra esa copia."); return; }
+  setSave("Abriendo el archivo…");
+  archivoLeer(mk).then(r=>{
+    if(r.ok && r.datos){ ARCHIVO_MEM[mk] = r.datos; setSave("✓ Archivo abierto"); fn(); }
+    else{ setSave("⚠ No se ha podido abrir el archivo"); window.alert("No se ha podido abrir el archivo de ese mes. Comprueba la conexión e inténtalo de nuevo."); }
+  });
+}
+function viewArchivoDetalle(mk){
+  const a = ARCHIVO_MEM[mk]; if(!a) return '';
+  const fila = 'padding:5px 0;border-bottom:1px solid var(--slate-100);font-size:13px';
+  let h = '';
+  if((a.cambiosAdm||[]).length){
+    h += '<div class="card no-print" style="margin-top:10px"><h2>Cambios reajustados por administración ('+a.cambiosAdm.length+')</h2><div style="margin-top:6px">'+
+      a.cambiosAdm.map(c=>'<div style="'+fila+'"><b>'+esc(c.phys||"")+'</b> · '+fmtDate(c.origenDia)+' '+esc(c.origenConsulta||"")+
+        ' → '+fmtDate(c.destinoDia)+' '+esc(c.destinoConsulta||"")+'</div>').join("")+'</div></div>';
+  }
+  if((a.solicitudes||[]).length){
+    h += '<div class="card no-print" style="margin-top:10px"><h2>Solicitudes resueltas ('+a.solicitudes.length+')</h2><div style="margin-top:6px">'+
+      a.solicitudes.map(x=>'<div style="'+fila+'">'+resumenSolicitud(x.req||{})+' · <b style="color:'+(x.estado==="aprobada"?"#047857":"#b91c1c")+'">'+
+        (x.estado==="aprobada"?"Aprobada":"No autorizada")+'</b></div>').join("")+'</div></div>';
+  }
+  return h;
+}
+
 function historialOrdenado(){
   const h = state.historial || {};
-  return Object.keys(h).sort().reverse().map(k=>({clave:k, datos:h[k]}));
+  const out = Object.keys(h).map(k=>({clave:k, datos:h[k]}));
+  // Meses ya pasados al archivo: se listan igual; su contenido se descarga al abrirlos
+  Object.keys(state.archivado||{}).forEach(mk=>{
+    const m = state.archivado[mk];
+    if(h[mk] || !m || !m.historial) return;
+    const pr = mk.split("-").map(Number);
+    out.push({clave:mk, datos:{mes:pr[1]-1, anio:pr[0], guardado:m.guardado, enArchivo:true, nAsig:m.asignaciones||0, nFac:m.facultativos||0}});
+  });
+  return out.sort((a,b)=>b.clave.localeCompare(a.clave));
 }
 
 function setOfficial(mo, cerrar){
@@ -908,6 +1067,7 @@ function loadState(){
       state.bandeja = Array.isArray(d.bandeja) ? d.bandeja : [];
       state.historial = d.historial||{};
       state.cerradoAdm = d.cerradoAdm||{};
+      state.archivado = d.archivado||{};
       state.cambiosAdm = d.cambiosAdm||{};
       state.avisosTrafico = Array.isArray(d.avisosTrafico) ? d.avisosTrafico : [];
       state.buzon = Object.assign({url:"",claveEnvio:"",claveCalendario:""}, d.buzon||{});
@@ -1181,7 +1341,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v173";
+const APP_VERSION = "v174";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -3957,7 +4117,15 @@ function limpiarBandeja(){
   state.bandeja = bandeja().filter(it=>{
     if(it.estado === "pendiente") return true;          // las pendientes nunca se tocan
     const f = fechaRelevante(it.req);
-    if(f) return !fechaPasada(f);
+    if(f){
+      if(!fechaPasada(f)) return true;
+      // v174: lo resuelto se conserva hasta que su mes pasa al archivo, para no perderlo.
+      // Si el archivado no llega (sin servidor), se retira a los 3 meses como antes.
+      const mkF = f.slice(0,7);
+      if((state.archivado||{})[mkF]) return false;
+      const tope = new Date(); tope.setMonth(tope.getMonth()-3);
+      return mkF >= tope.getFullYear()+"-"+pad(tope.getMonth()+1);
+    }
     return !it.resuelta || it.resuelta > limite;
   });
   const quitadas = antes - state.bandeja.length;
@@ -4290,13 +4458,14 @@ function viewHistorial(){
   lista.forEach(it=>{
     const g = it.datos;
     const fecha = new Date(g.guardado);
-    const cuantos = Object.keys(g.assignments||{}).length;
+    const cuantos = g.enArchivo ? g.nAsig : Object.keys(g.assignments||{}).length;
+    const nFac = g.enArchivo ? g.nFac : (g.physicians||[]).length;
     const esteAbierto = (abierto === it.clave);
     h += '<div class="histcard">'+
         '<div class="histinfo">'+
           '<div><b style="font-size:15px">'+MONTHS[g.mes]+' '+g.anio+'</b>'+
           '<span class="tiny" style="margin-left:8px;background:#065f46;color:#fff;padding:2px 8px;border-radius:999px;white-space:nowrap">OFICIAL</span></div>'+
-          '<p class="tiny muted" style="margin-top:4px">Archivado el '+(isNaN(fecha)?"—":fecha.toLocaleString("es-ES"))+'<br>'+cuantos+' asignaciones · '+(g.physicians||[]).length+' facultativos</p>'+
+          '<p class="tiny muted" style="margin-top:4px">Archivado el '+(isNaN(fecha)?"—":fecha.toLocaleString("es-ES"))+'<br>'+cuantos+' asignaciones · '+nFac+' facultativos'+(g.enArchivo?' · <b>en el archivo</b>':'')+'</p>'+
         '</div>'+
         '<div class="histbtns">'+
           '<button class="btn" data-action="hist-ver" data-mk="'+it.clave+'">'+(esteAbierto?"Ocultar":"Ver")+'</button>'+
@@ -4307,13 +4476,21 @@ function viewHistorial(){
   });
   h += '</div></div>';
 
-  if(abierto && state.historial[abierto]){
-    const g = state.historial[abierto];
+  const pendArch = (MODE==="editor") ? mesesArchivables() : [];
+  if(pendArch.length){
+    h += '<div class="card no-print" style="margin-top:10px"><div class="row between" style="align-items:center;gap:8px;flex-wrap:wrap">'+
+      '<span style="font-size:13px">Meses pasados pendientes de archivar: <b>'+pendArch.join(", ")+'</b></span>'+
+      '<button class="btn" data-action="archivar-ahora">Archivar ahora</button></div>'+
+      '<p class="muted" style="font-size:12px;margin-top:6px">Se hace solo al abrir la aplicación. El cuadrante, la foto oficial y esta copia del Historial se conservan; los cambios de administración ya reajustados y las solicitudes resueltas pasan al archivo y siguen consultables aquí, al abrir el mes.</p></div>';
+  }
+  if(abierto && historialDe(abierto)){
+    const g = historialDe(abierto);
     h += '<div class="printhead">Cuadrante oficial · '+MONTHS[g.mes]+' '+g.anio+'</div>';
     h += '<div class="card" style="margin-top:10px"><div class="row between no-print" style="align-items:center">'+
       '<h2>'+MONTHS[g.mes]+' '+g.anio+'</h2>'+
       '<span class="tiny muted">copia archivada, no editable</span></div>'+
       tablaHistorial(g)+'</div>';
+    h += viewArchivoDetalle(abierto);
   }
   return h;
 }
@@ -6578,6 +6755,7 @@ function importBackup(file){
       state.bandeja = Array.isArray(d.bandeja) ? d.bandeja : [];
       state.historial = d.historial||{};
       state.cerradoAdm = d.cerradoAdm||{};
+      state.archivado = d.archivado||{};
       state.cambiosAdm = d.cambiosAdm||{};
       state.avisosTrafico = Array.isArray(d.avisosTrafico) ? d.avisosTrafico : [];
       state.buzon = Object.assign({url:"",claveEnvio:"",claveCalendario:""}, d.buzon||{});
@@ -7599,20 +7777,27 @@ document.addEventListener("click", e=>{
     case "rot-toggleres": { rotToggleRes(el.dataset.date, el.dataset.code); renderModal(); render(); break; }
     case "rot-print": imprimirVista(); break;
     case "traf-print": imprimirVista(); break;
+    case "archivar-ahora": archivarPendientes(true); break;
     case "hist-ver": {
-      ui.histAbierto = (ui.histAbierto === el.dataset.mk) ? "" : el.dataset.mk;
-      render();
+      const mkV = el.dataset.mk;
+      if(ui.histAbierto === mkV){ ui.histAbierto = ""; render(); break; }
+      conHistorial(mkV, ()=>{
+        ui.histAbierto = mkV; render();
+        // Si el mes tiene archivo, se descargan sus cambios y solicitudes para mostrarlos debajo
+        if((state.archivado||{})[mkV] && !ARCHIVO_MEM[mkV]){
+          archivoLeer(mkV).then(r=>{ if(r.ok && r.datos){ ARCHIVO_MEM[mkV] = r.datos; if(ui.histAbierto===mkV && ui.tab==="historial") render(); } });
+        }
+      });
       break;
     }
     case "hist-imprimir": {
-      ui.histAbierto = el.dataset.mk;
-      render();
-      setTimeout(()=>imprimirVista(), 300);
+      const mkI = el.dataset.mk;
+      conHistorial(mkI, ()=>{ ui.histAbierto = mkI; render(); setTimeout(()=>imprimirVista(), 300); });
       break;
     }
     case "hist-descargar": {
-      const g = (state.historial||{})[el.dataset.mk];
-      if(!g){ window.alert("No se encuentra esa copia."); break; }
+      const g = historialDe(el.dataset.mk);
+      if(!g){ const elD = el; conHistorial(el.dataset.mk, ()=>elD.click()); break; }
       // Documento independiente: se abre en cualquier navegador y se puede imprimir o guardar como PDF
       const estilos = document.querySelector("style") ? document.querySelector("style").textContent : "";
       const doc = '<!doctype html><html lang="es"><head><meta charset="utf-8">'+
@@ -8698,6 +8883,7 @@ function applyPublished(d){
   state.bandeja = Array.isArray(d.bandeja) ? d.bandeja : [];
       state.historial = d.historial||{};
       state.cerradoAdm = d.cerradoAdm||{};
+      state.archivado = d.archivado||{};
       state.cambiosAdm = d.cambiosAdm||{};
       state.avisosTrafico = Array.isArray(d.avisosTrafico) ? d.avisosTrafico : [];
   state.buzon = Object.assign({url:"",claveEnvio:"",claveCalendario:""}, d.buzon||{});
@@ -8787,6 +8973,7 @@ async function boot(){
   // salvo que exista una publicación más reciente sin resolver.
   ARRANCANDO = false;
   if(NEWER) setSave("⚠ Hay una versión más reciente publicada");
+  setTimeout(()=>{ try{ archivarPendientes(false); }catch(e){} }, 8000);
 }
 boot();
 if("serviceWorker" in navigator){
