@@ -389,10 +389,11 @@ async function ghPublish(manual){
     try{
       const r = await fetch((state.buzon.url||"").replace(/\/+$/,"")+"/publicar", {
         method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({clave: buzonClavePublicar(), data: body})
+        body: JSON.stringify({clave: buzonClavePublicar(), data: body, avisar: (function(){ try{ return avisosDestinatarios(AVISOS_BASE, body); }catch(e){ return []; } })()})
       });
       const d = await r.json().catch(()=>null);
       if(r.ok && d && d.ok){
+        try{ AVISOS_BASE = avisosFoto(body); }catch(e){}
         PUBLISHED_AT = body.publishedAt;
         PUB_TIENE_PASS = !!(body.tienePass || body.adminPass || body.adminPass2);
         state.updatedAt = body.publishedAt;
@@ -1341,7 +1342,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v178";
+const APP_VERSION = "v179";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -5313,6 +5314,9 @@ function viewVacaciones(){
 }
 
 function viewAdministrativo(){
+  return viewAdministrativoBase() + (esAdministrativo() ? viewAjustesAvisos() : '');
+}
+function viewAdministrativoBase(){
   const sub = ui.admvoSub || "consulta";
   const mo = ui.month;
   let h = '<div class="card no-print" style="padding:8px 12px;margin-bottom:10px">'+
@@ -5846,6 +5850,56 @@ function viewHorasExtras(){
 const VAPID_PUBLICA = "BLZapyhMmdnlVIFLnY-1TwY8CDf0bqiwlLg13vqh1LxpMtBRSo27eQwjgEvF6X6lYlxdcCXfTRxP3Xw7i-rfdXc";
 const KEY_AVISOS = "cuadrante-avisos-v1";
 const PID_AVISOS_COORD = "__coord__";
+const PID_AVISOS_ADMVO = "__admvo__";
+// Para quién se activan los avisos en este dispositivo: coordinador, administración o un facultativo
+function avisosIdentidad(){
+  if(MODE==="editor" && estaAutenticado()) return {pid:PID_AVISOS_COORD, rol:"coord", clave:buzonClavePublicar()};
+  if(esAdministrativo()) return {pid:PID_AVISOS_ADMVO, rol:"admvo", clave:claveAdmvo()};
+  const yo = miFacultativo();
+  if(yo) return {pid:yo.id, rol:"fac", clave:"", nombre:yo.name};
+  return null;
+}
+// ---- A quién afecta lo que se publica (v179) ----
+// El servidor no puede comparar dos cuadrantes (poco tiempo de cálculo): lo hace esta
+// aplicación, comparando lo que va a publicar con lo último publicado.
+let AVISOS_BASE = null;
+function avisosFoto(d){
+  d = d || {};
+  const sol = {}; (d.bandeja||[]).forEach(it=>{ if(it && it.id) sol[it.id] = it.estado; });
+  let esp = 0; Object.keys(d.cambiosAdm||{}).forEach(mk=>{ (d.cambiosAdm[mk]||[]).forEach(c=>{ if(c && !c.ejecutado) esp++; }); });
+  return {asg: JSON.parse(JSON.stringify(d.assignments||{})), sol:sol, of:Object.keys(d.official||{}), esp:esp};
+}
+function avisosDestinatarios(base, d){
+  if(!base || !d) return [];
+  const ids = {};
+  const fac = {}; (d.physicians||[]).forEach(p=>{ fac[p.id] = 1; });
+  const hoy = new Date(); const hoyK = keyOf(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
+  const of = d.official || {};
+  const txt = a => a ? [a.m||"", a.t||"", a.f||""].join("/") : "";
+  // Turnos que cambian en meses oficiales, de hoy en adelante
+  const claves = {}; Object.keys(base.asg).forEach(k=>{ claves[k]=1; }); Object.keys(d.assignments||{}).forEach(k=>{ claves[k]=1; });
+  Object.keys(claves).forEach(k=>{
+    const i = k.indexOf("|"); const pid = k.slice(0,i), dia = k.slice(i+1);
+    if(!fac[pid] || dia < hoyK || !of[dia.slice(0,7)]) return;
+    if(txt(base.asg[k]) !== txt((d.assignments||{})[k])) ids[pid] = 1;
+  });
+  // Solicitudes que pasan a resueltas
+  (d.bandeja||[]).forEach(it=>{
+    if(!it || !it.id || it.estado==="pendiente") return;
+    const antes = base.sol[it.id];
+    const reciente = it.resuelta && (Date.now()-Date.parse(it.resuelta) < 15*60000);
+    if(antes==="pendiente" || (antes===undefined && reciente)){
+      const r = it.req || {};
+      [r.pid, r.pidA, r.pidB].concat(r.type==="cadena" ? cadenaParticipantes(r) : []).forEach(x=>{ if(x && fac[x]) ids[x] = 1; });
+    }
+  });
+  // Un mes pasa a oficial: a todos
+  if(Object.keys(of).some(mk=>base.of.indexOf(mk)<0)) Object.keys(fac).forEach(x=>{ ids[x] = 1; });
+  // Hay cambios nuevos en espera: a administración
+  let esp = 0; Object.keys(d.cambiosAdm||{}).forEach(mk=>{ (d.cambiosAdm[mk]||[]).forEach(c=>{ if(c && !c.ejecutado) esp++; }); });
+  if(esp > base.esp) ids[PID_AVISOS_ADMVO] = 1;
+  return Object.keys(ids);
+}
 function avisosSoportados(){
   try{ return ("serviceWorker" in navigator) && ("PushManager" in window) && ("Notification" in window); }catch(e){ return false; }
 }
@@ -5869,6 +5923,11 @@ async function avisosActivar(pid, clave){
     if(!sub) sub = await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey: avisosClaveBytes()});
   }catch(e){ return "El dispositivo no ha podido activar los avisos: "+((e && e.message) || e); }
   const datos = sub.toJSON ? sub.toJSON() : {endpoint: sub.endpoint};
+  // Si este dispositivo estaba apuntado a nombre de otra persona, se da de baja de ella
+  const previo = avisosGuardados();
+  if(previo && previo.pid && previo.pid !== pid){
+    try{ await fetch(b.url.replace(/\/+$/,"")+"/desuscribir", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({pid: previo.pid, endpoint: datos.endpoint})}); }catch(e){}
+  }
   try{
     const r = await fetch(b.url.replace(/\/+$/,"")+"/suscribir", {
       method:"POST", headers:{"Content-Type":"application/json"},
@@ -5880,6 +5939,8 @@ async function avisosActivar(pid, clave){
   try{ localStorage.setItem(KEY_AVISOS, JSON.stringify({pid: pid, endpoint: datos.endpoint, desde: new Date().toISOString()})); }catch(e){}
   // El service worker necesita saber quién usa el dispositivo para componer el texto
   try{ const c = await caches.open("cuadrante-avisos"); await c.put("./__quien.json", new Response(JSON.stringify({pid: pid}), {headers:{"Content-Type":"application/json"}})); }catch(e){}
+  // Foto de partida: los avisos contarán lo que cambie desde ahora
+  try{ const reg2 = await navigator.serviceWorker.ready; if(reg2.active && reg2.active.postMessage) reg2.active.postMessage({tipo:"avisos-inicia"}); }catch(e){}
   return null;
 }
 async function avisosDesactivar(){
@@ -5908,18 +5969,24 @@ async function avisosProbar(){
 }
 function viewAjustesAvisos(){
   if(!(state.buzon||{}).url) return '';
+  const yo = avisosIdentidad();
+  if(!yo) return '';
   const g = avisosGuardados();
-  const activo = !!(g && g.pid === PID_AVISOS_COORD);
+  const activo = !!(g && g.pid === yo.pid);
   const msg = ui.avisosMsg || "";
+  const que = yo.rol==="coord" ? "cuando llegue una solicitud nueva al buzón o administración reajuste un cambio o toque un tráfico"
+            : yo.rol==="admvo" ? "cuando haya un cambio nuevo pendiente de reajustar"
+            : "cuando se resuelva una solicitud tuya, cambie un turno tuyo, administración te ponga o quite un tráfico o salga un mes oficial";
   return '<div class="card" id="card-avisos"><h2>Avisos en este dispositivo</h2>'+
-    '<p class="muted" style="margin-top:2px;font-size:13px">Recibe una notificación cuando llegue una solicitud nueva al buzón, aunque la aplicación esté cerrada. '+
-    'Se activa en cada dispositivo por separado. De 22:00 a 7:00 no suena nada: lo de ese tramo llega junto a las 7:00.</p>'+
+    '<p class="muted" style="margin-top:2px;font-size:13px">Recibe una notificación '+que+', aunque la aplicación esté cerrada. '+
+    'Se activa en cada dispositivo por separado. Suenan de 9:00 a 21:00; lo que ocurra fuera de ese horario llega a las 9:00.</p>'+
     (avisosSoportados() ? '' :
       '<div class="warnbox" style="margin-top:8px">Este navegador no admite avisos. En iPhone, añade la aplicación a la pantalla de inicio (Compartir → Añadir a pantalla de inicio) y ábrela desde ahí.</div>')+
-    '<p style="margin-top:10px;font-size:14px">Estado: <b style="color:'+(activo?"var(--emerald-700)":"var(--slate-500)")+'">'+(activo?"activados en este dispositivo":"sin activar")+'</b></p>'+
+    '<p style="margin-top:10px;font-size:14px">Estado: <b style="color:'+(activo?"var(--emerald-700)":"var(--slate-500)")+'">'+
+      (activo ? "activados en este dispositivo"+(yo.rol==="fac" ? " para "+esc(yo.nombre) : "") : "sin activar")+'</b></p>'+
     '<div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">'+
       (activo
-        ? '<button class="btn primary" data-action="avisos-probar">Enviar un aviso de prueba</button><button class="btn" data-action="avisos-desactivar">Desactivar</button>'
+        ? (yo.rol==="coord" ? '<button class="btn primary" data-action="avisos-probar">Enviar un aviso de prueba</button>' : '')+'<button class="btn" data-action="avisos-desactivar">Desactivar</button>'
         : '<button class="btn primary" data-action="avisos-activar">Activar avisos</button>')+
     '</div>'+
     (msg ? '<p style="margin-top:8px;font-size:13px">'+esc(msg)+'</p>' : '')+
@@ -6015,6 +6082,7 @@ function viewSolicitudes(){
       '<p class="muted" style="margin-top:2px">Elige facultativo, fecha y tu propuesta; la solicitud le llegará al coordinador para su autorización.</p>'+
       solicitudZonaHTML()+'</div>';
     h += viewMisSolicitudes();
+    h += viewAjustesAvisos();
     if(log.length){
       h += '<div class="card"><div class="row between"><h2>Enviadas desde este dispositivo</h2><button class="btn" data-action="reqlog-clear">Vaciar</button></div><div style="margin-top:8px">'+
         log.map(x=>'<div style="padding:6px 0;border-bottom:1px solid var(--slate-100);font-size:13px"><b>'+esc(x.phys||"")+'</b> · '+fmtDate(x.date)+' → '+esc(x.prop||"")+'<span class="muted"> · enviada '+new Date(x.at).toLocaleDateString("es-ES")+'</span></div>').join("")+
@@ -8500,9 +8568,20 @@ document.addEventListener("click", e=>{
     case "traf-print": imprimirVista(); break;
     case "archivar-ahora": archivarPendientes(true); break;
     case "avisos-activar": {
-      if(!buzonClavePublicar()){ ui.avisosMsg = "Este dispositivo aún no tiene la contraseña de publicación; introdúcela en «Buzón de solicitudes»."; render(); break; }
+      const quien = avisosIdentidad();
+      if(!quien) break;
+      let claveA = quien.clave;
+      if(quien.rol==="coord" && !claveA){ ui.avisosMsg = "Este dispositivo aún no tiene la contraseña de publicación; introdúcela en «Buzón de solicitudes»."; render(); break; }
+      if(quien.rol==="admvo" && !claveA){
+        claveA = (window.prompt("Contraseña de administrativo\n\nSolo se pide una vez en este dispositivo.") || "").trim();
+        if(!claveA) break;
+      }
       ui.avisosMsg = "Activando…"; render();
-      avisosActivar(PID_AVISOS_COORD, buzonClavePublicar()).then(err=>{ ui.avisosMsg = err ? ("⚠ "+err) : "✓ Avisos activados. Pulsa «Enviar un aviso de prueba» para comprobarlo."; render(); });
+      avisosActivar(quien.pid, claveA).then(err=>{
+        if(!err && quien.rol==="admvo") setClaveAdmvo(claveA);
+        ui.avisosMsg = err ? ("⚠ "+err) : (quien.rol==="coord" ? "✓ Avisos activados. Pulsa «Enviar un aviso de prueba» para comprobarlo." : "✓ Avisos activados en este dispositivo.");
+        render();
+      });
       break;
     }
     case "avisos-desactivar": {
@@ -9765,6 +9844,8 @@ async function boot(){
     state.year = hoy.getFullYear();
     ui.month = hoy.getMonth();
   }catch(e){}
+  // Punto de partida de los avisos: lo último publicado (lo que ya han visto los demás)
+  try{ AVISOS_BASE = avisosFoto(published && published.assignments ? published : state); }catch(e){}
   loadStatsView();
   setSave(MODE==="viewer" ? "Solo consulta" : "✓ Guardado");
   render();

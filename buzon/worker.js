@@ -243,8 +243,12 @@ function horaMadrid(env) {
   if (env.HORA_PRUEBA !== undefined) return Number(env.HORA_PRUEBA);
   return Number(new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Madrid", hour: "2-digit", hour12: false }).format(new Date())) % 24;
 }
-// Horario de silencio: de 22:00 a 7:00 no se envía nada; se entrega junto a las 7:00
-const enSilencio = (env) => { const h = horaMadrid(env); return h >= 22 || h < 7; };
+// Los avisos suenan de 9:00 a 21:00 (decisión de Javier). Fuera de ese tramo no se envía
+// nada: queda en cola y se entrega junto a las 9:00.
+const HORA_INICIO = 9, HORA_FIN = 21;
+const enSilencio = (env) => { const h = horaMadrid(env); return h >= HORA_FIN || h < HORA_INICIO; };
+// Solo se avisa a facultativos y a administración por esta vía (nunca al propio coordinador)
+const pidAvisable = (p) => p === PID_ADMVO || /^[a-z0-9]{4,16}$/.test(String(p || ""));
 
 async function enviarToques(env, pids) {
   if (!env.VAPID_PRIVADA) return { enviados: 0, motivo: "sin clave" };
@@ -282,7 +286,7 @@ async function enviarToques(env, pids) {
   }
   return { enviados, caducados };
 }
-// Avisa a esas personas ahora o, en horario de silencio, lo deja en cola hasta las 7:00
+// Avisa a esas personas ahora o, fuera del horario de avisos, lo deja en cola hasta las 9:00
 async function avisar(env, pids) {
   try {
     if (enSilencio(env)) {
@@ -334,7 +338,7 @@ export default {
   async scheduled(event, env, ctx) {
     const tarea = (async () => {
       if (event.cron === "0 2 * * *") return copiaNocturna(env);
-      if (horaMadrid(env) === 7) return vaciarCola(env);     // de las dos horas programadas, solo una es las 7:00 de Madrid
+      if (horaMadrid(env) === HORA_INICIO) return vaciarCola(env);   // de las dos horas programadas, solo una es las 9:00 de Madrid
       return null;
     })();
     if (ctx && ctx.waitUntil) ctx.waitUntil(tarea);
@@ -605,6 +609,9 @@ export default {
             return {};
           });
         if (res.error) return json({ error: res.error }, res.status || 502);
+        // v179: administración ha puesto o quitado un tráfico → aviso al facultativo y al coordinador
+        const toqueTf = avisar(env, [pid, PID_COORD]);
+        if (ctx && ctx.waitUntil) ctx.waitUntil(toqueTf);
         return json({ ok: true });
       }
 
@@ -622,12 +629,15 @@ export default {
         const mk = String(cuerpo.mk || ""), id = String(cuerpo.id || "");
         if (!mk || !id) return json({ error: "Faltan datos del cambio." }, 400);
 
+        let afectados = {};
         const res = await editarCuadrante(env,
           "Administrativo: cambio " + (cuerpo.valor === false ? "pendiente" : "reajustado"),
           (datos) => {
             const lista = (datos.cambiosAdm || {})[mk] || [];
             const c = lista.find(x => x && x.id === id);
             if (!c) return { error: "No se encuentra ese cambio.", status: 404 };
+            afectados = {};
+            (c.celdas || []).concat(c.previas || []).forEach(x => { if (x && x.k) afectados[String(x.k).split("|")[0]] = 1; });
             if (cuerpo.valor === false) {
               // Se deshace: el cuadrante vuelve a como estaba y queda de nuevo en espera
               delete c.ejecutado; delete c.ejecutadoAt;
@@ -656,6 +666,11 @@ export default {
             return {};
           });
         if (res.error) return json({ error: res.error }, res.status || 502);
+        // v179: administración ha reajustado el cambio → ya está aplicado: aviso a los facultativos afectados y al coordinador
+        if (cuerpo.valor !== false) {
+          const toqueEj = avisar(env, Object.keys(afectados).filter(pidAvisable).concat([PID_COORD]));
+          if (ctx && ctx.waitUntil) ctx.waitUntil(toqueEj);
+        }
         return json({ ok: true, ejecutado: cuerpo.valor !== false });
       }
 
@@ -681,7 +696,7 @@ export default {
           return json({ error: "Ya hay demasiados dispositivos con avisos para esa persona." }, 409);
         }
         await env.BUZON.put(clave, JSON.stringify({ endpoint: endpoint, pid: pid, alta: new Date().toISOString() }));
-        return json({ ok: true, silencio: "22:00–7:00" });
+        return json({ ok: true, horario: "9:00–21:00" });
       }
 
       // ---------- Aviso de prueba al coordinador (ignora el horario de silencio) ----------
@@ -796,7 +811,13 @@ export default {
           const err = await guardar.text().catch(() => "");
           return json({ error: "GitHub ha rechazado la publicación (" + guardar.status + "): " + err.slice(0, 200) }, 502);
         }
-        return json({ ok: true, publicado: new Date().toISOString() });
+        // v179: la aplicación indica a quién afecta lo publicado (compararlo aquí costaría demasiado cálculo)
+        const destinos = Array.isArray(cuerpo.avisar) ? cuerpo.avisar.filter(pidAvisable).slice(0, 40) : [];
+        if (destinos.length) {
+          const toquePub = avisar(env, destinos);
+          if (ctx && ctx.waitUntil) ctx.waitUntil(toquePub);
+        }
+        return json({ ok: true, publicado: new Date().toISOString(), avisados: destinos.length });
       }
 
       return json({ error: "Ruta no encontrada." }, 404);
