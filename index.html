@@ -370,6 +370,20 @@ async function ghPublish(manual){
     if(!manual && !state.physicians.length) return;
     if(pubBusy){ pubAgain = true; return; }
     pubBusy = true;
+    // v172: si administración (u otro dispositivo) ha publicado después de lo último que
+    // conoce este dispositivo, no se pisa: se avisa y se decide qué versión vale.
+    try{
+      const ult = await fetchPublished();
+      if(ult && ult.publishedAt && PUBLISHED_AT && ult.publishedAt > PUBLISHED_AT &&
+         !(ult.publishedBy && ult.publishedBy===DEVICE_ID)){
+        NEWER = true; PUBLISHED_AT = ult.publishedAt; pubBusy = false; pubAgain = false;
+        setSave("⚠ Hay una versión más reciente: no se publica");
+        render();
+        window.alert("No se ha publicado.\n\nAlguien (por ejemplo, administración) ha guardado un cambio después de tu última actualización. "+
+          "Para no perderlo, pulsa «Cargar la publicada» y repite tu último cambio. Si prefieres que valga lo de este dispositivo, pulsa «Seguir con la local».");
+        return;
+      }
+    }catch(e){ /* sin conexión: fallará la publicación y se avisará */ }
     setSave("Publicando…");
     const body = paraPublicar();
     try{
@@ -1011,9 +1025,12 @@ const isEmptyA = a=>!a||(!a.m&&!a.t&&!a.f);
 // Consultas de Tráfico: voluntarias, se pagan como horas extra y NO computan como turnos
 const esTrafico = c => !!c && /^TF[MT][123]$/.test(c);
 const turnosOf = a=>!a?0:((a.f==="URG"||a.f==="URGLV")?2:(a.f?0:((a.m&&!esTrafico(a.m)?1:0)+(a.t&&!esTrafico(a.t)?1:0))));
+// v172: lo que viene dentro de una solicitud (fechas, códigos) se muestra en pantalla;
+// se le quitan los signos con los que podría colarse código.
+const sinHtml = t => String(t==null ? "" : t).replace(/[<>"'`&]/g, "");
 const fmtDate = k=>{
   if(!k || typeof k!=="string" || k.indexOf("-")<0) return "—";
-  return k.split("-").reverse().join("/");
+  return sinHtml(k.split("-").reverse().join("/"));
 };
 function holidayMap(){ const m={}; state.holidays.forEach(h=>m[h.date]=h.name); return m; }
 function nextWorkingDay(dateKey, hset, blocked){
@@ -1091,7 +1108,30 @@ function tipoGuardiaDia(dateKey){
 }
 
 // ------------------ Mutaciones ------------------
+// v172: al pintar una consulta de Tráfico se pide su hora de comienzo; sin hora no se crea.
+function pedirHoraTrafico(slot){
+  const ej = slot==="m" ? "09:30" : "15:30";
+  const txt = window.prompt("Hora de comienzo de la consulta de Tráfico ("+(slot==="m"?"mañana, de 8:00 a 14:00":"tarde, de 15:00 a 19:30")+")\n\nEscríbela así: "+ej, "");
+  if(txt===null) return null;
+  const m = String(txt).trim().match(/^(\d{1,2})[:.,h ]?(\d{2})?$/);
+  if(!m){ window.alert("No se ha entendido la hora. Escríbela así: "+ej); return null; }
+  const hh = Number(m[1]), mm = Number(m[2]||0);
+  const ok = (mm===0 || mm===30) && (slot==="m" ? (hh>=8 && (hh<14 || (hh===14 && mm===0))) : (hh>=15 && hh<=19));
+  if(!ok){ window.alert("Hora no válida para ese turno. Debe ser en punto o y media, "+(slot==="m"?"entre las 8:00 y las 14:00.":"entre las 15:00 y las 19:30.")); return null; }
+  return pad(hh)+":"+pad(mm);
+}
 function applyCode(pid, dateKey, code){
+  if(esTrafico(code)){
+    const slTf = code.charAt(2)==="M" ? "m" : "t";
+    const aTf = state.assignments[pid+"|"+dateKey] || {};
+    const quitando = !aTf.f && aTf[slTf]===code;          // volver a tocar la misma consulta la quita
+    if(!quitando){
+      const horaTf = pedirHoraTrafico(slTf);
+      if(!horaTf) return;
+      state.traficoHoras = state.traficoHoras || {};
+      state.traficoHoras[pid+"|"+dateKey+"|"+slTf] = horaTf;
+    }
+  }
   marcarDeshacer("edición del cuadrante");
   // Al pintar una guardia, se pone el tipo que corresponde a ese día
   if(code==="URG" || code==="URGLV") code = tipoGuardiaDia(dateKey);
@@ -1141,7 +1181,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v171";
+const APP_VERSION = "v172";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1562,8 +1602,8 @@ const KEY_REQLOG = "cuadrante-reqlog-v1";
 const KEY_APPLIEDLOG = "cuadrante-appliedlog-v1";
 function cellToText(a){
   if(!a || (!a.m && !a.t && !a.f)) return "— (vacío)";
-  if(a.f) return byCode[a.f] ? byCode[a.f].code : (absInfo(a.f) ? absInfo(a.f).label : a.f);
-  return [a.m, a.t ? a.t : null].filter(Boolean).join(" + ") || "—";
+  if(a.f) return byCode[a.f] ? byCode[a.f].code : (absInfo(a.f) ? absInfo(a.f).label : sinHtml(a.f));
+  return sinHtml([a.m, a.t ? a.t : null].filter(Boolean).join(" + ")) || "—";
 }
 function draftToCell(d){
   if(d.f) return {f:d.f};
@@ -1573,14 +1613,14 @@ function draftToCell(d){
 function partLabel(part){
   if(!part) return "— (nada, solo añadir)";
   const i = part.indexOf(":"); const slot = part.slice(0,i), code = part.slice(i+1);
-  const nm = absInfo(code) ? absInfo(code).label : code;
+  const nm = absInfo(code) ? absInfo(code).label : sinHtml(code);
   return nm + (slot==="m" ? " (mañana)" : slot==="t" ? " (tarde)" : " (día completo)");
 }
 function codeLabel(code){
   if(!code) return "Ninguna (liberar)";
   if(absInfo(code)) return absInfo(code).label;
   const def = byCode[code];
-  return code + (def ? (def.group==="M" ? " (mañana)" : def.group==="T" ? " (tarde)" : " (día completo)") : "");
+  return sinHtml(code) + (def ? (def.group==="M" ? " (mañana)" : def.group==="T" ? " (tarde)" : " (día completo)") : "");
 }
 function proposeCell(cur, fromPart, toCode){
   let c = cur ? JSON.parse(JSON.stringify(cur)) : {};
@@ -1934,6 +1974,7 @@ function applyRequestCore(r){
     const a = Object.assign({}, state.assignments[k]||{});
     if(a.f) return "Ese día está ocupado por "+cellToText(a)+".";
     if(a[r.slot]) return "Ese turno ya está ocupado por "+a[r.slot]+".";
+    if(!r.hora) return "La solicitud no indica la hora de comienzo de la consulta de Tráfico.";
     a[r.slot] = r.code;
     state.assignments[k] = {m:a.m||null, t:a.t||null, f:null};
     if(r.hora){ state.traficoHoras = state.traficoHoras||{}; state.traficoHoras[p.id+"|"+r.date+"|"+r.slot] = r.hora; }
@@ -2121,7 +2162,7 @@ function resumenSolicitud(r){
     case "trafico": return n(r.phys)+" · Tráfico "+esc(r.code||"")+" el "+fmtDate(r.date)+(r.hora?" a las "+esc(r.hora):"");
     case "libre":   return n(r.phys)+" · no disponible "+(r.dias||[]).map(fmtDate).join(", ");
     case "permiso": return n(r.phys)+" · permiso "+(r.dias||[]).map(fmtDate).join(", ");
-    case "actividad": return n(r.phys)+" · "+(r.actual||"—")+" → "+(r.nueva||"—")+" el "+fmtDate(r.fecha);
+    case "actividad": return n(r.phys)+" · "+sinHtml(r.actual||"—")+" → "+sinHtml(r.nueva||"—")+" el "+fmtDate(r.fecha);
     default:        return n(r.phys)+" · "+fmtDate(r.date);
   }
 }
@@ -2421,7 +2462,7 @@ function solicitudFormHTML(){
     const codigos = (d3.tfSlot==="m") ? ["TFM1","TFM2","TFM3"] : ["TFT1","TFT2","TFT3"];
     if(!codigos.includes(d3.tfCode)) d3.tfCode = codigos[0];
     const horas = horasTrafico(d3.tfSlot);
-    if(!horas.includes(d3.tfHora)) d3.tfHora = horas[0];
+    if(!horas.includes(d3.tfHora)) d3.tfHora = "";      // v172: hay que elegirla, no se da una por defecto
     core = '<p class="tiny" style="margin-top:10px">Facultativo y día</p>'+
       '<div class="row" style="margin-top:4px">'+physSel("rq-phys", p?p.id:"")+
       '<input type="date" value="'+rq.date+'" data-field="rq-date" style="padding:7px"></div>'+
@@ -2435,9 +2476,10 @@ function solicitudFormHTML(){
         codigos.map(c=>'<option value="'+c+'"'+(d3.tfCode===c?" selected":"")+'>'+c+'</option>').join("")+'</select>'+
       '<p class="tiny" style="margin-top:10px">Hora de comienzo</p>'+
       '<select data-field="rq-tfhora" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+
+        '<option value=""'+(d3.tfHora?"":" selected")+'>— Elige la hora —</option>'+
         horas.map(h=>'<option value="'+h+'"'+(d3.tfHora===h?" selected":"")+'>'+h+'</option>').join("")+'</select>'+
       (function(){
-        const motivo = validarTrafico(rq.pid, rq.date, d3.tfSlot, d3.tfCode);
+        const motivo = validarTrafico(rq.pid, rq.date, d3.tfSlot, d3.tfCode) || (d3.tfHora ? null : "Indica la hora de comienzo de la consulta.");
         ui.reqBloqueo = motivo;
         return motivo
           ? '<div class="warnbox" style="margin-top:10px">⚠ <b>No se puede solicitar:</b><br>'+esc(motivo)+'</div>'
@@ -3895,6 +3937,8 @@ function fechaRelevante(r){
     case "urg2":    meter(r.dateU); meter(r.f1); meter(r.f2); meter(r.mov1); meter(r.mov2); break;
     case "trafico": meter(r.date); break;
     case "libre":   (r.dias||[]).forEach(meter); break;
+    case "permiso": (r.dias||[]).forEach(meter); break;
+    case "actividad": meter(r.fecha); break;
     default:        meter(r.date);
   }
   return f.length ? f.sort()[f.length-1] : "";
@@ -4538,7 +4582,7 @@ function viewTraficoAdmvo(mo){
   else { for(let hh=15; hh<=19; hh++){ horas.push(pad(hh)+":00"); horas.push(pad(hh)+":30"); } }
   // La primera opción es la que se ve; se deja registrada para que valga aunque
   // no se despliegue la lista. Igual con la consulta.
-  if(!d.hora || horas.indexOf(d.hora) < 0) d.hora = horas[0];
+  if(!d.hora || horas.indexOf(d.hora) < 0) d.hora = "";   // v172: la hora hay que elegirla
   if(!d.code || codigos.indexOf(d.code) < 0) d.code = codigos[0];
   if(!d.pid) d.pid = (state.physicians[0]||{}).id;
   if(!d.dia || !dias.some(x=>x.key===d.dia)) d.dia = (dias[0]||{}).key;
@@ -4565,6 +4609,7 @@ function viewTraficoAdmvo(mo){
         '</select></span>'+
       '<span style="width:100px"><span class="tiny">Comienzo</span>'+
         '<select data-field="tfa-hora" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px">'+
+          '<option value=""'+(d.hora?"":" selected")+'>— Elige —</option>'+
           horas.map(x=>'<option value="'+x+'"'+(d.hora===x?" selected":"")+'>'+x+'</option>').join("")+
         '</select></span>'+
     '</div>'+
@@ -5215,7 +5260,7 @@ function viewSolicitudes(){
       }else if(r.type==="trafico"){
         ficha = '<p style="font-size:14px"><b>Solicitante:</b> '+esc(r.by||"(sin nombre)")+' · <b>CONSULTA DE TRÁFICO</b></p>'+
           '<p style="font-size:14px;margin-top:4px"><b>'+esc(r.phys||"")+'</b> · '+fmtDate(r.date)+'</p>'+
-          '<p style="font-size:14px;margin-top:4px">'+r.code+' · '+(r.slot==="m"?"mañana":"tarde")+' · comienzo <b>'+esc(r.hora||"sin indicar")+'</b></p>'+
+          '<p style="font-size:14px;margin-top:4px">'+esc(r.code)+' · '+(r.slot==="m"?"mañana":"tarde")+' · comienzo <b>'+esc(r.hora||"sin indicar")+'</b></p>'+
           (r.note?'<p style="font-size:14px;margin-top:4px"><b>Motivo:</b> '+esc(r.note)+'</p>':'');
       }else if(r.type==="ceder"){
         ficha = '<p style="font-size:14px"><b>Solicitante:</b> '+esc(r.by||"(sin nombre)")+' · <b>CESIÓN</b></p>'+
@@ -7820,6 +7865,7 @@ document.addEventListener("click", e=>{
       const code  = quitar ? "" : (d.code || (slot==="m"?"TFM1":"TFT1"));
       const hora  = quitar ? "" : (d.hora || "");
       if(!pid || !fecha){ d.aviso = "Faltan datos."; d.enviando = false; render(); break; }
+      if(!quitar && !hora){ d.aviso = "Indica la hora de comienzo de la consulta."; d.enviando = false; setSave("⚠ Falta la hora"); render(); break; }
       if(quitar && !window.confirm("¿Quitar esta consulta de Tráfico?")) break;
       setSave(quitar ? "Quitando…" : "Guardando…");
       // El coordinador la aplica directamente; administración pasa por el servidor
@@ -8125,6 +8171,12 @@ document.addEventListener("click", e=>{
               case "libre":
                 entry = {at:ahora, by:rq0.by||"", phys:rq0.phys||"", date:(rq0.dias&&rq0.dias[0])||"",
                          prop:"No disponible: "+(rq0.dias||[]).map(fmtDate).join(", ")}; break;
+              case "permiso":
+                entry = {at:ahora, by:rq0.by||"", phys:rq0.phys||"", date:(rq0.dias&&rq0.dias[0])||"",
+                         prop:"Permiso: "+(rq0.dias||[]).map(fmtDate).join(", ")}; break;
+              case "actividad":
+                entry = {at:ahora, by:rq0.by||"", phys:rq0.phys||"", date:rq0.fecha||"",
+                         prop:"Cambia "+(rq0.actual||"—")+" por "+(rq0.nueva||"—")+" ("+((rq0.slot||"m")==="m"?"mañana":"tarde")+")"}; break;
               default:
                 entry = {at:ahora, by:rq0.by||"", phys:rq0.phys||"", date:rq0.date||"",
                          prop:cellToText(rq0.to&&rq0.to.clear?null:rq0.to)};

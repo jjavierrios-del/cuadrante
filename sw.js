@@ -1,4 +1,4 @@
-const CACHE = "cuadrante-pwa-v171";
+const CACHE = "cuadrante-pwa-v172";
 const ASSETS = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./icon-180.png"];
 
 self.addEventListener("install", (e) => {
@@ -11,14 +11,19 @@ self.addEventListener("activate", (e) => {
 });
 
 // Red primero, caché como respaldo (para datos y para la propia app)
+// La app pide data.json con un sello de tiempo distinto cada vez (data.json?t=…).
+// Se guarda siempre bajo la misma dirección, sin el sello: así hay UNA sola copia
+// (la última) en lugar de una nueva en cada consulta, y sin conexión se encuentra.
 function networkFirst(req) {
+  const u = new URL(req.url);
+  const clave = u.pathname.endsWith("data.json") ? u.origin + u.pathname : req;
   return fetch(req).then((r) => {
     if (r && r.ok) {
       const cl = r.clone();
-      caches.open(CACHE).then((c) => c.put(req, cl));
+      caches.open(CACHE).then((c) => c.put(clave, cl));
     }
     return r;
-  }).catch(() => caches.match(req).then((r) => r || caches.match("./index.html")));
+  }).catch(() => caches.match(clave).then((r) => r || caches.match("./index.html")));
 }
 
 self.addEventListener("fetch", (e) => {
