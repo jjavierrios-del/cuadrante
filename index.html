@@ -1181,7 +1181,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v172";
+const APP_VERSION = "v173";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -5127,10 +5127,11 @@ function viewSolicitudes(){
       '<h2>Solicitar un cambio</h2>'+
       '<p class="muted" style="margin-top:2px">Elige facultativo, fecha y tu propuesta; la solicitud le llegará al coordinador para su autorización.</p>'+
       solicitudFormHTML()+'</div>';
+    h += viewMisSolicitudes();
     if(log.length){
-      h += '<div class="card"><div class="row between"><h2>Mis solicitudes enviadas</h2><button class="btn" data-action="reqlog-clear">Vaciar</button></div><div style="margin-top:8px">'+
+      h += '<div class="card"><div class="row between"><h2>Enviadas desde este dispositivo</h2><button class="btn" data-action="reqlog-clear">Vaciar</button></div><div style="margin-top:8px">'+
         log.map(x=>'<div style="padding:6px 0;border-bottom:1px solid var(--slate-100);font-size:13px"><b>'+esc(x.phys||"")+'</b> · '+fmtDate(x.date)+' → '+esc(x.prop||"")+'<span class="muted"> · enviada '+new Date(x.at).toLocaleDateString("es-ES")+'</span></div>').join("")+
-        '</div><p class="muted" style="font-size:12px;margin-top:6px">Registro local de este dispositivo. Sabrás que está autorizada cuando veas el cambio aplicado en el cuadrante.</p></div>';
+        '</div><p class="muted" style="font-size:12px;margin-top:6px">Registro local de este dispositivo. En cuanto el coordinador la reciba, aparecerá arriba con su estado.</p></div>';
     }
     return h;
   }
@@ -5385,6 +5386,117 @@ function renderNav(){
   document.getElementById("nav").innerHTML = navHTML;
 }
 
+// ------------------ Avisos de incoherencias (v173) ------------------
+// Repasa el mes que se está viendo y señala lo que no cuadra con las reglas.
+// Solo informa: no corrige ni bloquea nada. Lo ve únicamente el coordinador.
+function incoherenciasMes(mo){
+  const out = [];
+  const year = state.year;
+  const dim = new Date(year, mo+1, 0).getDate();
+  const hmap = holidayMap();
+  const max = state.settings.maxMorning || 8;
+  const URGS = ["URG","URGLV","URGF"];
+  const REPETIBLES = ["ALRU","ADM","ADMT"];          // estas consultas pueden coincidir en dos facultativos
+  const pref = "|"+year+"-"+pad(mo+1)+"-";
+  // Un mes sin guardias (vacío o solo con vacaciones) aún no está generado: no se le exige urgencia diaria
+  const generado = Object.keys(state.assignments).some(k=> k.indexOf(pref)>0 && URGS.indexOf(state.assignments[k].f)>=0);
+  for(let d=1; d<=dim; d++){
+    const k = keyOf(year, mo, d);
+    const dow = new Date(year, mo, d).getDay();
+    const noLab = dow===0 || dow===6 || !!hmap[k];
+    const urg = [], porTurno = {m:{}, t:{}};
+    state.physicians.forEach(p=>{
+      const a = state.assignments[p.id+"|"+k]; if(!a) return;
+      if(URGS.indexOf(a.f)>=0) urg.push({p:p, f:a.f});
+      if(a.f) return;
+      ["m","t"].forEach(sl=>{
+        const c = a[sl]; if(!c) return;
+        (porTurno[sl][c] = porTurno[sl][c] || []).push(p.name);
+        if(esTrafico(c) && !((state.traficoHoras||{})[p.id+"|"+k+"|"+sl]))
+          out.push({dia:k, txt:"Tráfico sin hora: "+p.name+" · "+c+" ("+(sl==="m"?"mañana":"tarde")+")"});
+        if(noLab) out.push({dia:k, txt:"Consulta en "+(hmap[k]?"festivo":"fin de semana")+": "+p.name+" · "+c});
+      });
+    });
+    const ocupadas = mananasOcupadasDia(k);
+    if(ocupadas > max) out.push({dia:k, txt:"Hay "+ocupadas+" consultas físicas de mañana y el tope es "+max});
+    if(generado && state.settings.urgRequired!==false){
+      if(urg.length===0) out.push({dia:k, txt:"Día sin urgencia"});
+      if(urg.length>1) out.push({dia:k, txt:"Urgencia doble: "+urg.map(u=>u.p.name).join(" y ")});
+    }
+    urg.forEach(u=>{
+      const toca = tipoGuardiaDia(k);
+      if(u.f!==toca) out.push({dia:k, txt:"Tipo de guardia: "+u.p.name+" tiene "+u.f+" y a ese día le corresponde "+toca});
+    });
+    ["m","t"].forEach(sl=>{
+      Object.keys(porTurno[sl]).forEach(c=>{
+        if(porTurno[sl][c].length>1 && REPETIBLES.indexOf(c)<0)
+          out.push({dia:k, txt:"Consulta repetida: "+c+" ("+(sl==="m"?"mañana":"tarde")+") la tienen "+porTurno[sl][c].join(" y ")});
+      });
+    });
+  }
+  return out;
+}
+function viewIncoherencias(){
+  if(MODE!=="editor") return '';
+  let lista;
+  try{ lista = incoherenciasMes(ui.month); }catch(e){ return ''; }
+  if(!lista.length) return '';
+  const hoy = new Date(); const hoyKey = keyOf(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
+  const futuras = lista.filter(x=>x.dia>=hoyKey).length;
+  const WDL = ["domingo","lunes","martes","miércoles","jueves","viernes","sábado"];
+  let h = '<div class="card no-print" style="margin-bottom:10px;padding:8px 12px;border-color:#fcd34d;background:#fffbeb">'+
+    '<div class="row between" style="align-items:center;gap:8px;flex-wrap:wrap">'+
+      '<span style="font-size:14px;color:#92400e">⚠ <b>'+lista.length+' aviso'+(lista.length>1?'s':'')+' en '+MONTHS[ui.month]+'</b>'+
+        (futuras ? ' · '+futuras+' en días que aún no han pasado' : ' · todos en días ya pasados')+'</span>'+
+      '<button class="btn" data-action="inc-toggle" style="padding:4px 10px;font-size:13px">'+(ui.incAbierto?"Ocultar":"Ver")+'</button>'+
+    '</div>';
+  if(ui.incAbierto){
+    h += '<div id="inc-lista" style="margin-top:8px">'+
+      lista.map(x=>{
+        const pr = x.dia.split("-").map(Number);
+        const pasado = x.dia < hoyKey;
+        return '<div data-action="day" data-date="'+x.dia+'" style="cursor:pointer;font-size:13px;padding:5px 0;border-top:1px solid #fde68a'+(pasado?';opacity:.6':'')+'">'+
+          '<b>'+WDL[new Date(pr[0],pr[1]-1,pr[2]).getDay()]+' '+pr[2]+'</b> · '+esc(x.txt)+(pasado?' <span class="muted">(pasado)</span>':'')+'</div>';
+      }).join("")+
+      '<p class="muted" style="font-size:12px;margin-top:6px">Toca un aviso para abrir ese día. Son solo avisos: no se corrige ni se bloquea nada.</p></div>';
+  }
+  return h+'</div>';
+}
+
+// ------------------ Estado de mis solicitudes (v173) ------------------
+// Lo que el facultativo ha pedido (o le afecta como compañero) y en qué punto está,
+// leído de la bandeja publicada.
+function misSolicitudes(pid){
+  const p = state.physicians.find(x=>x.id===pid); if(!p) return [];
+  const mia = r => !!r && ([r.pid, r.pidA, r.pidB].indexOf(pid)>=0 || [r.phys, r.physA, r.physB].indexOf(p.name)>=0);
+  const esperas = [];
+  Object.keys(state.cambiosAdm||{}).forEach(mk=>{ (state.cambiosAdm[mk]||[]).forEach(c=>{ if(c && c.pendiente && c.at) esperas.push(Date.parse(c.at)); }); });
+  return bandeja().filter(it=>it && mia(it.req)).map(it=>{
+    let estado = it.estado, txt = "Pendiente de revisar", color = "#b45309";
+    if(estado==="aprobada"){
+      const t = Date.parse(it.resuelta||"");
+      // Aprobada en un mes cerrado: el cambio se anotó en espera en ese mismo momento
+      const enEspera = !isNaN(t) && esperas.some(e=>Math.abs(e-t) < 120000);
+      txt = enEspera ? "Aprobada · en espera de que administración reajuste las citas" : "Aprobada";
+      color = enEspera ? "#1d4ed8" : "#047857";
+    }else if(estado==="rechazada"){ txt = "No autorizada"; color = "#b91c1c"; }
+    return {id:it.id, req:it.req, estado:estado, txt:txt, color:color, fecha:(it.resuelta||it.recibida||"")};
+  }).sort((a,b)=>(b.fecha||"").localeCompare(a.fecha||"")).slice(0,25);
+}
+function viewMisSolicitudes(){
+  const yo = miFacultativo(); if(!yo) return '';
+  const lista = misSolicitudes(yo.id);
+  if(!lista.length) return '';
+  return '<div class="card" id="mis-solicitudes"><h2>Estado de mis solicitudes</h2>'+
+    '<p class="muted" style="margin-top:2px;font-size:13px">Lo que has pedido, o te afecta como compañero, desde que llega al coordinador.</p>'+
+    '<div style="margin-top:8px">'+
+    lista.map(x=>'<div style="padding:7px 0;border-bottom:1px solid var(--slate-100);font-size:13px">'+
+      '<div>'+resumenSolicitud(x.req)+'</div>'+
+      '<div style="margin-top:2px"><b style="color:'+x.color+'">'+x.txt+'</b>'+
+        (x.fecha?'<span class="muted"> · '+new Date(x.fecha).toLocaleDateString("es-ES",{day:"2-digit",month:"2-digit"})+'</span>':'')+'</div></div>').join("")+
+    '</div></div>';
+}
+
 function viewCuadrante(){
   if(!state.physicians.length){
     return '<div class="card" style="text-align:center;padding:36px">'+
@@ -5432,6 +5544,7 @@ function viewCuadrante(){
         ' en espera de administración.</b> No se aplicarán al cuadrante hasta que los marquen como reajustados '+
         '(pestaña Administrativo → Cambios realizados).</div>';
     }
+    html += viewIncoherencias();
   }
   if(MODE==="editor" && (state.buzon||{}).url && !buzonClavePublicar() && !(SYNC.owner && SYNC.repo && SYNC.token)){
     html += '<div class="warnbox no-print" style="margin-bottom:10px">⚠ <b>Los cambios no se publicarán.</b> '+
@@ -8266,6 +8379,7 @@ document.addEventListener("click", e=>{
       break;
     }
     case "day": ui.dayDetail = el.dataset.date; renderModal(); break;
+    case "inc-toggle": ui.incAbierto = !ui.incAbierto; render(); break;
     case "day-prev": case "day-next": {
       const ds = monthDays();
       const i = ds.findIndex(x=>x.key===ui.dayDetail);
