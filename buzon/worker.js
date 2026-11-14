@@ -213,6 +213,116 @@ function bytesABinario(bytes) {
   return out;
 }
 
+// ================= AVISOS AL MÓVIL (v178) =================
+// Cada dispositivo se apunta (suscripción) a nombre de un facultativo, del coordinador
+// o de administración. Cuando ocurre algo que le afecta se le manda un «toque» SIN
+// contenido: el propio dispositivo lee el cuadrante publicado y compone el texto.
+// Así por el servicio de notificaciones de Apple/Google no viaja ningún dato.
+//   VAPID_PRIVADA → secreto con la clave de firma (JWK). Sin él, no se envía nada.
+const PUSH_HOSTS = [/(^|\.)push\.apple\.com$/, /^fcm\.googleapis\.com$/, /^updates\.push\.services\.mozilla\.com$/, /\.notify\.windows\.com$/];
+const PID_COORD = "__coord__", PID_ADMVO = "__admvo__";
+const MAX_DISPOSITIVOS = 8;          // por persona
+const b64u = (buf) => {
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  let t = ""; for (let i = 0; i < bytes.length; i++) t += String.fromCharCode(bytes[i]);
+  return btoa(t).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+};
+const b64uTexto = (t) => b64u(new TextEncoder().encode(t));
+const deB64u = (t) => { const b = atob(String(t).replace(/-/g, "+").replace(/_/g, "/")); const o = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) o[i] = b.charCodeAt(i); return o; };
+function endpointValido(u) {
+  try { const x = new URL(u); return x.protocol === "https:" && PUSH_HOSTS.some((r) => r.test(x.hostname)); }
+  catch (e) { return false; }
+}
+async function huella(txt) {
+  const h = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(txt)));
+  let o = ""; for (let i = 0; i < 12; i++) o += h[i].toString(16).padStart(2, "0");
+  return o;
+}
+// Hora actual en Madrid (0–23). HORA_PRUEBA solo existe en las pruebas.
+function horaMadrid(env) {
+  if (env.HORA_PRUEBA !== undefined) return Number(env.HORA_PRUEBA);
+  return Number(new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Madrid", hour: "2-digit", hour12: false }).format(new Date())) % 24;
+}
+// Horario de silencio: de 22:00 a 7:00 no se envía nada; se entrega junto a las 7:00
+const enSilencio = (env) => { const h = horaMadrid(env); return h >= 22 || h < 7; };
+
+async function enviarToques(env, pids) {
+  if (!env.VAPID_PRIVADA) return { enviados: 0, motivo: "sin clave" };
+  let jwk;
+  try { jwk = JSON.parse(env.VAPID_PRIVADA); } catch (e) { return { enviados: 0, motivo: "clave ilegible" }; }
+  const clave = await crypto.subtle.importKey("jwk", jwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  const xy = new Uint8Array(65); xy[0] = 4; xy.set(deB64u(jwk.x), 1); xy.set(deB64u(jwk.y), 33);
+  const publica = b64u(xy);
+  const tokens = {};                 // un token por servicio de notificaciones
+  const token = async (aud) => {
+    if (tokens[aud]) return tokens[aud];
+    const cab = b64uTexto(JSON.stringify({ typ: "JWT", alg: "ES256" }));
+    const cuerpo = b64uTexto(JSON.stringify({ aud: aud, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: env.VAPID_CONTACTO || "https://jjavierrios-del.github.io/cuadrante/" }));
+    const firma = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, clave, new TextEncoder().encode(cab + "." + cuerpo));
+    return (tokens[aud] = cab + "." + cuerpo + "." + b64u(firma));
+  };
+  let enviados = 0, caducados = 0;
+  const vistos = {};
+  for (const pid of pids) {
+    if (!pid || vistos[pid]) continue; vistos[pid] = 1;
+    const lista = await env.BUZON.list({ prefix: "push:" + pid + ":" });
+    for (const k of lista.keys) {
+      const sub = await env.BUZON.get(k.name, "json");
+      if (!sub || !endpointValido(sub.endpoint)) { await env.BUZON.delete(k.name); continue; }
+      try {
+        const r = await fetch(sub.endpoint, {
+          method: "POST",
+          headers: { "TTL": "86400", "Urgency": "normal", "Content-Length": "0",
+                     "Authorization": "vapid t=" + (await token(new URL(sub.endpoint).origin)) + ", k=" + publica }
+        });
+        if (r.status === 404 || r.status === 410) { await env.BUZON.delete(k.name); caducados++; }   // el dispositivo ya no existe
+        else if (r.ok) enviados++;
+      } catch (e) { /* fallo puntual de red: se reintentará en el siguiente aviso */ }
+    }
+  }
+  return { enviados, caducados };
+}
+// Avisa a esas personas ahora o, en horario de silencio, lo deja en cola hasta las 7:00
+async function avisar(env, pids) {
+  try {
+    if (enSilencio(env)) {
+      for (const pid of pids) if (pid) await env.BUZON.put("cola:" + pid, "1", { expirationTtl: 60 * 60 * 24 });
+      return { enCola: true };
+    }
+    return await enviarToques(env, pids);
+  } catch (e) { return { error: String(e && e.message || e) }; }
+}
+async function vaciarCola(env) {
+  const lista = await env.BUZON.list({ prefix: "cola:" });
+  const pids = lista.keys.map((k) => k.name.slice(5));
+  if (!pids.length) return { enviados: 0 };
+  const r = await enviarToques(env, pids);
+  for (const k of lista.keys) await env.BUZON.delete(k.name);
+  return r;
+}
+
+// ================= COPIA NOCTURNA (v178) =================
+// Cada madrugada guarda el cuadrante publicado, se abra o no la aplicación.
+// Mismo formato que las copias manuales: aparece en la misma lista y dura 180 días.
+// No se interpreta el archivo (ahorra cálculo): se guarda tal cual.
+async function copiaNocturna(env) {
+  if (!env.GH_OWNER || !env.GH_REPO) return { hecho: false, motivo: "sin destino" };
+  const rama = env.GH_BRANCH || "main";
+  const r = await fetch("https://raw.githubusercontent.com/" + env.GH_OWNER + "/" + env.GH_REPO + "/" + rama + "/data.json?t=" + Date.now());
+  if (!r.ok) return { hecho: false, motivo: "no se ha podido leer (" + r.status + ")" };
+  const texto = await r.text();
+  if (texto.length < 100 || texto.length > 3000000 || texto[0] !== "{") return { hecho: false, motivo: "contenido no válido" };
+  const m = texto.match(/"publishedAt":"([^"]+)"/);
+  const version = m ? m[1] : "";
+  if (version && (await env.BUZON.get("copia-noche-ultima")) === version) return { hecho: false, motivo: "sin cambios desde la última" };
+  const sello = new Date().toISOString().replace(/[:.]/g, "-");
+  const ttl = { expirationTtl: 60 * 60 * 24 * 180 };
+  await env.BUZON.put("copia:" + sello, texto, ttl);
+  await env.BUZON.put("copia-info:" + sello, JSON.stringify({ fecha: new Date().toISOString(), nota: "Copia nocturna automática", bytes: texto.length }), ttl);
+  if (version) await env.BUZON.put("copia-noche-ultima", version, ttl);
+  return { hecho: true, bytes: texto.length };
+}
+
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
     status,
@@ -220,7 +330,18 @@ const json = (obj, status = 200) =>
   });
 
 export default {
-  async fetch(request, env) {
+  // Temporizadores: copia nocturna y entrega de los avisos retenidos por la noche
+  async scheduled(event, env, ctx) {
+    const tarea = (async () => {
+      if (event.cron === "0 2 * * *") return copiaNocturna(env);
+      if (horaMadrid(env) === 7) return vaciarCola(env);     // de las dos horas programadas, solo una es las 7:00 de Madrid
+      return null;
+    })();
+    if (ctx && ctx.waitUntil) ctx.waitUntil(tarea);
+    return tarea;
+  },
+
+  async fetch(request, env, ctx) {
     // Comprobación previa del navegador
     if (request.method === "OPTIONS") return new Response(null, { headers: CORS });
 
@@ -274,6 +395,9 @@ export default {
         };
         // Se conservan 60 días y luego caducan solas
         await env.BUZON.put(id, JSON.stringify(registro), { expirationTtl: 60 * 60 * 24 * 60 });
+        // Aviso al coordinador: ha llegado una solicitud. No retrasa la respuesta.
+        const toque = avisar(env, [PID_COORD]);
+        if (ctx && ctx.waitUntil) ctx.waitUntil(toque);
         return json({ ok: true, id });
       }
 
@@ -533,6 +657,40 @@ export default {
           });
         if (res.error) return json({ error: res.error }, res.status || 502);
         return json({ ok: true, ejecutado: cuerpo.valor !== false });
+      }
+
+      // ---------- Avisos: un dispositivo se apunta o se borra ----------
+      if (request.method === "POST" && (ruta === "/suscribir" || ruta === "/desuscribir")) {
+        const cuerpo = await request.json().catch(() => null);
+        if (!cuerpo) return json({ error: "Petición mal formada." }, 400);
+        const pid = String(cuerpo.pid || "");
+        const endpoint = String((cuerpo.sub && cuerpo.sub.endpoint) || cuerpo.endpoint || "");
+        if (!(pid === PID_COORD || pid === PID_ADMVO || /^[a-z0-9]{4,16}$/.test(pid))) return json({ error: "Destinatario no válido." }, 400);
+        if (!endpointValido(endpoint) || endpoint.length > 1000) return json({ error: "Dispositivo no válido." }, 400);
+        const clave = "push:" + pid + ":" + (await huella(endpoint));
+        if (ruta === "/desuscribir") {
+          await env.BUZON.delete(clave);
+          return json({ ok: true });
+        }
+        // Los avisos del coordinador y de administración solo los recibe quien tiene su contraseña
+        if (pid === PID_COORD && (!env.CLAVE_PUBLICAR || cuerpo.clave !== env.CLAVE_PUBLICAR)) return json({ error: "Contraseña incorrecta." }, 403);
+        if (pid === PID_ADMVO && (!env.CLAVE_ADMVO || cuerpo.clave !== env.CLAVE_ADMVO)) return json({ error: "Contraseña incorrecta." }, 403);
+        if (!env.VAPID_PRIVADA) return json({ error: "El servidor no tiene configurados los avisos." }, 500);
+        const ya = await env.BUZON.list({ prefix: "push:" + pid + ":" });
+        if (ya.keys.length >= MAX_DISPOSITIVOS && !ya.keys.some((k) => k.name === clave)) {
+          return json({ error: "Ya hay demasiados dispositivos con avisos para esa persona." }, 409);
+        }
+        await env.BUZON.put(clave, JSON.stringify({ endpoint: endpoint, pid: pid, alta: new Date().toISOString() }));
+        return json({ ok: true, silencio: "22:00–7:00" });
+      }
+
+      // ---------- Aviso de prueba al coordinador (ignora el horario de silencio) ----------
+      if (request.method === "POST" && ruta === "/aviso-prueba") {
+        const cuerpo = await request.json().catch(() => null);
+        if (!cuerpo) return json({ error: "Petición mal formada." }, 400);
+        if (!env.CLAVE_PUBLICAR || cuerpo.clave !== env.CLAVE_PUBLICAR) return json({ error: "Contraseña incorrecta." }, 403);
+        const r = await enviarToques(env, [PID_COORD]);
+        return json({ ok: true, enviados: r.enviados || 0, caducados: r.caducados || 0, motivo: r.motivo || "" });
       }
 
       // ---------- Archivar un mes pasado (v174) ----------

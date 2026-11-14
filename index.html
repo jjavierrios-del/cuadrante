@@ -1341,7 +1341,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v177";
+const APP_VERSION = "v178";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -5840,6 +5840,92 @@ function viewHorasExtras(){
     '</div>';
   return h;
 }
+// ------------------ Avisos al móvil (v178) ------------------
+// Cada dispositivo se activa por separado. El servidor solo manda un «toque» vacío;
+// el texto del aviso lo compone el propio dispositivo (ver sw.js).
+const VAPID_PUBLICA = "BLZapyhMmdnlVIFLnY-1TwY8CDf0bqiwlLg13vqh1LxpMtBRSo27eQwjgEvF6X6lYlxdcCXfTRxP3Xw7i-rfdXc";
+const KEY_AVISOS = "cuadrante-avisos-v1";
+const PID_AVISOS_COORD = "__coord__";
+function avisosSoportados(){
+  try{ return ("serviceWorker" in navigator) && ("PushManager" in window) && ("Notification" in window); }catch(e){ return false; }
+}
+function avisosGuardados(){ try{ return JSON.parse(localStorage.getItem(KEY_AVISOS)||"null"); }catch(e){ return null; } }
+function avisosClaveBytes(){
+  const t = VAPID_PUBLICA.replace(/-/g,"+").replace(/_/g,"/"); const b = atob(t + "===".slice((t.length+3)%4));
+  const o = new Uint8Array(b.length); for(let i=0;i<b.length;i++) o[i] = b.charCodeAt(i); return o;
+}
+// Activa los avisos en este dispositivo para «pid». Devuelve null si va bien, o el motivo.
+async function avisosActivar(pid, clave){
+  const b = state.buzon||{};
+  if(!b.url) return "El buzón no está configurado.";
+  if(!avisosSoportados()) return "Este dispositivo no admite avisos. En iPhone, añade la aplicación a la pantalla de inicio (Compartir → Añadir a pantalla de inicio) y ábrela desde ahí.";
+  let permiso;
+  try{ permiso = await Notification.requestPermission(); }catch(e){ permiso = "denied"; }
+  if(permiso !== "granted") return "No has dado permiso para las notificaciones. Puedes cambiarlo en los ajustes del dispositivo.";
+  let sub;
+  try{
+    const reg = await navigator.serviceWorker.ready;
+    sub = await reg.pushManager.getSubscription();
+    if(!sub) sub = await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey: avisosClaveBytes()});
+  }catch(e){ return "El dispositivo no ha podido activar los avisos: "+((e && e.message) || e); }
+  const datos = sub.toJSON ? sub.toJSON() : {endpoint: sub.endpoint};
+  try{
+    const r = await fetch(b.url.replace(/\/+$/,"")+"/suscribir", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({pid: pid, sub: datos, clave: clave||""})
+    });
+    const d = await r.json().catch(()=>null);
+    if(!r.ok || !d || !d.ok) return (d && d.error) ? d.error : "El servidor no ha aceptado el dispositivo ("+r.status+").";
+  }catch(e){ return "Sin conexión con el servidor."; }
+  try{ localStorage.setItem(KEY_AVISOS, JSON.stringify({pid: pid, endpoint: datos.endpoint, desde: new Date().toISOString()})); }catch(e){}
+  // El service worker necesita saber quién usa el dispositivo para componer el texto
+  try{ const c = await caches.open("cuadrante-avisos"); await c.put("./__quien.json", new Response(JSON.stringify({pid: pid}), {headers:{"Content-Type":"application/json"}})); }catch(e){}
+  return null;
+}
+async function avisosDesactivar(){
+  const g = avisosGuardados(); const b = state.buzon||{};
+  try{
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    const endpoint = (sub && sub.endpoint) || (g && g.endpoint) || "";
+    if(endpoint && b.url && g){
+      await fetch(b.url.replace(/\/+$/,"")+"/desuscribir", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({pid: g.pid, endpoint: endpoint})}).catch(()=>null);
+    }
+    if(sub) await sub.unsubscribe();
+  }catch(e){}
+  try{ localStorage.removeItem(KEY_AVISOS); }catch(e){}
+  try{ const c = await caches.open("cuadrante-avisos"); await c.delete("./__quien.json"); }catch(e){}
+  return null;
+}
+async function avisosProbar(){
+  const b = state.buzon||{};
+  try{
+    const r = await fetch((b.url||"").replace(/\/+$/,"")+"/aviso-prueba", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({clave: buzonClavePublicar()})});
+    const d = await r.json().catch(()=>null);
+    if(!r.ok || !d || !d.ok) return (d && d.error) ? d.error : "El servidor no ha podido enviar la prueba ("+r.status+").";
+    return d.enviados ? null : "El servidor no tiene ningún dispositivo tuyo apuntado. Desactiva y vuelve a activar los avisos.";
+  }catch(e){ return "Sin conexión con el servidor."; }
+}
+function viewAjustesAvisos(){
+  if(!(state.buzon||{}).url) return '';
+  const g = avisosGuardados();
+  const activo = !!(g && g.pid === PID_AVISOS_COORD);
+  const msg = ui.avisosMsg || "";
+  return '<div class="card" id="card-avisos"><h2>Avisos en este dispositivo</h2>'+
+    '<p class="muted" style="margin-top:2px;font-size:13px">Recibe una notificación cuando llegue una solicitud nueva al buzón, aunque la aplicación esté cerrada. '+
+    'Se activa en cada dispositivo por separado. De 22:00 a 7:00 no suena nada: lo de ese tramo llega junto a las 7:00.</p>'+
+    (avisosSoportados() ? '' :
+      '<div class="warnbox" style="margin-top:8px">Este navegador no admite avisos. En iPhone, añade la aplicación a la pantalla de inicio (Compartir → Añadir a pantalla de inicio) y ábrela desde ahí.</div>')+
+    '<p style="margin-top:10px;font-size:14px">Estado: <b style="color:'+(activo?"var(--emerald-700)":"var(--slate-500)")+'">'+(activo?"activados en este dispositivo":"sin activar")+'</b></p>'+
+    '<div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">'+
+      (activo
+        ? '<button class="btn primary" data-action="avisos-probar">Enviar un aviso de prueba</button><button class="btn" data-action="avisos-desactivar">Desactivar</button>'
+        : '<button class="btn primary" data-action="avisos-activar">Activar avisos</button>')+
+    '</div>'+
+    (msg ? '<p style="margin-top:8px;font-size:13px">'+esc(msg)+'</p>' : '')+
+    '</div>';
+}
+
 function viewAjustesHorasExtras(){
   const c = heCfg();
   const fechas = c.festivos.slice().sort().map(d=>d.split("-").reverse().join("/")).join("\n");
@@ -6872,6 +6958,7 @@ function viewAjustes(){
     'Desactivado: se prioriza cubrir el mínimo de mañanas, aunque algún facultativo trabaje de más.</span></span></label>'+
     '<p class="muted" style="margin-top:12px;font-size:13px">La guardia de urgencias (URG/URGLV) computa como <b>2 jornadas laborales</b> y no genera libranza. En festivo o fin de semana se registra como <b>URGF</b> (se retribuye aparte y no suma jornadas).</p></div>';
 
+  html += viewAjustesAvisos();
   html += viewAjustesHorasExtras();
   html += '<div class="card"><h2>Cobertura diaria</h2>'+
     '<label class="row" style="margin-top:10px;font-size:14px;cursor:pointer">'+
@@ -8412,6 +8499,22 @@ document.addEventListener("click", e=>{
     case "rot-print": imprimirVista(); break;
     case "traf-print": imprimirVista(); break;
     case "archivar-ahora": archivarPendientes(true); break;
+    case "avisos-activar": {
+      if(!buzonClavePublicar()){ ui.avisosMsg = "Este dispositivo aún no tiene la contraseña de publicación; introdúcela en «Buzón de solicitudes»."; render(); break; }
+      ui.avisosMsg = "Activando…"; render();
+      avisosActivar(PID_AVISOS_COORD, buzonClavePublicar()).then(err=>{ ui.avisosMsg = err ? ("⚠ "+err) : "✓ Avisos activados. Pulsa «Enviar un aviso de prueba» para comprobarlo."; render(); });
+      break;
+    }
+    case "avisos-desactivar": {
+      ui.avisosMsg = "Desactivando…"; render();
+      avisosDesactivar().then(()=>{ ui.avisosMsg = "Avisos desactivados en este dispositivo."; render(); });
+      break;
+    }
+    case "avisos-probar": {
+      ui.avisosMsg = "Enviando la prueba…"; render();
+      avisosProbar().then(err=>{ ui.avisosMsg = err ? ("⚠ "+err) : "✓ Prueba enviada. Debería llegarte la notificación en unos segundos."; render(); });
+      break;
+    }
     case "hist-ver": {
       const mkV = el.dataset.mk;
       if(ui.histAbierto === mkV){ ui.histAbierto = ""; render(); break; }
