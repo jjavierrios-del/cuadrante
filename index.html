@@ -1369,7 +1369,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v180";
+const APP_VERSION = "v181";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2114,8 +2114,11 @@ function applyRequestCore(r){
     if((slot==="m" && def.group!=="M") || (slot==="t" && def.group!=="T"))
       return "La actividad "+nueva+" no es de "+(slot==="t"?"tarde":"mañana")+".";
     if(a[slot] === nueva) return "Ya tiene esa actividad asignada.";
-    // Esa actividad no puede estar ocupada por otro compañero ese día y turno
-    const ocupada = state.physicians.some(q=>{
+    if(esTrafico(nueva)) return "Las consultas de Tráfico se piden con su propio tipo de solicitud, indicando la hora.";
+    const perfilAct = actividadPerfil(p, nueva);
+    if(perfilAct) return perfilAct;
+    // Esa actividad no puede estar ocupada por otro compañero ese día y turno (salvo ADM y ADMT)
+    const ocupada = ACTIVIDAD_REPETIBLE.indexOf(nueva)>=0 ? false : state.physicians.some(q=>{
       if(q.id===p.id) return false;
       const x = state.assignments[q.id+"|"+r.fecha];
       return x && !x.f && x[slot]===nueva;
@@ -2469,7 +2472,8 @@ function cadenaReconversiones(slot){
   return Object.keys(byCode).filter(c=> byCode[c].group===grupo && !esAL(c) && !esTrafico(c) && c!=="ADM" && c!=="ADMT");
 }
 function cadenaPerfil(p, cod){
-  if((cod==="RHB1"||cod==="RHB2") && p.noRhb) return "no hace RHB";
+  // «No hace RHB» incluye las de tarde (RHBT1, RHBT2, RHBT): decisión de Javier, v181
+  if((cod==="RHB1"||cod==="RHB2"||cod==="RHBT1"||cod==="RHBT2"||cod==="RHBT") && p.noRhb) return "no hace RHB";
   if(cod==="ALRU" && p.noAlru) return "no hace ALRU";
   if(cod==="ALINTER" && p.noInt) return "no hace ALINTER";
   if(cod==="ORT" && p.noOrt) return "no hace ORT";
@@ -2774,6 +2778,18 @@ function cadenaFormHTML(){
     : ('<p style="margin-top:10px;font-size:13px;color:var(--emerald-700)"><b>✓ La cadena completa es posible.</b></p>'+
        avisos.map(a=>'<div class="warnbox" style="margin-top:8px">ℹ '+esc(a)+'</div>').join(""));
   return h;
+}
+
+// ---- Cambio de actividad: reglas de Javier (v181) ----
+//   · Hacia ADM o ADMT se puede cambiar siempre, aunque otros compañeros las tengan ese día.
+//   · ORT no se duplica: solo si ese día no la pasa nadie.
+//   · Nadie puede cambiar a una actividad que su perfil marca como «no hace»
+//     (RHB de mañana y de tarde, ALRU, ALINTER, ORT, RXINT).
+//   · Los tráficos no se piden como cambio de actividad.
+const ACTIVIDAD_REPETIBLE = ["ADM","ADMT"];
+function actividadPerfil(p, code){
+  const motivo = cadenaPerfil(p, code);
+  return motivo ? p.name+" "+motivo+"." : "";
 }
 
 function etiquetaTipo(t){
@@ -3174,8 +3190,10 @@ function solicitudFormHTML(){
     const slotA = da.actSlot;
     const actualA = cel[slotA] || "";
     const grupoA = (slotA==="t") ? "T" : "M";
-    const libresA = CONSULTAS.filter(c=>c.group===grupoA && c.code!==actualA);
+    // v181: los tráficos no se piden por aquí (tienen su propio tipo de solicitud, con hora obligatoria)
+    const libresA = CONSULTAS.filter(c=>c.group===grupoA && c.code!==actualA && !esTrafico(c.code));
     const ocupadaPor = (code)=>{
+      if(ACTIVIDAD_REPETIBLE.indexOf(code)>=0) return "";       // ADM y ADMT pueden tenerlas varios a la vez
       const q = state.physicians.find(x=>{
         if(x.id===rq.pid) return false;
         const y = state.assignments[x.id+"|"+rq.date];
@@ -3221,10 +3239,13 @@ function solicitudFormHTML(){
             })()
         ));
     const ocuFinal = (cel.f || !turnosCon.length) ? null : ocupadaPor(da.actNueva);
+    const perfilA = (p && da.actNueva) ? actividadPerfil(p, da.actNueva) : "";
     ui.reqBloqueo = cel.f ? "Ese día no es de consulta."
                   : (!turnosCon.length ? "Ese día no tiene consulta asignada."
                   : (!da.actNueva ? "Elige la actividad nueva."
-                  : (ocuFinal ? "Esa actividad ya la tiene "+ocuFinal+"." : null)));
+                  : (perfilA ? perfilA
+                  : (ocuFinal ? "Esa actividad ya la tiene "+ocuFinal+"." : null))));
+    if(perfilA && !cel.f && turnosCon.length) core += '<div class="warnbox" style="margin-top:8px">⚠ '+esc(perfilA)+'</div>';
   }else if(rq.type==="permiso"){
     const dp = ui.reqDraft || (ui.reqDraft={});
     dp.permisos = Array.isArray(dp.permisos) ? dp.permisos : [];
