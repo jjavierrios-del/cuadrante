@@ -348,10 +348,51 @@ export default {
     return tarea;
   },
 
+  // Entrada: aplica el límite de intentos con contraseña incorrecta (v181) y atiende la petición
   async fetch(request, env, ctx) {
-    // Comprobación previa del navegador
     if (request.method === "OPTIONS") return new Response(null, { headers: CORS });
+    const ruta = new URL(request.url).pathname.replace(/\/+$/, "") || "/";
+    const vigilada = !RUTAS_SIN_FRENO[ruta];
+    if (vigilada && bloqueado(request)) return json({ error: MSG_FRENO }, 429);
+    const r = await atender(request, env, ctx);
+    // Una respuesta «contraseña incorrecta» cuenta como intento fallido
+    if (vigilada && r.status === 403 && (await falloClave(request, env))) return json({ error: MSG_FRENO }, 429);
+    return r;
+  }
+};
 
+// ================= LÍMITE DE INTENTOS (v181) =================
+// Tras 10 contraseñas incorrectas en un minuto desde la misma conexión, esa conexión queda
+// bloqueada 15 minutos en todas las rutas que piden contraseña (también con la correcta:
+// si no, se podría seguir probando). Los aciertos no cuentan.
+// FRENO → limitador de Cloudflare (no gasta la cuota del almacén). Sin él, no se limita.
+const MSG_FRENO = "Demasiados intentos con una contraseña incorrecta. Espera 15 minutos y vuelve a intentarlo.";
+const FRENO_MINUTOS = 15;
+const RUTAS_SIN_FRENO = { "/estado": 1, "/calendario.ics": 1 };     // sin contraseña de valor: no se vigilan ni se bloquean
+const BLOQUEOS = new Map();                                          // conexión → hasta cuándo (memoria del servidor)
+const conexionDe = (request) => request.headers.get("CF-Connecting-IP") || "desconocida";
+function bloqueado(request) {
+  const ip = conexionDe(request), hasta = BLOQUEOS.get(ip);
+  if (!hasta) return false;
+  if (hasta > Date.now()) return true;
+  BLOQUEOS.delete(ip);
+  return false;
+}
+// Anota un intento fallido. Devuelve true si con este se ha superado el límite.
+async function falloClave(request, env) {
+  if (!env.FRENO || !env.FRENO.limit) return false;
+  try {
+    const ip = conexionDe(request);
+    const { success } = await env.FRENO.limit({ key: ip });
+    if (success) return false;
+    if (BLOQUEOS.size > 5000) BLOQUEOS.clear();
+    BLOQUEOS.set(ip, Date.now() + FRENO_MINUTOS * 60000);
+    return true;
+  } catch (e) { return false; }
+}
+
+async function atender(request, env, ctx) {
+  {
     const url = new URL(request.url);
     const ruta = url.pathname.replace(/\/+$/, "") || "/";
 
@@ -467,6 +508,7 @@ export default {
         const cuerpo = await request.json().catch(() => null);
         if (!cuerpo) return json({ error: "Petición mal formada." }, 400);
         const vale = !!env.CLAVE_PUBLICAR && cuerpo.clave === env.CLAVE_PUBLICAR;
+        if (!vale && (await falloClave(request, env))) return json({ error: MSG_FRENO }, 429);
         return json({ ok: true, valida: vale });
       }
 
@@ -851,7 +893,7 @@ export default {
       return json({ error: "Error interno: " + (e && e.message ? e.message : String(e)) }, 500);
     }
   }
-};
+}
 
 // v150: tope de consultas físicas de mañana (RXINT, ADM y ADMT no ocupan despacho)
 function excesoTopeServidor(datos, celdas) {
