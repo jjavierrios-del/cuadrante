@@ -1,5 +1,5 @@
-const CACHE = "cuadrante-pwa-v184";
-const ASSETS = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./icon-180.png"];
+const CACHE = "cuadrante-pwa-v185";
+const ASSETS = ["./", "./index.html", "./avisos-comun.js", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./icon-180.png"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)));
@@ -66,79 +66,9 @@ function avisoUrlDatos() {
   } catch (e) { /* sigue con la dirección local */ }
   return "./data.json?t=" + Date.now();
 }
-const avisoFecha = (k) => String(k || "").split("-").reverse().slice(0, 2).join("/");      // 2027-01-12 → 12/01
-const AVISO_MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
-function avisoParticipa(r, pid) {
-  if (!r || !pid) return false;
-  if ([r.pid, r.pidA, r.pidB].indexOf(pid) >= 0) return true;
-  return Array.isArray(r.pasos) && r.pasos.some((x) => x && [x.pid, x.pidA, x.pidB].indexOf(pid) >= 0);
-}
-// Devuelve {cuerpo, tag, visto}: el texto del aviso y la foto que se guarda para la próxima vez.
-// «visto» es la foto anterior (o null la primera vez); «hoy» es la fecha AAAA-MM-DD.
-function avisoComponer(pid, d, visto, hoy) {
-  d = d || {};
-  const partes = [];
-  if (pid === "__coord__") {
-    const tf = d.avisosTrafico || []; const ult = tf.length ? tf[tf.length - 1] : null;
-    let ej = 0; Object.keys(d.cambiosAdm || {}).forEach((mk) => (d.cambiosAdm[mk] || []).forEach((c) => { if (c && c.ejecutado) ej++; }));
-    const nuevo = { tf: ult ? String(ult.at || "") : "", ej: ej };
-    if (visto && ult && nuevo.tf !== visto.tf) {
-      partes.push("Administración ha " + (ult.accion === "quitar" ? "quitado" : "puesto") + " un tráfico a " + (ult.phys || "un compañero") + " el " + avisoFecha(ult.fecha) + ".");
-    }
-    if (visto && ej > (visto.ej || 0)) { const n = ej - (visto.ej || 0); partes.push("Administración ha reajustado " + (n === 1 ? "un cambio" : n + " cambios") + "."); }
-    let ir = { tab: "solicitudes" };
-    if (partes.length) ir = (visto && ult && nuevo.tf !== visto.tf && ult.fecha) ? { tab: "cuadrante", dia: ult.fecha } : { tab: "administrativo" };
-    if (!partes.length) partes.push("Ha llegado una solicitud nueva al buzón.");
-    return { cuerpo: partes.join(" "), tag: "cuadrante-coord", visto: nuevo, ir: ir };
-  }
-  if (pid === "__admvo__") {
-    let pend = 0; Object.keys(d.cambiosAdm || {}).forEach((mk) => (d.cambiosAdm[mk] || []).forEach((c) => { if (c && !c.ejecutado) pend++; }));
-    const n = visto ? pend - (visto.pend || 0) : 0;
-    partes.push(n > 0 ? ("Hay " + (n === 1 ? "un cambio nuevo pendiente" : n + " cambios nuevos pendientes") + " de reajustar.") : "Hay novedades en el cuadrante.");
-    return { cuerpo: partes.join(" "), tag: "cuadrante-admvo", visto: { pend: pend }, ir: { tab: "administrativo" } };
-  }
-  // Facultativo
-  const of = Object.keys(d.official || {}).sort();
-  const asg = {};
-  Object.keys(d.assignments || {}).forEach((k) => {
-    const i = k.indexOf("|"); if (k.slice(0, i) !== pid) return;
-    const dia = k.slice(i + 1); if (dia < hoy || !(d.official || {})[dia.slice(0, 7)]) return;
-    const a = d.assignments[k] || {};
-    asg[dia] = [a.m || "", a.t || "", a.f || ""].join("/");
-  });
-  const sol = {};
-  (d.bandeja || []).forEach((it) => { if (it && it.id && avisoParticipa(it.req, pid)) sol[it.id] = it.estado; });
-  const nuevo = { of: of, asg: asg, sol: sol };
-  let ir = { tab: "cuadrante" };
-  if (visto) {
-    let apr = 0, rech = 0;
-    Object.keys(sol).forEach((id) => {
-      const antes = (visto.sol || {})[id];
-      if (sol[id] !== "pendiente" && antes !== sol[id] && (antes === "pendiente" || antes === undefined)) { if (sol[id] === "aprobada") apr++; else rech++; }
-    });
-    if (apr) partes.push(apr === 1 ? "Tu solicitud ha sido aprobada." : apr + " solicitudes tuyas han sido aprobadas.");
-    if (rech) partes.push(rech === 1 ? "Tu solicitud no ha sido autorizada." : rech + " solicitudes tuyas no han sido autorizadas.");
-    const mesesNuevos = of.filter((mk) => (visto.of || []).indexOf(mk) < 0);
-    const antes = visto.asg || {};
-    const cambiados = [], traficos = [];
-    const dias = {}; Object.keys(asg).forEach((k) => { dias[k] = 1; }); Object.keys(antes).forEach((k) => { if (k >= hoy) dias[k] = 1; });
-    Object.keys(dias).sort().forEach((dia) => {
-      if ((asg[dia] || "") === (antes[dia] || "")) return;
-      if (mesesNuevos.indexOf(dia.slice(0, 7)) >= 0) return;            // un mes recién oficial no es «un cambio»
-      const tfAhora = /TF[MT]\d/.test(asg[dia] || ""), tfAntes = /TF[MT]\d/.test(antes[dia] || "");
-      if (tfAhora && !tfAntes) traficos.push(dia); else cambiados.push(dia);
-    });
-    if (traficos.length) partes.push("Tienes una consulta de Tráfico nueva el " + traficos.slice(0, 2).map(avisoFecha).join(" y el ") + (traficos.length > 2 ? " (y " + (traficos.length - 2) + " más)" : "") + ".");
-    if (cambiados.length) partes.push((cambiados.length === 1 ? "Ha cambiado tu turno del " : "Han cambiado tus turnos del ") + cambiados.slice(0, 2).map(avisoFecha).join(" y el ") + (cambiados.length > 2 ? " (y " + (cambiados.length - 2) + " más)" : "") + ".");
-    mesesNuevos.forEach((mk) => { const p = mk.split("-").map(Number); partes.push("Ya está el cuadrante oficial de " + AVISO_MESES[p[1] - 1] + "."); });
-    // A dónde lleva el aviso: al día que ha cambiado; si no, a sus solicitudes; si no, al mes nuevo
-    if (traficos.length || cambiados.length) ir = { tab: "cuadrante", dia: (traficos.concat(cambiados)).sort()[0] };
-    else if (apr || rech) ir = { tab: "solicitudes" };
-    else if (mesesNuevos.length) ir = { tab: "cuadrante", dia: mesesNuevos[0] + "-01" };
-  }
-  if (!partes.length) partes.push("Hay novedades en el cuadrante.");
-  return { cuerpo: partes.join(" "), tag: "cuadrante-novedad", visto: nuevo, ir: ir };
-}
+// El cálculo de las novedades está en avisos-comun.js, compartido con la aplicación
+importScripts("./avisos-comun.js");
+
 async function avisoLeer(nombre) {
   try { const c = await caches.open(AVISOS); const r = await c.match(nombre); return r ? await r.json() : null; } catch (e) { return null; }
 }

@@ -234,6 +234,8 @@
 <footer>Los datos se guardan automáticamente en este navegador. Haz copias de seguridad desde Ajustes.</footer>
 <input type="file" id="import-file" accept=".json" style="display:none">
 
+<!-- v185: cálculo de novedades, compartido con el service worker -->
+<script src="avisos-comun.js"></script>
 <script>
 "use strict";
 // ------------------ Catálogo ------------------
@@ -1136,6 +1138,35 @@ const KEY_VISTO = "cuadrante-visto-v1";
 function ultimaVisita(){ try{ return localStorage.getItem(KEY_VISTO)||""; }catch(e){ return ""; } }
 function marcarVisitado(){ try{ localStorage.setItem(KEY_VISTO, new Date().toISOString()); }catch(e){} }
 // Cambios que afectan a un facultativo desde su última visita, en meses ya oficiales
+// ---- Novedades desde tu última visita (v185) ----
+// Mismo cálculo que el texto de la notificación (avisos-comun.js), con su propio punto de
+// partida en este dispositivo: la tarjeta se queda hasta que se pulsa «Enterado».
+const KEY_NOVEDADES = "cuadrante-novedades-v1";
+function novedadesFoto(){ try{ return JSON.parse(localStorage.getItem(KEY_NOVEDADES)||"null"); }catch(e){ return null; } }
+function novedadesGuardar(pid, foto){ try{ localStorage.setItem(KEY_NOVEDADES, JSON.stringify({pid:pid, foto:foto, at:new Date().toISOString()})); }catch(e){} }
+function novedadesHoy(){ const n = new Date(); return keyOf(n.getFullYear(), n.getMonth(), n.getDate()); }
+function novedadesCalcular(){
+  const yo = miFacultativo();
+  if(!yo || typeof avisoComponer!=="function") return null;
+  const guardada = novedadesFoto();
+  const c = avisoComponer(yo.id, state, (guardada && guardada.pid===yo.id) ? guardada.foto : null, novedadesHoy());
+  // La primera vez (o si cambia quién usa el móvil) se arranca desde ahora, sin enseñar el pasado
+  if(!guardada || guardada.pid!==yo.id){ novedadesGuardar(yo.id, c.visto); return {pid:yo.id, items:[], visto:c.visto}; }
+  return {pid:yo.id, items:c.items||[], visto:c.visto};
+}
+function viewNovedades(){
+  const n = novedadesCalcular();
+  if(!n || !n.items.length) return '';
+  ui.novedadesVisto = n.visto;
+  return '<div class="card no-print" id="card-novedades" style="margin-bottom:10px;border-color:#b45309;background:#fffbeb">'+
+    '<div class="row between" style="align-items:center;gap:8px;flex-wrap:wrap">'+
+      '<b style="font-size:15px;color:#b45309">Novedades desde tu última visita ('+n.items.length+')</b>'+
+      '<button class="btn" data-action="novedades-enterado" style="padding:4px 10px;font-size:13px">Enterado</button></div>'+
+    '<div style="margin-top:8px">'+n.items.map(x=>
+      '<div data-action="novedad-ir" data-tab="'+esc(x.tab||"cuadrante")+'" data-dia="'+esc(x.dia||"")+'" style="cursor:pointer;font-size:14px;padding:5px 0;border-bottom:1px solid #fde68a">'+
+        ({solicitud:"📨 ", trafico:"🚗 ", turno:"🔁 ", mes:"📅 ", reparto:"🎯 "}[x.tipo]||"• ")+esc(x.texto)+'</div>').join("")+'</div>'+
+    '<p class="muted" style="font-size:12px;margin-top:6px">Toca una línea para ir a ese día. Se queda aquí hasta que pulses «Enterado».</p></div>';
+}
 function novedadesDe(pid){
   if(!pid) return [];
   const desde = ultimaVisita();
@@ -1375,7 +1406,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v184";
+const APP_VERSION = "v185";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -7234,8 +7265,8 @@ function viewCuadrante(){
         '</div>';
     }
   }
-  if(MODE==="viewer"){
-    // Novedades propias desde la última visita (solo en meses ya oficiales)
+  if(MODE==="viewer"){ html += viewNovedades(); }
+  if(false){
     const yoV = miFacultativo();
     const nov = yoV ? novedadesDe(yoV.id) : [];
     if(nov.length){
@@ -9285,6 +9316,12 @@ document.addEventListener("click", e=>{
       break;
     }
     case "novedades-visto": { marcarVisitado(); render(); break; }
+    case "novedades-enterado": {
+      const yoN = miFacultativo();
+      if(yoN && ui.novedadesVisto) novedadesGuardar(yoN.id, ui.novedadesVisto);
+      marcarVisitado(); render(); break;
+    }
+    case "novedad-ir": abrirDesdeAviso({tab: el.dataset.tab||"cuadrante", dia: el.dataset.dia||""}); break;
     case "tf-visto": {
       (state.avisosTrafico||[]).forEach(a=>{ a.visto = true; });
       save(); setSave("✓ Visto"); render(); break;
