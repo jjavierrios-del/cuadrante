@@ -330,6 +330,11 @@ async function fetchPublished(){
 }
 
 let pubT = null, pubBusy = false, pubAgain = false;
+// v180: versión publicada sobre la que trabaja este dispositivo, y si el coordinador ha
+// decidido expresamente que valga su copia («Seguir con la local»).
+let BASE_PUB = null, FORZAR_PUB = false;
+const MSG_CHOQUE = "No se ha publicado.\n\nAlguien (por ejemplo, administración) ha guardado un cambio después de tu última actualización. "+
+  "Para no perderlo, pulsa «Cargar la publicada» y repite tu último cambio. Si prefieres que valga lo de este dispositivo, pulsa «Seguir con la local».";
 function b64utf8(str){ return btoa(unescape(encodeURIComponent(str))); }
 // Los motivos que escriben los compañeros pueden contener datos personales
 // («cita médica», «tema familiar»…) y el archivo publicado es público.
@@ -368,42 +373,64 @@ async function ghPublish(manual){
   // Así este dispositivo solo necesita una contraseña.
   if(publicaPorServidor()){
     if(!manual && !state.physicians.length) return;
+    // v180: mientras haya una versión más reciente sin resolver, no se publica nada
+    // (antes, una segunda publicación manual se colaba y pisaba el cambio ajeno).
+    if(NEWER && !FORZAR_PUB){
+      setSave("⚠ Hay una versión más reciente: no se publica");
+      if(manual) window.alert(MSG_CHOQUE);
+      return;
+    }
     if(pubBusy){ pubAgain = true; return; }
     pubBusy = true;
     // v172: si administración (u otro dispositivo) ha publicado después de lo último que
     // conoce este dispositivo, no se pisa: se avisa y se decide qué versión vale.
     try{
-      const ult = await fetchPublished();
-      if(ult && ult.publishedAt && PUBLISHED_AT && ult.publishedAt > PUBLISHED_AT &&
+      const ult = FORZAR_PUB ? null : await fetchPublished();
+      const base = BASE_PUB || PUBLISHED_AT;
+      if(ult && ult.publishedAt && base && ult.publishedAt > base &&
          !(ult.publishedBy && ult.publishedBy===DEVICE_ID)){
         NEWER = true; PUBLISHED_AT = ult.publishedAt; pubBusy = false; pubAgain = false;
         setSave("⚠ Hay una versión más reciente: no se publica");
         render();
-        window.alert("No se ha publicado.\n\nAlguien (por ejemplo, administración) ha guardado un cambio después de tu última actualización. "+
-          "Para no perderlo, pulsa «Cargar la publicada» y repite tu último cambio. Si prefieres que valga lo de este dispositivo, pulsa «Seguir con la local».");
+        window.alert(MSG_CHOQUE);
         return;
       }
     }catch(e){ /* sin conexión: fallará la publicación y se avisará */ }
     setSave("Publicando…");
     const body = paraPublicar();
+    // v180: a quién afecta. Una publicación manual (aprobar, deshacer…) avisa en el momento;
+    // las automáticas, mientras se edita, se agrupan en un solo aviso por persona.
+    let destinos = []; try{ destinos = avisosDestinatarios(AVISOS_BASE, body); }catch(e){}
+    const avisarYa = manual ? avisosTomarPendientes(destinos) : [];
     try{
       const r = await fetch((state.buzon.url||"").replace(/\/+$/,"")+"/publicar", {
         method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({clave: buzonClavePublicar(), data: body, avisar: (function(){ try{ return avisosDestinatarios(AVISOS_BASE, body); }catch(e){ return []; } })()})
+        body: JSON.stringify({clave: buzonClavePublicar(), data: body, avisar: avisarYa, base: BASE_PUB || "", forzar: FORZAR_PUB})
       });
       const d = await r.json().catch(()=>null);
       if(r.ok && d && d.ok){
         try{ AVISOS_BASE = avisosFoto(body); }catch(e){}
-        PUBLISHED_AT = body.publishedAt;
+        const sello = (d.publicado && typeof d.publicado==="string") ? d.publicado : body.publishedAt;   // la hora la pone el servidor
+        PUBLISHED_AT = sello; BASE_PUB = sello; FORZAR_PUB = false;
         PUB_TIENE_PASS = !!(body.tienePass || body.adminPass || body.adminPass2);
-        state.updatedAt = body.publishedAt;
+        state.updatedAt = sello;
         try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){}
         NEWER = false;
         setSave("✓ Publicado");
+        if(!manual) avisosAcumular(destinos);
+      }else if(r.status===409 && d && d.conflicto){
+        // El servidor ha detectado un cambio ajeno más reciente: no se ha pisado nada
+        avisosAcumular(avisarYa);
+        NEWER = true; if(d.publishedAt) PUBLISHED_AT = d.publishedAt;
+        setSave("⚠ Hay una versión más reciente: no se publica");
+        render();
+        window.alert(MSG_CHOQUE);
       }else{
+        avisosAcumular(avisarYa);
         setSave("⚠ " + ((d && d.error) ? d.error : "No se ha podido publicar"));
       }
     }catch(e){
+      avisosAcumular(avisarYa);
       setSave("⚠ Sin conexión al publicar");
     }
     pubBusy = false;
@@ -865,7 +892,7 @@ const ARCHIVO_DIAS_GRACIA = 7;     // un mes se archiva pasados 7 días de su fi
 let ARCHIVANDO = false;
 function mesRelevanteSolicitud(r){ const f = fechaRelevante(r); return f ? f.slice(0,7) : ""; }
 function archivoPaquete(mk){
-  const limpia = it => { const c = JSON.parse(JSON.stringify(it)); if(c.req && typeof c.req==="object") delete c.req.note; delete c.texto; delete c.motivo; delete c.firma; return c; };
+  const limpia = it => { const c = JSON.parse(JSON.stringify(it)); if(c.req && typeof c.req==="object") delete c.req.note; delete c.texto; delete c.motivo; delete c.firma; delete c.deshacer; return c; };
   return {
     cambiosAdm: ((state.cambiosAdm||{})[mk]||[]).filter(c=>c && c.ejecutado===true && !c.pendiente),
     solicitudes: bandeja().filter(it=>it && it.estado!=="pendiente" && mesRelevanteSolicitud(it.req)===mk).map(limpia),
@@ -1342,7 +1369,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v179";
+const APP_VERSION = "v180";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2866,6 +2893,7 @@ function buscarOpciones(pid, dia, part, prefer){
     }
     const g3 = nuevoGrupo("Cederla a un compañero", "Él la asume ese mismo día; tú quedas con un turno menos.");
     for(const Q of otros){
+      if(hayDest) break;                                               // v180: con destinos elegidos, ceder (mismo día) no viene al caso
       if(g3.opciones.length>=4 || fuera()) break;
       const c = cel(Q.id, dia); if(c && (c.f || c[sl])) continue;
       const r = {v:5, type:"ceder", by:"", note:"", pidA:pid, physA:P.name, pidB:Q.id, physB:Q.name, date:dia, part:part};
@@ -2908,6 +2936,7 @@ function buscarOpciones(pid, dia, part, prefer){
       const suyas = [];
       laborables.forEach(d=>{ if(d.k===dia) return; const c = cel(Q.id, d.k); if(!c || c.f) return;
         const sl = c.m ? "m" : (c.t ? "t" : ""); if(!sl || esTrafico(c[sl])) return;
+        if(c[sl]==="ADM" || c[sl]==="ADMT") return;                    // v180: la administrativa no cuenta como consulta de cambio
         if(hayDest && turnosDe(d.k, sl).indexOf(sl)<0) return;        // el turno pedido para ese destino no es el que se entregaría
         const mia = cel(pid, d.k); if(mia && (mia.f || mia[sl])) return;
         suyas.push({k:d.k, sl:sl, c:c[sl]}); });
@@ -4785,6 +4814,65 @@ function bandejaResolver(id, estado, motivo){
   if(motivo) it.motivo = motivo;
   save();
 }
+// ---- Deshacer una aprobación (v180) ----
+// Al aprobar se guarda qué celdas cambiaron (cómo estaban y cómo quedaron). Deshacer las
+// devuelve a como estaban, siempre que nadie las haya tocado después, y deja la solicitud
+// otra vez pendiente. Si el cambio estaba en espera de administración, se retira de la espera.
+const DESHACER_CLAVES = ["assignments","diasLibres","traficoHoras"];
+const dzTxt = v => JSON.stringify(v===undefined ? null : v);
+function deshacerFoto(){
+  const f = {esp:{}};
+  DESHACER_CLAVES.forEach(c=>{ f[c] = JSON.stringify(state[c]||{}); });
+  Object.keys(state.cambiosAdm||{}).forEach(mk=>{ (state.cambiosAdm[mk]||[]).forEach(x=>{ if(x && x.id) f.esp[x.id] = 1; }); });
+  return f;
+}
+function deshacerDiferencia(f){
+  const out = {c:{}, esp:[]};
+  DESHACER_CLAVES.forEach(c=>{
+    const a = JSON.parse(f[c]), b = state[c]||{}; const dif = {};
+    const claves = {}; Object.keys(a).forEach(k=>{ claves[k]=1; }); Object.keys(b).forEach(k=>{ claves[k]=1; });
+    Object.keys(claves).forEach(k=>{ if(dzTxt(a[k]) !== dzTxt(b[k])) dif[k] = [a[k]===undefined?null:a[k], b[k]===undefined?null:b[k]]; });
+    if(Object.keys(dif).length) out.c[c] = dif;
+  });
+  Object.keys(state.cambiosAdm||{}).forEach(mk=>{ (state.cambiosAdm[mk]||[]).forEach(x=>{ if(x && x.id && !f.esp[x.id]) out.esp.push({mk:mk, id:x.id}); }); });
+  return (Object.keys(out.c).length || out.esp.length) ? out : null;
+}
+// Devuelve null si se ha deshecho, o el motivo por el que no se puede.
+function deshacerAprobacion(id){
+  const it = bandeja().find(x=>x.id===id);
+  if(!it || it.estado!=="aprobada") return "Esa solicitud no está aprobada.";
+  const dz = it.deshacer;
+  if(!dz) return "Esta aprobación es anterior a la función de deshacer: no hay datos para revertirla.";
+  // 1) Lo que quedó en espera de administración debe seguir sin reajustar
+  for(const e of (dz.esp||[])){
+    const x = ((state.cambiosAdm||{})[e.mk]||[]).find(y=>y && y.id===e.id);
+    if(!x) return "El cambio ya no está en la lista de espera de administración: no se puede deshacer desde aquí.";
+    if(x.ejecutado) return "Administración ya ha reajustado este cambio: para revertirlo, haz un cambio nuevo.";
+  }
+  // 2) Nada de lo que tocó la aprobación puede haber cambiado después
+  for(const c of Object.keys(dz.c||{})){
+    for(const k of Object.keys(dz.c[c])){
+      if(dzTxt((state[c]||{})[k]) !== dzTxt(dz.c[c][k][1])){
+        const dia = k.split("|")[1] || "";
+        return "No se puede deshacer: "+(dia ? "el "+fmtDate(dia) : "algo")+" ha cambiado después de aprobarla.";
+      }
+    }
+  }
+  marcarDeshacer("deshacer aprobación");
+  diferirSiCerrado(()=>{
+    Object.keys(dz.c||{}).forEach(c=>{
+      state[c] = state[c] || {};
+      Object.keys(dz.c[c]).forEach(k=>{ const antes = dz.c[c][k][0]; if(antes===null) delete state[c][k]; else state[c][k] = JSON.parse(JSON.stringify(antes)); });
+    });
+    return null;
+  });
+  (dz.esp||[]).forEach(e=>{
+    if(state.cambiosAdm && state.cambiosAdm[e.mk]) state.cambiosAdm[e.mk] = state.cambiosAdm[e.mk].filter(y=>!(y && y.id===e.id));
+  });
+  it.estado = "pendiente"; delete it.resuelta; delete it.deshacer;
+  save();
+  return null;
+}
 function bandejaBorrar(id){
   state.bandeja = bandeja().filter(x=>x.id!==id);
   save();
@@ -5900,6 +5988,59 @@ function avisosDestinatarios(base, d){
   if(esp > base.esp) ids[PID_AVISOS_ADMVO] = 1;
   return Object.keys(ids);
 }
+// ---- Avisos agrupados (v180) ----
+// Mientras el coordinador edita, cada guardado publica; para que al compañero no le lleguen
+// varios avisos seguidos, se acumulan y se manda uno solo por persona al terminar la tanda.
+const AVISOS_ESPERA_MS = 90000;
+let AVISOS_PEND = {}, AVISOS_T = null;
+function avisosAcumular(lista){
+  (lista||[]).forEach(x=>{ if(x) AVISOS_PEND[x] = 1; });
+  if(!AVISOS_T && Object.keys(AVISOS_PEND).length) AVISOS_T = setTimeout(()=>avisosVolcar(false), AVISOS_ESPERA_MS);
+}
+// Devuelve los pendientes más los nuevos y vacía la lista (los va a enviar quien llama)
+function avisosTomarPendientes(extra){
+  (extra||[]).forEach(x=>{ if(x) AVISOS_PEND[x] = 1; });
+  const l = Object.keys(AVISOS_PEND);
+  AVISOS_PEND = {}; if(AVISOS_T){ clearTimeout(AVISOS_T); AVISOS_T = null; }
+  return l;
+}
+// Envía los avisos acumulados. «alSalir»: la app se cierra o pasa a segundo plano.
+function avisosVolcar(alSalir){
+  const b = state.buzon||{};
+  if(!b.url || !buzonClavePublicar() || MODE!=="editor") { AVISOS_PEND = {}; if(AVISOS_T){ clearTimeout(AVISOS_T); AVISOS_T = null; } return; }
+  const l = avisosTomarPendientes([]);
+  if(!l.length) return;
+  const url = b.url.replace(/\/+$/,"")+"/avisar";
+  const cuerpo = JSON.stringify({clave: buzonClavePublicar(), avisar: l});
+  try{
+    if(alSalir && navigator.sendBeacon){ navigator.sendBeacon(url, cuerpo); return; }
+    fetch(url, {method:"POST", headers:{"Content-Type":"application/json"}, body: cuerpo, keepalive: true}).catch(()=>{ avisosAcumular(l); });
+  }catch(e){ avisosAcumular(l); }
+}
+// ---- Abrir la aplicación en la pantalla del aviso (v180) ----
+function abrirDesdeAviso(ir){
+  if(!ir || typeof ir!=="object") return;
+  const tabs = ["cuadrante","solicitudes","administrativo"];
+  const tab = tabs.indexOf(ir.tab)>=0 ? ir.tab : "cuadrante";
+  if(typeof ir.dia==="string" && /^\d{4}-\d{2}-\d{2}$/.test(ir.dia)){
+    const pr = ir.dia.split("-").map(Number);
+    state.year = pr[0]; ui.month = pr[1]-1;
+  }
+  ui.tab = tab;
+  if(tab==="solicitudes" && MODE==="editor"){ ui.reqSub = "revisar"; ui.reviewTab = {}; }
+  if(tab==="administrativo") ui.admvoSub = "cambios";
+  render();
+}
+function abrirDesdeDireccion(){
+  try{
+    const h = String(location.hash||"");
+    const m = h.match(/[#&]ir=([a-z]+)/);
+    if(!m) return;
+    const d = h.match(/[#&]dia=(\d{4}-\d{2}-\d{2})/);
+    history.replaceState(null, "", location.pathname + location.search);
+    abrirDesdeAviso({tab:m[1], dia:d ? d[1] : ""});
+  }catch(e){}
+}
 function avisosSoportados(){
   try{ return ("serviceWorker" in navigator) && ("PushManager" in window) && ("Notification" in window); }catch(e){ return false; }
 }
@@ -6172,7 +6313,9 @@ function viewSolicitudes(){
             '<span style="font-size:13px">'+resumenSolicitud(it.req)+'</span>'+
             (it.motivo?'<div class="tiny muted">Motivo: '+esc(it.motivo)+'</div>':'')+
           '</div>'+
-          '<button class="btn" data-action="bandeja-borrar" data-id="'+it.id+'" style="padding:3px 8px">Quitar</button>'+
+          '<span class="row" style="gap:6px;flex-wrap:wrap;justify-content:flex-end">'+
+            (ok && it.deshacer ? '<button class="btn" data-action="bandeja-deshacer" data-id="'+it.id+'" style="padding:3px 8px">Deshacer</button>' : '')+
+            '<button class="btn" data-action="bandeja-borrar" data-id="'+it.id+'" style="padding:3px 8px">Quitar</button></span>'+
         '</div>';
       });
       h += '</div>';
@@ -8976,7 +9119,9 @@ document.addEventListener("click", e=>{
           const d = await fetchPublished();
           if(d){
             applyPublished(d);
-            NEWER = false;
+            NEWER = false; FORZAR_PUB = false;
+            if(d.publishedAt) BASE_PUB = d.publishedAt;
+            try{ AVISOS_BASE = avisosFoto(d); }catch(e){}
             state.updatedAt = PUBLISHED_AT || new Date().toISOString();
             try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){}
             setSave("✓ Versión publicada cargada");
@@ -8989,7 +9134,7 @@ document.addEventListener("click", e=>{
       if(!window.confirm("Vas a conservar la copia de ESTE dispositivo.\n\n"+
         "Los cambios publicados desde otro dispositivo que no estén aquí se perderán "+
         "en cuanto publiques.\n\n¿Seguro?")) break;
-      NEWER=false; render(); break;
+      NEWER=false; FORZAR_PUB = true; render(); break;
     }
     case "go-viewer":
       if(window.confirm("Este dispositivo pasará a SOLO CONSULTA y se borrará su copia local de edición (lo publicado no se toca). ¿Continuar?")){
@@ -9284,6 +9429,17 @@ document.addEventListener("click", e=>{
       ui.reviewTab = {ok:"Solicitud rechazada."};
       render(); break;
     }
+    case "bandeja-deshacer": {
+      const itD = bandeja().find(x=>x.id===el.dataset.id);
+      if(!itD) break;
+      if(!window.confirm("¿Deshacer esta aprobación?\n\nEl cuadrante vuelve a como estaba antes de aprobarla y la solicitud queda otra vez pendiente. Se avisará a los afectados.")) break;
+      const errD = deshacerAprobacion(itD.id);
+      if(errD){ window.alert(errD); break; }
+      ui.reviewTab = {ok:"Aprobación deshecha: la solicitud vuelve a estar pendiente."};
+      render();
+      ghPublish(true);
+      break;
+    }
     case "bandeja-borrar": {
       if(window.confirm("Quitar esta solicitud del historial?")){ bandejaBorrar(el.dataset.id); render(); }
       break;
@@ -9291,6 +9447,7 @@ document.addEventListener("click", e=>{
     case "reviewt-apply": {
       if(ui.reviewTab && ui.reviewTab.req){
         const rq0 = ui.reviewTab.req;
+        const fotoDz = deshacerFoto();
         const err = applyRequest(rq0);
         if(err){ ui.reviewTab.err = err; render(); }
         else{
@@ -9356,7 +9513,11 @@ document.addEventListener("click", e=>{
             state.year = pr[0]; ui.month = pr[1]-1;
           }
           save();
-          if(ui.reviewTab && ui.reviewTab.id) bandejaResolver(ui.reviewTab.id, "aprobada");
+          if(ui.reviewTab && ui.reviewTab.id){
+            bandejaResolver(ui.reviewTab.id, "aprobada");
+            // v180: se guarda lo necesario para poder deshacer esta aprobación
+            try{ const itDz = bandeja().find(x=>x.id===ui.reviewTab.id); const dzN = deshacerDiferencia(fotoDz); if(itDz && dzN) itDz.deshacer = dzN; }catch(e){}
+          }
           ui.reviewTab = {}; ui.tab = "cuadrante";
           render();
           ghPublish(true); // publicación inmediata, sin esperar; el indicador mostrará ✓ Publicado o el error concreto
@@ -9828,6 +9989,8 @@ async function boot(){
           (!state.updatedAt || published.publishedAt > state.updatedAt)){
     NEWER = true; PUBLISHED_AT = published.publishedAt;
   }else if(published && published.publishedAt){ PUBLISHED_AT = published.publishedAt; }
+  // Versión publicada sobre la que trabaja este dispositivo (si su copia no es más antigua)
+  if(published && published.publishedAt && !NEWER) BASE_PUB = published.publishedAt;
   // Si hay contraseña configurada, no se entra en edición sin haberla introducido en esta sesión
   // Se comprueban los dos formatos: la huella reforzada (adminPass2) y la antigua.
   // Mirando solo la antigua, tras migrar quedaba vacía y se entraba sin contraseña.
@@ -9856,13 +10019,19 @@ async function boot(){
   if(NEWER) setSave("⚠ Hay una versión más reciente publicada");
   // v177: la copia diaria se hace al abrir la aplicación (antes solo al entrar en Solicitudes),
   // y antes de archivar, para que la copia del día incluya lo que el archivado va a retirar.
+  abrirDesdeDireccion();                 // si se ha abierto tocando un aviso, va a su pantalla
   setTimeout(()=>{ try{ copiaDiariaAuto(); }catch(e){} }, 3000);
   setTimeout(()=>{ try{ archivarPendientes(false); }catch(e){} }, 8000);
 }
 boot();
 if("serviceWorker" in navigator){
   navigator.serviceWorker.register("sw.js").catch(()=>{});
+  // Un aviso tocado con la aplicación ya abierta: se va a su pantalla
+  try{ navigator.serviceWorker.addEventListener("message", e=>{ if(e.data && e.data.tipo==="abrir") abrirDesdeAviso(e.data.ir); }); }catch(e){}
 }
+// Al cerrar o pasar a segundo plano, salen los avisos que estuvieran esperando
+window.addEventListener("pagehide", ()=>{ try{ avisosVolcar(true); }catch(e){} });
+document.addEventListener("visibilitychange", ()=>{ if(document.visibilityState==="hidden"){ try{ avisosVolcar(true); }catch(e){} } });
 </script>
 </body>
 </html>

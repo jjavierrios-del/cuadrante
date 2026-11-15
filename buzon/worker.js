@@ -194,7 +194,10 @@ async function editarCuadrante(env, mensaje, modificar) {
       headers: { ...cabeceras, "Content-Type": "application/json" },
       body: JSON.stringify({ message: mensaje, content: btoa(binario), branch: rama, sha: meta.sha })
     });
-    if (guardar.ok) return { ok: true, extra: r && r.extra };
+    if (guardar.ok) {
+      try { await env.BUZON.put("pub-ultima", datos.publishedAt); } catch (e) { /* solo es una ayuda para detectar choques */ }
+      return { ok: true, extra: r && r.extra };
+    }
     if (guardar.status !== 409) {
       return { error: "No se ha podido guardar (" + guardar.status + ").", status: 502 };
     }
@@ -699,6 +702,16 @@ export default {
         return json({ ok: true, horario: "9:00–21:00" });
       }
 
+      // ---------- Avisos agrupados tras una tanda de cambios del coordinador (v180) ----------
+      if (request.method === "POST" && ruta === "/avisar") {
+        const cuerpo = await request.json().catch(() => null);
+        if (!cuerpo) return json({ error: "Petición mal formada." }, 400);
+        if (!env.CLAVE_PUBLICAR || cuerpo.clave !== env.CLAVE_PUBLICAR) return json({ error: "Contraseña incorrecta." }, 403);
+        const lista = Array.isArray(cuerpo.avisar) ? cuerpo.avisar.filter(pidAvisable).slice(0, 40) : [];
+        if (lista.length) { const t = avisar(env, lista); if (ctx && ctx.waitUntil) ctx.waitUntil(t); }
+        return json({ ok: true, avisados: lista.length });
+      }
+
       // ---------- Aviso de prueba al coordinador (ignora el horario de silencio) ----------
       if (request.method === "POST" && ruta === "/aviso-prueba") {
         const cuerpo = await request.json().catch(() => null);
@@ -774,6 +787,18 @@ export default {
         if (!cuerpo.data || typeof cuerpo.data !== "object") {
           return json({ error: "Faltan los datos del cuadrante." }, 400);
         }
+        // v180: si alguien (administración u otro dispositivo) ha guardado después de la versión
+        // sobre la que trabaja quien publica, no se pisa. Solo se salta si lo pide expresamente.
+        const basePub = typeof cuerpo.base === "string" ? cuerpo.base : "";
+        if (basePub && cuerpo.forzar !== true) {
+          const ultima = await env.BUZON.get("pub-ultima");
+          if (ultima && ultima > basePub) {
+            return json({ error: "Hay una versión publicada más reciente que la de este dispositivo.", conflicto: true, publishedAt: ultima }, 409);
+          }
+        }
+        // La fecha de publicación la pone el servidor: así todos los dispositivos comparan con el mismo reloj
+        const selloPub = new Date().toISOString();
+        cuerpo.data.publishedAt = selloPub;
 
         const rama = env.GH_BRANCH || "main";
         const api = "https://api.github.com/repos/" + env.GH_OWNER + "/" + env.GH_REPO + "/contents/data.json";
@@ -817,7 +842,8 @@ export default {
           const toquePub = avisar(env, destinos);
           if (ctx && ctx.waitUntil) ctx.waitUntil(toquePub);
         }
-        return json({ ok: true, publicado: new Date().toISOString(), avisados: destinos.length });
+        try { await env.BUZON.put("pub-ultima", selloPub); } catch (e) { /* ayuda para detectar choques */ }
+        return json({ ok: true, publicado: selloPub, avisados: destinos.length });
       }
 
       return json({ error: "Ruta no encontrada." }, 404);

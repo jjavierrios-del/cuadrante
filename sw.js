@@ -1,4 +1,4 @@
-const CACHE = "cuadrante-pwa-v179";
+const CACHE = "cuadrante-pwa-v180";
 const ASSETS = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./icon-180.png"];
 
 self.addEventListener("install", (e) => {
@@ -86,14 +86,16 @@ function avisoComponer(pid, d, visto, hoy) {
       partes.push("Administración ha " + (ult.accion === "quitar" ? "quitado" : "puesto") + " un tráfico a " + (ult.phys || "un compañero") + " el " + avisoFecha(ult.fecha) + ".");
     }
     if (visto && ej > (visto.ej || 0)) { const n = ej - (visto.ej || 0); partes.push("Administración ha reajustado " + (n === 1 ? "un cambio" : n + " cambios") + "."); }
+    let ir = { tab: "solicitudes" };
+    if (partes.length) ir = (visto && ult && nuevo.tf !== visto.tf && ult.fecha) ? { tab: "cuadrante", dia: ult.fecha } : { tab: "administrativo" };
     if (!partes.length) partes.push("Ha llegado una solicitud nueva al buzón.");
-    return { cuerpo: partes.join(" "), tag: "cuadrante-coord", visto: nuevo };
+    return { cuerpo: partes.join(" "), tag: "cuadrante-coord", visto: nuevo, ir: ir };
   }
   if (pid === "__admvo__") {
     let pend = 0; Object.keys(d.cambiosAdm || {}).forEach((mk) => (d.cambiosAdm[mk] || []).forEach((c) => { if (c && !c.ejecutado) pend++; }));
     const n = visto ? pend - (visto.pend || 0) : 0;
     partes.push(n > 0 ? ("Hay " + (n === 1 ? "un cambio nuevo pendiente" : n + " cambios nuevos pendientes") + " de reajustar.") : "Hay novedades en el cuadrante.");
-    return { cuerpo: partes.join(" "), tag: "cuadrante-admvo", visto: { pend: pend } };
+    return { cuerpo: partes.join(" "), tag: "cuadrante-admvo", visto: { pend: pend }, ir: { tab: "administrativo" } };
   }
   // Facultativo
   const of = Object.keys(d.official || {}).sort();
@@ -107,6 +109,7 @@ function avisoComponer(pid, d, visto, hoy) {
   const sol = {};
   (d.bandeja || []).forEach((it) => { if (it && it.id && avisoParticipa(it.req, pid)) sol[it.id] = it.estado; });
   const nuevo = { of: of, asg: asg, sol: sol };
+  let ir = { tab: "cuadrante" };
   if (visto) {
     let apr = 0, rech = 0;
     Object.keys(sol).forEach((id) => {
@@ -128,9 +131,13 @@ function avisoComponer(pid, d, visto, hoy) {
     if (traficos.length) partes.push("Tienes una consulta de Tráfico nueva el " + traficos.slice(0, 2).map(avisoFecha).join(" y el ") + (traficos.length > 2 ? " (y " + (traficos.length - 2) + " más)" : "") + ".");
     if (cambiados.length) partes.push((cambiados.length === 1 ? "Ha cambiado tu turno del " : "Han cambiado tus turnos del ") + cambiados.slice(0, 2).map(avisoFecha).join(" y el ") + (cambiados.length > 2 ? " (y " + (cambiados.length - 2) + " más)" : "") + ".");
     mesesNuevos.forEach((mk) => { const p = mk.split("-").map(Number); partes.push("Ya está el cuadrante oficial de " + AVISO_MESES[p[1] - 1] + "."); });
+    // A dónde lleva el aviso: al día que ha cambiado; si no, a sus solicitudes; si no, al mes nuevo
+    if (traficos.length || cambiados.length) ir = { tab: "cuadrante", dia: (traficos.concat(cambiados)).sort()[0] };
+    else if (apr || rech) ir = { tab: "solicitudes" };
+    else if (mesesNuevos.length) ir = { tab: "cuadrante", dia: mesesNuevos[0] + "-01" };
   }
   if (!partes.length) partes.push("Hay novedades en el cuadrante.");
-  return { cuerpo: partes.join(" "), tag: "cuadrante-novedad", visto: nuevo };
+  return { cuerpo: partes.join(" "), tag: "cuadrante-novedad", visto: nuevo, ir: ir };
 }
 async function avisoLeer(nombre) {
   try { const c = await caches.open(AVISOS); const r = await c.match(nombre); return r ? await r.json() : null; } catch (e) { return null; }
@@ -152,7 +159,7 @@ async function avisoPreparar(soloFoto) {
       const visto = soloFoto ? null : await avisoLeer("./__visto.json");
       const c = avisoComponer(pid, d, visto && visto.pid === pid ? visto.foto : null, avisoHoy());
       await avisoGuardar("./__visto.json", { pid: pid, foto: c.visto });
-      res = { cuerpo: c.cuerpo, tag: c.tag };
+      res = { cuerpo: c.cuerpo, tag: c.tag, ir: c.ir };
     }
   } catch (e) { /* sin conexión: aviso genérico */ }
   return res;
@@ -160,7 +167,7 @@ async function avisoPreparar(soloFoto) {
 self.addEventListener("push", (e) => {
   e.waitUntil((async () => {
     const a = await avisoPreparar(false);
-    await self.registration.showNotification("Cuadrante de Rehabilitación", { body: a.cuerpo, icon: "./icon-192.png", badge: "./icon-192.png", tag: a.tag, renotify: true });
+    await self.registration.showNotification("Cuadrante de Rehabilitación", { body: a.cuerpo, icon: "./icon-192.png", badge: "./icon-192.png", tag: a.tag, renotify: true, data: { ir: a.ir || null } });
   })());
 });
 // Al activar los avisos, la aplicación pide guardar la foto de partida (sin avisar de nada)
@@ -168,12 +175,17 @@ self.addEventListener("message", (e) => {
   if (e.data && e.data.tipo === "avisos-inicia" && e.waitUntil) e.waitUntil(avisoPreparar(true));
 });
 
-// Al tocar el aviso se abre la aplicación (o se trae al frente si ya estaba abierta)
+// Al tocar el aviso se abre la aplicación en la pantalla que toca (v180):
+// el día que ha cambiado, las solicitudes o la lista de administración.
 self.addEventListener("notificationclick", (e) => {
+  const ir = (e.notification.data && e.notification.data.ir) || null;
   e.notification.close();
   e.waitUntil((async () => {
     const lista = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-    for (const c of lista) { if ("focus" in c) return c.focus(); }
-    if (self.clients.openWindow) return self.clients.openWindow("./");
+    for (const c of lista) {
+      if ("focus" in c) { try { c.postMessage({ tipo: "abrir", ir: ir }); } catch (err) { /* se abre igualmente */ } return c.focus(); }
+    }
+    const destino = ir && ir.tab ? "./#ir=" + encodeURIComponent(ir.tab) + (ir.dia ? "&dia=" + encodeURIComponent(ir.dia) : "") : "./";
+    if (self.clients.openWindow) return self.clients.openWindow(destino);
   })());
 });
