@@ -744,6 +744,69 @@ async function atender(request, env, ctx) {
         return json({ ok: true, horario: "9:00–21:00" });
       }
 
+      // ---------- Peticiones de los repartos de puentes, SS y Feria (v183) ----------
+      // Las preferencias NO van al cuadrante publicado: se guardan aquí, por reparto y persona,
+      // con todas sus versiones (la vigente y las sustituidas, con quién y cuándo).
+      //   GET  /peticion?reparto=&pid=&clave=    → las versiones de esa persona (clave de envío o de administración)
+      //   POST /peticion {clave, reparto, pid, opciones, por} → nueva versión (con la de envío, solo si está abierto)
+      //   GET  /peticiones?reparto=&admin=       → todas (solo el coordinador)
+      //   POST /peticiones-estado {admin, reparto, estado}   → abre o cierra la recepción
+      //   GET  /peticiones-estado?reparto=       → abierto / cerrado
+      if (ruta === "/peticion" || ruta === "/peticiones" || ruta === "/peticiones-estado") {
+        const REP = /^[a-z0-9-]{3,40}$/, PID = /^([a-z0-9]{4,16}|__ext__)$/, OPC = /^[a-z0-9-]{1,40}$/;
+        const esAdmin = (c) => !!env.CLAVE_ADMIN && c === env.CLAVE_ADMIN;
+        const esEnvio = (c) => !!env.CLAVE_ENVIO && c === env.CLAVE_ENVIO;
+        if (request.method === "GET") {
+          const reparto = url.searchParams.get("reparto") || "";
+          if (!REP.test(reparto)) return json({ error: "Reparto no válido." }, 400);
+          if (ruta === "/peticiones-estado") return json({ ok: true, estado: (await env.BUZON.get("pet-estado:" + reparto)) || "cerrado" });
+          if (ruta === "/peticiones") {
+            if (!esAdmin(url.searchParams.get("admin") || "")) return json({ error: "Clave de administración incorrecta." }, 403);
+            const lista = await env.BUZON.list({ prefix: "pet:" + reparto + ":" });
+            const todas = {};
+            for (const k of lista.keys) todas[k.name.slice(("pet:" + reparto + ":").length)] = (await env.BUZON.get(k.name, "json")) || [];
+            return json({ ok: true, peticiones: todas });
+          }
+          const clave = url.searchParams.get("clave") || "", pid = url.searchParams.get("pid") || "";
+          if (!esEnvio(clave) && !esAdmin(clave)) return json({ error: "Clave incorrecta." }, 403);
+          if (!PID.test(pid)) return json({ error: "Persona no válida." }, 400);
+          return json({ ok: true, versiones: (await env.BUZON.get("pet:" + reparto + ":" + pid, "json")) || [] });
+        }
+        if (request.method === "POST") {
+          const cuerpo = await request.json().catch(() => null);
+          if (!cuerpo) return json({ error: "Petición mal formada." }, 400);
+          const reparto = String(cuerpo.reparto || "");
+          if (!REP.test(reparto)) return json({ error: "Reparto no válido." }, 400);
+          if (ruta === "/peticiones-estado") {
+            if (!esAdmin(cuerpo.admin)) return json({ error: "Clave de administración incorrecta." }, 403);
+            const estado = cuerpo.estado === "abierto" ? "abierto" : "cerrado";
+            await env.BUZON.put("pet-estado:" + reparto, estado);
+            return json({ ok: true, estado: estado });
+          }
+          if (ruta === "/peticion") {
+            const admin = esAdmin(cuerpo.clave);
+            if (!admin && !esEnvio(cuerpo.clave)) return json({ error: "Clave incorrecta." }, 403);
+            const pid = String(cuerpo.pid || "");
+            if (!PID.test(pid)) return json({ error: "Persona no válida." }, 400);
+            const opciones = Array.isArray(cuerpo.opciones) ? cuerpo.opciones.map(String) : null;
+            if (!opciones || opciones.length > 40 || opciones.some((o) => !OPC.test(o)) || new Set(opciones).size !== opciones.length) {
+              return json({ error: "Lista de preferencias no válida." }, 400);
+            }
+            if (!admin && (await env.BUZON.get("pet-estado:" + reparto)) !== "abierto") {
+              return json({ error: "La recepción de solicitudes de este reparto está cerrada." }, 409);
+            }
+            const clave = "pet:" + reparto + ":" + pid;
+            const versiones = (await env.BUZON.get(clave, "json")) || [];
+            const ahora = new Date().toISOString();
+            versiones.forEach((v) => { if (v.vigente) { v.vigente = false; v.sustituida = ahora; } });
+            versiones.push({ at: ahora, por: String(cuerpo.por || "").slice(0, 60) || (admin ? "coordinador" : ""), opciones: opciones, vigente: true });
+            await env.BUZON.put(clave, JSON.stringify(versiones.slice(-50)));
+            return json({ ok: true, version: versiones.length });
+          }
+        }
+        return json({ error: "Ruta no encontrada." }, 404);
+      }
+
       // ---------- Avisos agrupados tras una tanda de cambios del coordinador (v180) ----------
       if (request.method === "POST" && ruta === "/avisar") {
         const cuerpo = await request.json().catch(() => null);

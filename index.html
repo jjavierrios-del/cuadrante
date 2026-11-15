@@ -547,6 +547,8 @@ let state = {
   cambiosAdm: {},
   // Meses cuyos datos antiguos se han pasado al archivo (v174)
   archivado: {},
+  // Repartos de puentes, Semana Santa y Feria (v183). Sin preferencias: esas viven en el servidor
+  repartos: {},
   // Tráficos puestos o quitados por administración, para avisarte
   avisosTrafico: [],
   // Buzón de solicitudes (Cloudflare Worker). La dirección y la clave de envío se
@@ -625,7 +627,7 @@ function guardarHistorial(mo){
     mes: mo,
     anio: state.year,
     guardado: new Date().toISOString(),
-    physicians: state.physicians.map(p=>({id:p.id, name:p.name, pct:p.pct})),
+    physicians: state.physicians.map(p=>({id:p.id, name:p.name, pct:pctDe(p, mo, state.year)})),
     holidays: (state.holidays||[]).filter(h=>h.date.indexOf(mk)===0),
     assignments: filtrarPorFecha(state.assignments, false),
     rotantes: filtrarPorFecha(state.rotantes, true),
@@ -1099,6 +1101,7 @@ function loadState(){
       state.historial = d.historial||{};
       state.cerradoAdm = d.cerradoAdm||{};
       state.archivado = d.archivado||{};
+      state.repartos = (d.repartos && typeof d.repartos==="object") ? d.repartos : {};
       state.cambiosAdm = d.cambiosAdm||{};
       state.avisosTrafico = Array.isArray(d.avisosTrafico) ? d.avisosTrafico : [];
       state.buzon = Object.assign({url:"",claveEnvio:"",claveCalendario:""}, d.buzon||{});
@@ -1372,7 +1375,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v182";
+const APP_VERSION = "v183";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1677,14 +1680,41 @@ function checkAdminPass(txt){
 // ---------- Bloqueo de días, por turno ----------
 // Compatible con el formato antiguo: si un día está en «blocked», se considera
 // bloqueado mañana Y tarde. Además pueden bloquearse turnos sueltos.
-function bloqueaM(p, dow){
-  return (p.blocked||[]).indexOf(dow) >= 0 || (p.blockedM||[]).indexOf(dow) >= 0;
+// v183: los días sin trabajar van con la jornada. Si desde un mes rige un cambio de jornada,
+// valen los días de ese cambio; un cambio al 100 % sin días propios no tiene ninguno.
+// (Antes los días de la reducción seguían aplicándose aunque la jornada pasara al 100 %.)
+// «dk» es la fecha (AAAA-MM-DD) o el mes (AAAA-MM); sin ella, el mes que se está viendo.
+function tramoVigente(p, dk){
+  const t = p && p.pctTramos; if(!Array.isArray(t) || !t.length) return null;
+  const mk = String(dk||"").slice(0,7); let v = null;
+  t.slice().sort((a,b)=>String(a.desde).localeCompare(String(b.desde))).forEach(x=>{ if(String(x.desde) <= mk) v = x; });
+  return v;
 }
-function bloqueaT(p, dow){
-  return (p.blocked||[]).indexOf(dow) >= 0 || (p.blockedT||[]).indexOf(dow) >= 0;
+const SIN_BLOQUEOS = {blocked:[], blockedM:[], blockedT:[]};
+function bloqueosDe(p, dk){
+  const ref = dk || (state.year+"-"+pad(ui.month+1));
+  const t = tramoVigente(p, ref);
+  if(t){
+    if(t.dias && typeof t.dias==="object") return {blocked:t.dias.blocked||[], blockedM:t.dias.blockedM||[], blockedT:t.dias.blockedT||[]};
+    if(Number(t.pct) >= 100) return SIN_BLOQUEOS;
+  }
+  return {blocked:p.blocked||[], blockedM:p.blockedM||[], blockedT:p.blockedT||[]};
+}
+// Objeto donde se guardan los días sin trabajar que rigen ese mes (el cambio de jornada o la ficha)
+function bloqueosEditables(p, dk){
+  const t = tramoVigente(p, dk || (state.year+"-"+pad(ui.month+1)));
+  if(!t) return p;
+  if(!t.dias){ const b = bloqueosDe(p, dk); t.dias = {blocked:b.blocked.slice(), blockedM:b.blockedM.slice(), blockedT:b.blockedT.slice()}; }
+  return t.dias;
+}
+function bloqueaM(p, dow, dk){
+  const b = bloqueosDe(p, dk); return b.blocked.indexOf(dow) >= 0 || b.blockedM.indexOf(dow) >= 0;
+}
+function bloqueaT(p, dow, dk){
+  const b = bloqueosDe(p, dk); return b.blocked.indexOf(dow) >= 0 || b.blockedT.indexOf(dow) >= 0;
 }
 // Día completo: hace falta tener libres AMBOS turnos (una guardia ocupa todo el día)
-function bloqueaDia(p, dow){ return bloqueaM(p, dow) || bloqueaT(p, dow); }
+function bloqueaDia(p, dow, dk){ return bloqueaM(p, dow, dk) || bloqueaT(p, dow, dk); }
 // Guardias: por defecto, un día de reducción de jornada también excluye la guardia.
 // Con «Guardia en días de reducción: Sí», el facultativo sigue entrando en el reparto
 // de urgencias esos días aunque no pase consulta (p. ej. reducción los viernes,
@@ -1715,10 +1745,10 @@ function tramosTexto(p){
     }).join(" · ");
 }
 
-function bloqueaGuardia(p, dow){
+function bloqueaGuardia(p, dow, dk){
   // Días en los que no hace guardias, aunque sí trabaje en consulta
   if(((p.noUrgDows)||[]).indexOf(dow) >= 0) return true;
-  return p.urgEnReduccion ? false : bloqueaDia(p, dow);
+  return p.urgEnReduccion ? false : bloqueaDia(p, dow, dk);
 }
 function toggleNoUrgDow(p, dow){
   p.noUrgDows = p.noUrgDows || [];
@@ -1726,10 +1756,10 @@ function toggleNoUrgDow(p, dow){
   if(i>=0) p.noUrgDows.splice(i,1); else p.noUrgDows.push(dow);
 }
 // ¿Está bloqueado el turno que corresponda?
-function bloqueaTurno(p, dow, slot){
-  if(slot === "t") return bloqueaT(p, dow);
-  if(slot === "m") return bloqueaM(p, dow);
-  return bloqueaGuardia(p, dow);  // "f" = día completo (guardia)
+function bloqueaTurno(p, dow, slot, dk){
+  if(slot === "t") return bloqueaT(p, dow, dk);
+  if(slot === "m") return bloqueaM(p, dow, dk);
+  return bloqueaGuardia(p, dow, dk);  // "f" = día completo (guardia)
 }
 // Alterna el bloqueo de un turno concreto
 function toggleBloqueo(p, dow, slot){
@@ -1745,10 +1775,10 @@ function toggleBloqueo(p, dow, slot){
   else p[lista] = p[lista].concat([dow]);
 }
 // Resumen legible para la ficha del facultativo
-function resumenBloqueos(p){
+function resumenBloqueos(p, dk){
   const out = [];
   [1,2,3,4,5].forEach(dow=>{
-    const m = bloqueaM(p,dow), t = bloqueaT(p,dow);
+    const m = bloqueaM(p,dow,dk), t = bloqueaT(p,dow,dk);
     if(m && t) out.push(WD[dow]);
     else if(m) out.push(WD[dow]+" (mañana)");
     else if(t) out.push(WD[dow]+" (tarde)");
@@ -2613,10 +2643,10 @@ function cadenaSimular(r){
     const perfil = cadenaPerfil(a.p, a.cod);
     if(perfil) return {error:a.n+a.p.name+" "+perfil+"."};
     if(a.slot==="f"){
-      if(bloqueaGuardia(a.p, w)) return {error:a.n+a.p.name+" no hace guardias los "+dias7[w]+"."};
+      if(bloqueaGuardia(a.p, w, a.dia)) return {error:a.n+a.p.name+" no hace guardias los "+dias7[w]+"."};
     }else{
       if(a.slot==="t" && w===5) return {error:a.n+"los viernes no hay consulta de tarde."};
-      if(bloqueaTurno(a.p, w, a.slot)) avisos.push(a.p.name+" tiene reducción de jornada la "+(a.slot==="t"?"tarde":"mañana")+" de los "+dias7[w]+": lo haría de forma voluntaria.");
+      if(bloqueaTurno(a.p, w, a.slot, a.dia)) avisos.push(a.p.name+" tiene reducción de jornada la "+(a.slot==="t"?"tarde":"mañana")+" de los "+dias7[w]+": lo haría de forma voluntaria.");
     }
     if((state.diasLibres||{})[k]) avisos.push(a.p.name+" tiene marcado el "+fmtDate(a.dia)+" como no disponible.");
     cel[a.slot] = a.cod;
@@ -4152,7 +4182,7 @@ function validarMovimiento(pid, dateFrom, part, dateTo, slot){
   if(dow===0 || dow===6) return "El día de destino es fin de semana.";
   if(hmap[dateTo]) return "El día de destino es festivo ("+hmap[dateTo]+").";
   // Trabajar en un día de reducción es voluntario: se avisa, pero no se impide
-  if(bloqueaTurno(p, dow, slot)) avisarReduccion(p, dow, slot);
+  if(bloqueaTurno(p, dow, slot, (typeof dateTo!=="undefined" ? dateTo : fecha))) avisarReduccion(p, dow, slot);
   // Las tardes de viernes se permiten en los cambios pactados (la regla solo rige al generar)
 
   const dest = state.assignments[pid+"|"+dateTo] || {};
@@ -4231,7 +4261,7 @@ function validarIntercambio(pidA, dateA, pidB, dateB){
         avisos.push("El "+fmtDate(fecha)+" ya están ocupadas las "+(state.settings.maxMorning||8)+" consultas físicas de mañana.");
     }
     const slotCelda = celda.f ? "f" : (celda.m ? "m" : "t");
-    if(bloqueaTurno(quien, dow, slotCelda)) avisarReduccion(quien, dow, slotCelda);
+    if(bloqueaTurno(quien, dow, slotCelda, fecha)) avisarReduccion(quien, dow, slotCelda);
     // Tardes de viernes y tardes sueltas: permitidas en cambios pactados
     // Consulta duplicada ese día
     ["m","t"].forEach(sl=>{
@@ -4362,7 +4392,7 @@ function validarDoble(pidA, pidB, pares){
       if(otro) avisos.push("La consulta "+cod+" ya la pasa otro compañero el "+fmtDate(fecha)+".");
     });
     const slotCelda = celda.f ? "f" : (celda.m ? "m" : "t");
-    if(bloqueaTurno(quien, dow, slotCelda)){
+    if(bloqueaTurno(quien, dow, slotCelda, fecha)){
       avisarReduccion(quien, dow, slotCelda);
       if(reducciones.indexOf(AVISO_VOLUNTARIO) < 0) reducciones.push(AVISO_VOLUNTARIO);
     }
@@ -4424,7 +4454,7 @@ function validarTrafico(pid, fecha, slot, code){
   const hmap = holidayMap();
   if(dow===0||dow===6) return "Las consultas de Tráfico se hacen en días laborables.";
   // Trabajar en un día de reducción es voluntario: se avisa, pero no se impide
-  if(bloqueaTurno(p, dow, slot)) avisarReduccion(p, dow, slot);
+  if(bloqueaTurno(p, dow, slot, (typeof dateTo!=="undefined" ? dateTo : fecha))) avisarReduccion(p, dow, slot);
   if(hmap[fecha]) return "Ese día es festivo ("+hmap[fecha]+").";
   const a = state.assignments[pid+"|"+fecha] || {};
   if(a.f) return "Ese día lo tienes ocupado con "+cellToText(a)+".";
@@ -4458,7 +4488,7 @@ function validarCesion(pidA, fecha, part, pidB){
     if(dest[slot]) return esc(pb.name)+" ya tiene "+dest[slot]+" en ese turno.";
   }
   const dow = new Date(fecha).getDay();
-  if(bloqueaTurno(pb, dow, slot)) avisarReduccion(pb, dow, slot);
+  if(bloqueaTurno(pb, dow, slot, fecha)) avisarReduccion(pb, dow, slot);
   // Tarde sin mañana: permitida en cambios pactados
   // ¿puede hacerla?
   if(/^RHBT?[12]?$/.test(code) && pb.noRhb) return esc(pb.name)+" no hace RHB.";   // incluye las de tarde (v182)
@@ -4529,7 +4559,7 @@ function simularUrg2(pidA, fechaU, pidB, f1, f2, mov1, slot1, mov2, slot2){
   if((guardia.f==="URG"||guardia.f==="URGLV") && pb.noUrg) return {error:esc(pb.name)+" no hace urgencias entre semana."};
   if(guardia.f==="URGF" && pb.noUrgf) return {error:esc(pb.name)+" no hace urgencias de festivo."};
   const dowU = new Date(fechaU).getDay();
-  if(bloqueaGuardia(pb, dowU)) return {error:esc(pb.name)+" no trabaja ese día (la guardia ocupa mañana y tarde)."};
+  if(bloqueaGuardia(pb, dowU, fechaU)) return {error:esc(pb.name)+" no trabaja ese día (la guardia ocupa mañana y tarde)."};
   // Una guardia por semana y sin días seguidos
   const esU = x=>!!x&&(x.f==="URG"||x.f==="URGLV"||x.f==="URGF");
   const base = new Date(fechaU);
@@ -4547,7 +4577,7 @@ function simularUrg2(pidA, fechaU, pidB, f1, f2, mov1, slot1, mov2, slot2){
     const dt = new Date(dia), dow = dt.getDay();
     if(dow===0||dow===6) return "El "+fmtDate(dia)+" cae en fin de semana.";
     if(hmap[dia]) return "El "+fmtDate(dia)+" es festivo.";
-    if(bloqueaTurno(pa, dow, turno)) avisarReduccion(pa, dow, turno);
+    if(bloqueaTurno(pa, dow, turno, dia)) avisarReduccion(pa, dow, turno);
     // Tardes de viernes permitidas en cambios pactados
     const act = get(pa.id, dia) || {};
     if(act.f) return esc(pa.name)+" ya tiene "+cellToText(act)+" el "+fmtDate(dia)+".";
@@ -4648,7 +4678,7 @@ function simularIntercambioConsultas(pidA, fA, slotA, pidB, fB, slotB, moverDesp
     const dow = new Date(dk).getDay();
     if(dow===0||dow===6) return "El "+fmtDate(dk)+" cae en fin de semana.";
     if(hmap[dk]) return "El "+fmtDate(dk)+" es festivo.";
-    if(bloqueaTurno(quien, dow, slot)) avisarReduccion(quien, dow, slot);
+    if(bloqueaTurno(quien, dow, slot, dk)) avisarReduccion(quien, dow, slot);
     return null;
   };
   const e1 = revisar(pb, fA, slotA); if(e1) return {error:e1};
@@ -5334,7 +5364,7 @@ function coberturaSemana(sem){
     state.physicians.forEach(p=>{
       const a = state.assignments[p.id+"|"+d.key];
       if(a && a.f && absInfo(a.f)) return;         // de vacaciones
-      if(bloqueaM(p, d.dow)) return;               // no trabaja esa mañana
+      if(bloqueaM(p, d.dow, d.key)) return;               // no trabaja esa mañana
       if(esDiaLibre(p.id, d.key)) return;          // día de no disponibilidad
       libres++;
     });
@@ -5492,7 +5522,7 @@ function viewAdministrativoBase(){
                '<td style="text-align:left">'+listaDias(dias)+'</td></tr>';
       }).filter(Boolean).join("");
       h += '<div class="card" style="margin-bottom:10px"><h2>'+esc(p.name)+
-           (p.pct<100?' <span class="muted" style="font-size:14px">('+p.pct+'%)</span>':'')+'</h2>'+
+           (pctVisible(p)<100?' <span class="muted" style="font-size:14px">('+pctVisible(p)+'%)</span>':'')+'</h2>'+
            (filas ? '<div style="overflow-x:auto;margin-top:6px"><table class="stats" style="min-width:420px"><tbody>'+filas+'</tbody></table></div>'
                   : '<p class="muted" style="margin-top:6px;font-size:14px">Sin agendas este mes.</p>')+
            '</div>';
@@ -6246,8 +6276,409 @@ function viewTraficos(){
   return html;
 }
 
+// ================== PETICIONES · repartos de puentes, Semana Santa y Feria (v183) ==================
+// Cada reparto tiene su orden de elección, sus bloques (puentes o periodos), sus opciones
+// (un paquete de fechas o una fecha suelta, que se asignan a una sola persona), las
+// coberturas fijas de URG (= EXT) y sus ejecuciones (versiones). Las PREFERENCIAS de cada
+// persona no están aquí: se guardan en el servidor, con su historial, y cada uno ve las suyas.
+// Reglas de Javier: cada participante recibe una opción como máximo; nunca se asigna una
+// opción que no pidió (queda pendiente); URG (EXT) recibe un día en SS y Feria; en estos
+// repartos no se aplican los perfiles «no hace…»; lo repartido y publicado no lo toca el generador.
+const REP_ESTADOS = {config:"Configuración", abierto:"Solicitudes abiertas", cerrado:"Solicitudes cerradas", revision:"Pendiente de revisión", publicado:"Resultado publicado"};
+const REP_ORDEN_2027 = ["SUAREZ","PASTOR","RODRIGUEZ","PONS","GONZALEZ","ROBLES","LOBO","PORRUA","VAZQUEZ","RIOS","GALIANA","EXT"];
+function repOrdenInicial(){
+  const ids = [];
+  REP_ORDEN_2027.forEach(n=>{
+    if(n==="EXT"){ ids.push(EXT_ID); return; }
+    const p = state.physicians.find(x=>String(x.name).toUpperCase()===n);
+    if(p) ids.push(p.id);
+  });
+  return ids;
+}
+function repDefecto2027(){
+  const ahora = new Date().toISOString();
+  const orden = repOrdenInicial();
+  const P = (id, fechas, etiqueta)=>({id, fechas, etiqueta: etiqueta||""});
+  return {
+    "puentes-2027": {id:"puentes-2027", nombre:"Puentes 2027", anio:2027, tipo:"paquetes", estado:"config",
+      orden: orden.slice(), ordenHist:[{at:ahora, orden:orden.slice(), motivo:"Orden inicial de 2027"}],
+      bloques:[
+        {id:"andalucia", nombre:"Puente de Andalucía", rango:"26 feb – 1 mar", fijas:["2027-02-26"],
+          nota:"El paquete del dom. 28 de febrero incluye el vie. 3 de diciembre, que no se ofrece aparte.",
+          opciones:[P("and-1",["2027-02-27","2027-03-01"]), P("and-2",["2027-02-28","2027-12-03"])]},
+        {id:"corpus", nombre:"Puente del Corpus", rango:"26 – 30 may", fijas:["2027-05-26","2027-05-28","2027-05-30"],
+          nota:"URG cubre de antemano el resto de los días: queda un único paquete.",
+          opciones:[P("cor-1",["2027-05-27","2027-05-29"])]},
+        {id:"agosto", nombre:"Puente de Agosto", rango:"13 – 16 ago", fijas:[], nota:"",
+          opciones:[P("ago-1",["2027-08-13","2027-08-15"]), P("ago-2",["2027-08-14","2027-08-16"])]},
+        {id:"octubre", nombre:"Puente de Octubre", rango:"8 – 12 oct", fijas:[], nota:"",
+          opciones:[P("oct-1",["2027-10-08","2027-10-10","2027-10-12"]), P("oct-2",["2027-10-09","2027-10-11"])]},
+        {id:"santos", nombre:"Puente de Todos los Santos", rango:"29 oct – 1 nov", fijas:[], nota:"",
+          opciones:[P("san-1",["2027-10-29","2027-10-31"]), P("san-2",["2027-10-30","2027-11-01"])]},
+        {id:"diciembre", nombre:"Súperpuente de Diciembre", rango:"3 – 8 dic", fijas:[],
+          nota:"El vie. 3 de diciembre va en el paquete combinado de Andalucía.",
+          opciones:[P("dic-1",["2027-12-04","2027-12-06","2027-12-08"]), P("dic-2",["2027-12-05","2027-12-07"])]}
+      ], ejecuciones:[], publicado:null},
+    "ssferia-2027": {id:"ssferia-2027", nombre:"SS y Feria 2027", anio:2027, tipo:"fechas", estado:"config",
+      orden: orden.slice(), ordenHist:[{at:ahora, orden:orden.slice(), motivo:"Orden inicial de 2027"}],
+      bloques:[
+        {id:"ss", nombre:"Semana Santa", rango:"19 – 28 mar", fijas:["2027-03-19","2027-03-22","2027-03-24"], nota:"",
+          opciones:[P("2027-03-20",["2027-03-20"],"festivo"), P("2027-03-21",["2027-03-21"],"festivo"), P("2027-03-23",["2027-03-23"],"jornada normal"),
+                    P("2027-03-25",["2027-03-25"],"festivo"), P("2027-03-26",["2027-03-26"],"festivo"), P("2027-03-27",["2027-03-27"],"festivo"), P("2027-03-28",["2027-03-28"],"festivo")]},
+        {id:"feria", nombre:"Feria", rango:"12 – 18 abr", fijas:["2027-04-12","2027-04-14"],
+          nota:"En Bormujos el miércoles 14 es laborable; el festivo local pasa al viernes 16.",
+          opciones:[P("2027-04-13",["2027-04-13"],"jornada normal"), P("2027-04-15",["2027-04-15"],"jornada normal"),
+                    P("2027-04-16",["2027-04-16"],"festivo"), P("2027-04-17",["2027-04-17"],"festivo"), P("2027-04-18",["2027-04-18"],"festivo")]}
+      ], ejecuciones:[], publicado:null}
+  };
+}
+function repartos(){
+  if(!state.repartos || typeof state.repartos!=="object") state.repartos = {};
+  return state.repartos;
+}
+// El coordinador crea los repartos de 2027 la primera vez que abre Peticiones
+function repAsegurar(){
+  const r = repartos();
+  if(MODE==="editor" && !Object.keys(r).length){ Object.assign(r, repDefecto2027()); save(); }
+  return r;
+}
+const repNombre = pid => pid===EXT_ID ? "URG (EXT)" : ((state.physicians.find(x=>x.id===pid)||{}).name || pid);
+const REP_MES = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
+function repDia(k){
+  const pr = k.split("-").map(Number); const d = new Date(pr[0], pr[1]-1, pr[2]);
+  return ["dom","lun","mar","mié","jue","vie","sáb"][d.getDay()]+" "+pr[2]+" "+REP_MES[pr[1]-1];
+}
+function repOpciones(rep){ const out = []; (rep.bloques||[]).forEach(b=>(b.opciones||[]).forEach(o=>out.push(Object.assign({bloque:b.nombre, bloqueId:b.id}, o)))); return out; }
+function repOpcion(rep, id){ return repOpciones(rep).find(o=>o.id===id) || null; }
+function repOpcionTxt(rep, id){
+  const o = repOpcion(rep, id); if(!o) return "(opción que ya no existe)";
+  return (rep.tipo==="paquetes" ? o.bloque+": " : "")+o.fechas.map(repDia).join(" + ")+(o.etiqueta?" ("+o.etiqueta+")":"");
+}
+function repFijas(rep){ const f = []; (rep.bloques||[]).forEach(b=>(b.fijas||[]).forEach(k=>f.push(k))); return f; }
+// Errores de configuración: fechas repetidas o fechas fijas de URG ofrecidas como opción
+function repProblemasConfig(rep){
+  const out = [], vistas = {}, fijas = {};
+  repFijas(rep).forEach(k=>{ fijas[k] = 1; });
+  repOpciones(rep).forEach(o=>(o.fechas||[]).forEach(k=>{
+    if(fijas[k]) out.push("El "+repDia(k)+" está como cobertura fija de URG y también en una opción.");
+    if(vistas[k]) out.push("El "+repDia(k)+" está en dos opciones.");
+    vistas[k] = 1;
+  }));
+  return out;
+}
+function repAnotarOrden(rep, motivo){
+  rep.ordenHist = Array.isArray(rep.ordenHist) ? rep.ordenHist : [];
+  rep.ordenHist.push({at:new Date().toISOString(), orden:rep.orden.slice(), motivo:motivo});
+  if(rep.ordenHist.length > 60) rep.ordenHist = rep.ordenHist.slice(-60);
+}
+// ---- Asignación: recorre el orden y da a cada uno su mejor opción libre ----
+// «vigentes»: {pid: [ids de opción por preferencia]}. Nunca asigna algo no pedido.
+function repEjecutar(rep, vigentes){
+  const existentes = {}; repOpciones(rep).forEach(o=>{ existentes[o.id] = 1; });
+  const tomada = {}, asig = {}, pendientes = [];
+  (rep.orden||[]).forEach(pid=>{
+    const pide = (vigentes[pid]||[]).filter(id=>existentes[id]);
+    if(!pide.length){
+      // En los puentes, URG (EXT) solo tiene sus coberturas fijas
+      if(pid===EXT_ID && rep.tipo==="paquetes") return;
+      pendientes.push({pid:pid, motivo:"No ha enviado preferencias"});
+      return;
+    }
+    const elegida = pide.find(id=>!tomada[id]);
+    if(elegida){ asig[pid] = elegida; tomada[elegida] = pid; }
+    else pendientes.push({pid:pid, motivo:"Todas sus opciones están ya asignadas a quien elige antes"});
+  });
+  const libres = repOpciones(rep).filter(o=>!tomada[o.id]).map(o=>o.id);
+  return {at:new Date().toISOString(), orden:(rep.orden||[]).slice(), asig:asig, pendientes:pendientes, libres:libres, ajustes:[], publicada:false};
+}
+// Conflictos con el cuadrante, para la vista previa (no impiden publicar)
+function repConflictos(rep, ej){
+  const out = [];
+  Object.keys(ej.asig).forEach(pid=>{
+    const o = repOpcion(rep, ej.asig[pid]); if(!o) return;
+    o.fechas.forEach(k=>{
+      const a = state.assignments[pid+"|"+k];
+      if(a && a.f && absInfo(a.f) && pid!==EXT_ID) out.push(repNombre(pid)+" tiene "+absInfo(a.f).label+" el "+repDia(k)+".");
+      else if(a && a.f && !a.rep) out.push(repNombre(pid)+" ya tiene "+a.f+" el "+repDia(k)+".");
+      state.physicians.forEach(q=>{ if(q.id===pid) return; const b = state.assignments[q.id+"|"+k];
+        if(b && (b.f==="URG"||b.f==="URGLV"||b.f==="URGF") && b.rep!==rep.id) out.push("El "+repDia(k)+" ya tiene la guardia "+q.name+" en el cuadrante."); });
+      if(pid!==EXT_ID){ const e = state.assignments[EXT_ID+"|"+k]; if(e && e.f && e.rep!==rep.id) out.push("El "+repDia(k)+" lo cubre EXT en el cuadrante."); }
+    });
+  });
+  repFijas(rep).forEach(k=>{
+    state.physicians.forEach(q=>{ const b = state.assignments[q.id+"|"+k];
+      if(b && (b.f==="URG"||b.f==="URGLV"||b.f==="URGF") && b.rep!==rep.id) out.push("Cobertura fija de URG el "+repDia(k)+", pero en el cuadrante tiene la guardia "+q.name+"."); });
+  });
+  return repProblemasConfig(rep).concat(out);
+}
+// ---- Publicar: escribe las guardias en el cuadrante, marcadas para que el generador no las toque ----
+// Qué hará la publicación: guardias a escribir, guardias anteriores que sustituye (para no
+// dejar el día con dos) y las que no puede escribir porque esa persona está ausente ese día.
+function repPlanPublicar(rep, ej){
+  const escribir = [], quitar = [], omitir = [], pisar = [];
+  const guardia = a => !!a && (a.f==="URG"||a.f==="URGLV"||a.f==="URGF");
+  const quienes = state.physicians.map(p=>p.id).concat([EXT_ID]);
+  const destino = [];
+  repFijas(rep).forEach(k=>destino.push({pid:EXT_ID, k:k}));
+  Object.keys(ej.asig).forEach(pid=>{ const o = repOpcion(rep, ej.asig[pid]); if(o) o.fechas.forEach(k=>destino.push({pid:pid, k:k})); });
+  const dias = {};
+  destino.forEach(x=>{
+    const a = state.assignments[x.pid+"|"+x.k];
+    if(a && a.f && absInfo(a.f) && x.pid!==EXT_ID){ omitir.push(repNombre(x.pid)+" el "+repDia(x.k)+" ("+absInfo(a.f).label+")"); return; }
+    if(a && !guardia(a) && (a.m||a.t) && a.rep!==rep.id) pisar.push(repNombre(x.pid)+" el "+repDia(x.k)+" (tenía "+[a.m,a.t].filter(Boolean).join(" + ")+")");
+    escribir.push(x); dias[x.k] = dias[x.k] || []; dias[x.k].push(x.pid);
+  });
+  Object.keys(dias).forEach(k=>quienes.forEach(pid=>{
+    if(dias[k].indexOf(pid)>=0) return;
+    const a = state.assignments[pid+"|"+k];
+    if(guardia(a) && a.rep!==rep.id) quitar.push({pid:pid, k:k, txt:repNombre(pid)+" el "+repDia(k)+" ("+a.f+")"});
+  }));
+  return {escribir, quitar, omitir, pisar};
+}
+function repPublicar(rep, iEj){
+  const ej = rep.ejecuciones[iEj]; if(!ej) return "No existe esa versión.";
+  const plan = repPlanPublicar(rep, ej);
+  marcarDeshacer("publicar "+rep.nombre);
+  diferirSiCerrado(()=>{
+    // Se retira lo publicado antes por este reparto
+    Object.keys(state.assignments).forEach(k=>{ const a = state.assignments[k]; if(a && a.rep===rep.id) delete state.assignments[k]; });
+    // Las guardias anteriores de esos días (del generador o puestas a mano) dejan sitio a lo repartido
+    plan.quitar.forEach(x=>{ delete state.assignments[x.pid+"|"+x.k]; });
+    plan.escribir.forEach(x=>{ state.assignments[x.pid+"|"+x.k] = {m:null, t:null, f:tipoGuardiaDia(x.k), rep:rep.id}; });
+    return null;
+  });
+  ej.sustituidas = plan.quitar.map(x=>x.txt); ej.noEscritas = plan.omitir.slice();
+  rep.ejecuciones.forEach((x,i)=>{ x.publicada = (i===iEj); });
+  rep.publicado = {version:iEj+1, at:new Date().toISOString(), asig:JSON.parse(JSON.stringify(ej.asig))};
+  rep.estado = "publicado";
+  save();
+  return null;
+}
+// ---- Comunicación con el servidor ----
+async function repServidor(ruta, opciones){
+  const b = state.buzon||{};
+  if(!b.url) return {error:"El buzón no está configurado."};
+  try{
+    const r = await fetch(b.url.replace(/\/+$/,"")+ruta, opciones||{cache:"no-store"});
+    const d = await r.json().catch(()=>null);
+    if(!r.ok || !d || !d.ok) return {error:(d && d.error) ? d.error : "El servidor no ha respondido ("+r.status+")."};
+    return d;
+  }catch(e){ return {error:"Sin conexión con el servidor."}; }
+}
+async function repLeerMia(repId, pid){
+  const clave = MODE==="editor" ? (buzonClaveAdmin() || claveEnvio()) : (claveEnvio() || pedirClaveEnvio());
+  if(!clave) return {error:"Hace falta la clave de envío."};
+  return repServidor("/peticion?reparto="+encodeURIComponent(repId)+"&pid="+encodeURIComponent(pid)+"&clave="+encodeURIComponent(clave)+"&t="+Date.now());
+}
+async function repEnviar(repId, pid, opciones, por){
+  const clave = MODE==="editor" ? (buzonClaveAdmin() || claveEnvio()) : (claveEnvio() || pedirClaveEnvio());
+  if(!clave) return {error:"Hace falta la clave de envío."};
+  return repServidor("/peticion", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({clave, reparto:repId, pid, opciones, por})});
+}
+async function repLeerTodas(repId){
+  const admin = buzonClaveAdmin();
+  if(!admin) return {error:"Falta la clave de administración del buzón (Ajustes → Buzón de solicitudes)."};
+  return repServidor("/peticiones?reparto="+encodeURIComponent(repId)+"&admin="+encodeURIComponent(admin)+"&t="+Date.now());
+}
+async function repEstadoServidor(repId, estado){
+  const admin = buzonClaveAdmin();
+  if(!admin) return {error:"Falta la clave de administración del buzón (Ajustes → Buzón de solicitudes)."};
+  return repServidor("/peticiones-estado", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({admin, reparto:repId, estado})});
+}
+const repVigente = versiones => { const v = (versiones||[]).filter(x=>x && x.vigente); return v.length ? v[v.length-1].opciones : []; };
+
+// ---- Pantallas ----
+function viewPeticiones(){
+  const reps = MODE==="editor" ? repAsegurar() : repartos();
+  const lista = Object.values(reps).sort((a,b)=>String(a.id).localeCompare(String(b.id)));
+  const sub = ui.petSub || "orden";
+  let h = '<div class="seg no-print" style="margin-bottom:10px">'+
+    [["orden","Orden de elección"],["puentes","Puentes"],["ssferia","SS y Feria"]].map(x=>
+      '<button class="'+(sub===x[0]?"on":"")+'" data-action="pet-sub" data-sub="'+x[0]+'">'+x[1]+'</button>').join("")+'</div>';
+  if(!lista.length) return h+'<div class="card"><p class="muted">Todavía no hay repartos. Los crea el coordinador.</p></div>';
+  if(sub==="orden") return h + lista.map(viewRepOrden).join("");
+  const rep = lista.find(r=> sub==="puentes" ? r.tipo==="paquetes" : r.tipo==="fechas");
+  if(!rep) return h+'<div class="card"><p class="muted">No hay reparto de este tipo.</p></div>';
+  return h + viewRepartoCab(rep) + (MODE==="editor" ? viewRepartoAdmin(rep) : viewRepartoFacultativo(rep));
+}
+function viewRepOrden(rep){
+  const ed = MODE==="editor";
+  let h = '<div class="card"><div class="row between" style="align-items:center;gap:8px;flex-wrap:wrap"><h2>'+esc(rep.nombre)+'</h2>'+
+    '<span class="tiny muted">'+esc(REP_ESTADOS[rep.estado]||rep.estado)+'</span></div>'+
+    '<ol style="margin:8px 0 0 20px;padding:0">'+(rep.orden||[]).map((pid,i)=>
+      '<li style="padding:4px 0;font-size:14px"><span class="row between" style="align-items:center;gap:6px"><span>'+(pid===EXT_ID?'<span class="tiny k-ext" style="padding:1px 6px;border-radius:5px">URG</span> ':'')+esc(repNombre(pid))+'</span>'+
+      (ed ? '<span class="row" style="gap:4px">'+
+        '<button class="btn" data-action="pet-orden-mover" data-rep="'+rep.id+'" data-i="'+i+'" data-d="-1" style="padding:2px 8px"'+(i===0?' disabled':'')+'>▲</button>'+
+        '<button class="btn" data-action="pet-orden-mover" data-rep="'+rep.id+'" data-i="'+i+'" data-d="1" style="padding:2px 8px"'+(i===rep.orden.length-1?' disabled':'')+'>▼</button></span>' : '')+
+      '</span></li>').join("")+'</ol>';
+  if(ed){
+    h += '<div class="row" style="margin-top:8px;gap:6px;flex-wrap:wrap">'+
+      '<button class="btn" data-action="pet-orden-rotar" data-rep="'+rep.id+'">Rotar para el año siguiente (el primero pasa al último)</button></div>'+
+      '<details style="margin-top:10px"><summary style="cursor:pointer;font-size:13px">Historial del orden ('+(rep.ordenHist||[]).length+')</summary>'+
+      (rep.ordenHist||[]).slice().reverse().map(x=>'<div style="font-size:12px;padding:4px 0;border-bottom:1px solid var(--slate-100)"><b>'+
+        new Date(x.at).toLocaleString("es-ES",{day:"2-digit",month:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit"})+'</b> · '+esc(x.motivo||"")+'<br><span class="muted">'+
+        (x.orden||[]).map(repNombre).map(esc).join(" · ")+'</span></div>').join("")+'</details>';
+  }
+  return h+'</div>';
+}
+function viewRepartoCab(rep){
+  let h = '<div class="card"><div class="row between" style="align-items:center;gap:8px;flex-wrap:wrap"><h2>'+esc(rep.nombre)+'</h2>'+
+    '<b style="font-size:13px;color:'+(rep.estado==="publicado"?"var(--emerald-700)":(rep.estado==="abierto"?"#1d4ed8":"var(--slate-500)"))+'">'+esc(REP_ESTADOS[rep.estado]||rep.estado)+'</b></div>';
+  (rep.bloques||[]).forEach(b=>{
+    h += '<div style="margin-top:10px"><b style="font-size:14px">'+esc(b.nombre)+'</b> <span class="muted" style="font-size:12px">'+esc(b.rango||"")+'</span>'+
+      (b.nota?'<p class="muted" style="font-size:12px;margin-top:2px">'+esc(b.nota)+'</p>':'')+
+      ((b.fijas||[]).length ? '<p style="font-size:13px;margin-top:4px"><span class="tiny k-ext" style="padding:1px 6px;border-radius:5px">URG fija</span> '+b.fijas.map(repDia).join(" · ")+'</p>' : '')+
+      '<div style="margin-top:4px">'+(b.opciones||[]).map(o=>{
+        const quien = rep.publicado && Object.keys(rep.publicado.asig||{}).find(pid=>rep.publicado.asig[pid]===o.id);
+        return '<div style="font-size:13px;padding:3px 0">• '+o.fechas.map(repDia).join(" + ")+(o.etiqueta?' <span class="muted">('+esc(o.etiqueta)+')</span>':'')+
+          (quien ? ' → <b>'+esc(repNombre(quien))+'</b>' : '')+'</div>'; }).join("")+'</div></div>';
+  });
+  return h+'</div>';
+}
+function viewRepartoFacultativo(rep){
+  const yo = miFacultativo();
+  if(!yo) return '<div class="card"><p class="muted">Identifícate para ver y enviar tus preferencias.</p></div>';
+  const st = (ui.petMia = ui.petMia || {})[rep.id] || null;
+  if(!st){ ui.petMia[rep.id] = {cargando:true}; repLeerMia(rep.id, yo.id).then(d=>{ ui.petMia[rep.id] = d.error ? {error:d.error, versiones:[]} : {versiones:d.versiones||[]}; render(); }); return '<div class="card"><p class="muted">Cargando tus preferencias…</p></div>'; }
+  if(st.cargando) return '<div class="card"><p class="muted">Cargando tus preferencias…</p></div>';
+  const abierto = rep.estado==="abierto";
+  const borr = (ui.petBorr = ui.petBorr || {});
+  if(!borr[rep.id]) borr[rep.id] = repVigente(st.versiones).slice();
+  return viewRepEditor(rep, yo.id, borr[rep.id], st, abierto, "Tus preferencias · "+esc(yo.name));
+}
+// Editor de preferencias (el del compañero, o el del coordinador en nombre de alguien)
+function viewRepEditor(rep, pid, sel, st, puede, titulo){
+  const est = 'padding:7px;border:1px solid var(--slate-300);border-radius:8px';
+  const libres = repOpciones(rep).filter(o=>sel.indexOf(o.id)<0);
+  let h = '<div class="card" id="pet-editor"><h2>'+titulo+'</h2>';
+  if(rep.publicado && rep.publicado.asig && rep.publicado.asig[pid]) h += '<p style="margin-top:4px;font-size:14px;color:var(--emerald-700)">Asignado: <b>'+esc(repOpcionTxt(rep, rep.publicado.asig[pid]))+'</b></p>';
+  if(st && st.error) h += '<div class="warnbox" style="margin-top:8px">'+esc(st.error)+'</div>';
+  h += '<p class="muted" style="margin-top:4px;font-size:13px">'+(puede ? 'Ordénalas de mayor a menor preferencia. Puedes cambiarlas mientras la recepción esté abierta; vale siempre la última que envíes.' : 'La recepción de solicitudes de este reparto no está abierta.')+'</p>';
+  h += sel.length ? '<ol style="margin:8px 0 0 20px;padding:0">'+sel.map((id,i)=>'<li style="padding:4px 0;font-size:14px"><span class="row between" style="gap:6px;align-items:center"><span>'+esc(repOpcionTxt(rep,id))+'</span>'+
+      (puede ? '<span class="row" style="gap:4px"><button class="btn" data-action="pet-sel-mover" data-rep="'+rep.id+'" data-i="'+i+'" data-d="-1" style="padding:2px 8px"'+(i===0?' disabled':'')+'>▲</button>'+
+        '<button class="btn" data-action="pet-sel-mover" data-rep="'+rep.id+'" data-i="'+i+'" data-d="1" style="padding:2px 8px"'+(i===sel.length-1?' disabled':'')+'>▼</button>'+
+        '<button class="btn" data-action="pet-sel-quitar" data-rep="'+rep.id+'" data-i="'+i+'" style="padding:2px 8px">Quitar</button></span>' : '')+'</span></li>').join("")+'</ol>'
+    : '<p class="muted" style="margin-top:8px;font-size:14px">Ninguna opción elegida.</p>';
+  if(puede){
+    h += (libres.length ? '<div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap"><select data-field="pet-anadir" data-rep="'+rep.id+'" style="flex:1;min-width:200px;'+est+'"><option value="">— Añadir una opción —</option>'+
+        libres.map(o=>'<option value="'+esc(o.id)+'">'+esc(repOpcionTxt(rep,o.id))+'</option>').join("")+'</select></div>' : '')+
+      '<div class="row" style="margin-top:10px"><button class="btn primary" style="flex:1" data-action="pet-enviar" data-rep="'+rep.id+'" data-pid="'+pid+'"'+(sel.length?'':' disabled')+'>Enviar preferencias</button></div>';
+  }
+  if(ui.petMsg) h += '<p style="margin-top:8px;font-size:13px">'+esc(ui.petMsg)+'</p>';
+  const vers = (st && st.versiones) || [];
+  if(vers.length){
+    h += '<details style="margin-top:10px"><summary style="cursor:pointer;font-size:13px">Historial ('+vers.length+' versión'+(vers.length>1?'es':'')+')</summary>'+
+      vers.slice().reverse().map(v=>'<div style="font-size:12px;padding:5px 0;border-bottom:1px solid var(--slate-100)"><b>'+(v.vigente?'Vigente':'Sustituida')+'</b> · '+
+        new Date(v.at).toLocaleString("es-ES",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})+(v.por?' · por '+esc(v.por):'')+'<br>'+
+        (v.opciones||[]).map((id,i)=>(i+1)+'. '+esc(repOpcionTxt(rep,id))).join("<br>")+'</div>').join("")+'</details>';
+  }
+  return h+'</div>';
+}
+function viewRepartoAdmin(rep){
+  const est = 'padding:6px;border:1px solid var(--slate-300);border-radius:6px;font-size:13px';
+  let h = '';
+  // Estado
+  h += '<div class="card"><h2>Estado</h2><div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">'+
+    (rep.estado==="config"||rep.estado==="cerrado" ? '<button class="btn primary" data-action="pet-estado" data-rep="'+rep.id+'" data-e="abierto">Abrir solicitudes</button>' : '')+
+    (rep.estado==="abierto" ? '<button class="btn" data-action="pet-estado" data-rep="'+rep.id+'" data-e="cerrado">Cerrar solicitudes</button>' : '')+
+    (rep.estado!=="config" && rep.estado!=="publicado" ? '<button class="btn" data-action="pet-estado" data-rep="'+rep.id+'" data-e="config">Volver a configuración</button>' : '')+
+    '<button class="btn" data-action="pet-cargar" data-rep="'+rep.id+'">Ver solicitudes recibidas</button>'+
+    '<button class="btn primary" data-action="pet-ejecutar" data-rep="'+rep.id+'">Ejecutar reparto (vista previa)</button></div>'+
+    (ui.petMsg ? '<p style="margin-top:8px;font-size:13px">'+esc(ui.petMsg)+'</p>' : '')+'</div>';
+  // Solicitudes recibidas
+  const todas = (ui.petTodas||{})[rep.id];
+  if(todas){
+    h += '<div class="card"><h2>Solicitudes recibidas</h2>'+(rep.orden||[]).map(pid=>{
+      const v = todas[pid] || []; const vig = repVigente(v);
+      return '<div style="padding:6px 0;border-bottom:1px solid var(--slate-100);font-size:13px"><div class="row between" style="gap:6px;align-items:center"><b>'+esc(repNombre(pid))+'</b>'+
+        '<button class="btn" data-action="pet-editar-por" data-rep="'+rep.id+'" data-pid="'+pid+'" style="padding:2px 8px">Editar en su nombre</button></div>'+
+        (vig.length ? vig.map((id,i)=>(i+1)+'. '+esc(repOpcionTxt(rep,id))).join(" · ") : '<span class="muted">Sin preferencias</span>')+
+        (v.length>1 ? ' <span class="tiny muted">('+v.length+' versiones)</span>' : '')+'</div>';
+    }).join("")+'</div>';
+  }
+  if(ui.petPor && ui.petPor.rep===rep.id){
+    const pp = ui.petPor;
+    h += viewRepEditor(rep, pp.pid, pp.sel, {versiones:pp.versiones||[]}, true, "Preferencias de "+esc(repNombre(pp.pid))+" (las introduce el coordinador)");
+  }
+  // Vista previa y versiones
+  const ejs = rep.ejecuciones || [];
+  if(ejs.length){
+    const i = (ui.petVer && ui.petVer[rep.id]!==undefined) ? ui.petVer[rep.id] : ejs.length-1;
+    const ej = ejs[i];
+    const conf = repConflictos(rep, ej);
+    h += '<div class="card" id="pet-previa"><div class="row between" style="align-items:center;gap:8px;flex-wrap:wrap"><h2>Versión '+(i+1)+' de '+ejs.length+(ej.publicada?' · publicada':'')+'</h2>'+
+      '<select data-field="pet-ver" data-rep="'+rep.id+'" style="'+est+'">'+ejs.map((x,j)=>'<option value="'+j+'"'+(j===i?" selected":"")+'>Versión '+(j+1)+' · '+
+        new Date(x.at).toLocaleString("es-ES",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})+(x.publicada?' (publicada)':'')+'</option>').join("")+'</select></div>'+
+      '<p class="muted" style="font-size:12px;margin-top:2px">Orden usado: '+(ej.orden||[]).map(repNombre).map(esc).join(" · ")+'</p>'+
+      '<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px">'+(ej.orden||[]).map(pid=>{
+        const a = ej.asig[pid]; const pe = (ej.pendientes||[]).find(x=>x.pid===pid);
+        if(pid===EXT_ID && !a && !pe) return '';
+        return '<tr style="border-bottom:1px solid var(--slate-100)"><td style="padding:4px"><b>'+esc(repNombre(pid))+'</b></td><td style="padding:4px">'+
+          (a ? esc(repOpcionTxt(rep,a)) : '<span style="color:var(--rose-700)">Pendiente: '+esc(pe?pe.motivo:"")+'</span>')+'</td><td style="padding:4px;text-align:right">'+
+          (a ? '<button class="btn" data-action="pet-quitar-asig" data-rep="'+rep.id+'" data-v="'+i+'" data-pid="'+pid+'" style="padding:2px 8px">Quitar</button>'
+             : ((ej.libres||[]).length ? '<select data-field="pet-asignar" data-rep="'+rep.id+'" data-v="'+i+'" data-pid="'+pid+'" style="'+est+'"><option value="">Asignar a mano…</option>'+
+                 ej.libres.map(id=>'<option value="'+esc(id)+'">'+esc(repOpcionTxt(rep,id))+'</option>').join("")+'</select>' : ''))+'</td></tr>';
+      }).join("")+'</table>'+
+      ((ej.libres||[]).length ? '<p style="font-size:13px;margin-top:8px">Sin asignar: '+ej.libres.map(id=>esc(repOpcionTxt(rep,id))).join(" · ")+'</p>' : '')+
+      (conf.length ? '<div class="warnbox" style="margin-top:8px"><b>Conflictos a revisar</b> (no impiden publicar):<br>'+conf.map(esc).join("<br>")+'</div>' : '<p style="font-size:13px;margin-top:8px;color:var(--emerald-700)">✓ Sin conflictos con el cuadrante.</p>')+
+      ((ej.ajustes||[]).length ? '<p class="muted" style="font-size:12px;margin-top:6px">Ajustes manuales: '+ej.ajustes.map(x=>esc(x)).join(" · ")+'</p>' : '')+
+      (function(){ const pl = repPlanPublicar(rep, ej); const l = [];
+        if(pl.quitar.length) l.push('<b>Al publicar se quitarán '+pl.quitar.length+' guardias anteriores</b> de esos días: '+pl.quitar.map(x=>esc(x.txt)).join(" · "));
+        if(pl.omitir.length) l.push('<b>No se escribirán</b> (ausencia): '+pl.omitir.map(esc).join(" · "));
+        if(pl.pisar.length) l.push('<b>Sustituyen una consulta</b>: '+pl.pisar.map(esc).join(" · "));
+        return l.length ? '<div class="warnbox" style="margin-top:8px;font-size:12px">'+l.join("<br>")+'</div>' : ''; })()+
+      '<div class="row" style="margin-top:10px;gap:6px;flex-wrap:wrap"><button class="btn primary" data-action="pet-publicar" data-rep="'+rep.id+'" data-v="'+i+'">'+(ej.publicada?'Volver a publicar esta versión':'Publicar esta versión')+'</button></div>'+
+      '<p class="muted" style="font-size:12px;margin-top:6px">Al publicar, las guardias se escriben en el cuadrante (también las fijas de URG) y el generador no las tocará. El resultado lo ve todo el equipo, sin las preferencias.</p></div>';
+  }
+  // Configuración
+  const editable = rep.estado==="config";
+  h += '<div class="card"><h2>Configuración</h2><p class="muted" style="font-size:12px;margin-top:2px">'+
+    (editable ? 'Fechas con formato dd/mm/aaaa, separadas por comas.' : 'Las fechas y opciones solo se cambian en configuración (antes de abrir las solicitudes). Las coberturas fijas de URG se pueden cambiar hasta publicar.')+'</p>';
+  (rep.bloques||[]).forEach((b,bi)=>{
+    h += '<div style="margin-top:12px;padding:8px;border:1px solid var(--slate-200);border-radius:8px">'+
+      (editable ? '<input type="text" data-field="pet-b-nombre" data-rep="'+rep.id+'" data-b="'+bi+'" value="'+esc(b.nombre)+'" style="'+est+';width:60%"> ' : '<b>'+esc(b.nombre)+'</b> ')+
+      (editable ? '<button class="btn" data-action="pet-b-quitar" data-rep="'+rep.id+'" data-b="'+bi+'" style="padding:2px 8px">Quitar bloque</button>' : '')+
+      '<p class="tiny" style="margin-top:8px">Coberturas fijas de URG</p>'+
+      (rep.estado!=="publicado" ? '<input type="text" data-field="pet-b-fijas" data-rep="'+rep.id+'" data-b="'+bi+'" value="'+esc((b.fijas||[]).map(fmtDate).join(", "))+'" placeholder="ninguna" style="'+est+';width:100%">'
+        : '<p style="font-size:13px">'+((b.fijas||[]).map(repDia).join(" · ")||"ninguna")+'</p>')+
+      '<p class="tiny" style="margin-top:8px">Opciones</p>'+
+      (b.opciones||[]).map((o,oi)=>'<div class="row" style="gap:6px;margin-top:4px;align-items:center;flex-wrap:wrap">'+
+        (editable ? '<input type="text" data-field="pet-o-fechas" data-rep="'+rep.id+'" data-b="'+bi+'" data-o="'+oi+'" value="'+esc(o.fechas.map(fmtDate).join(", "))+'" style="'+est+';flex:1;min-width:200px">'+
+          (rep.tipo==="fechas" ? '<select data-field="pet-o-etq" data-rep="'+rep.id+'" data-b="'+bi+'" data-o="'+oi+'" style="'+est+'"><option value="festivo"'+(o.etiqueta==="festivo"?" selected":"")+'>festivo</option><option value="jornada normal"'+(o.etiqueta==="jornada normal"?" selected":"")+'>jornada normal</option></select>' : '')+
+          '<button class="btn" data-action="pet-o-quitar" data-rep="'+rep.id+'" data-b="'+bi+'" data-o="'+oi+'" style="padding:2px 8px">Quitar</button>'
+          : '<span style="font-size:13px">'+o.fechas.map(repDia).join(" + ")+(o.etiqueta?' ('+esc(o.etiqueta)+')':'')+'</span>')+'</div>').join("")+
+      (editable ? '<button class="btn" data-action="pet-o-anadir" data-rep="'+rep.id+'" data-b="'+bi+'" style="margin-top:6px;padding:3px 9px">Añadir opción</button>' : '')+'</div>';
+  });
+  if(editable) h += '<button class="btn" data-action="pet-b-anadir" data-rep="'+rep.id+'" style="margin-top:10px">Añadir bloque</button>';
+  const prob = repProblemasConfig(rep);
+  if(prob.length) h += '<div class="warnbox" style="margin-top:10px">'+prob.map(esc).join("<br>")+'</div>';
+  return h+'</div>';
+}
+// Fechas escritas a mano: «27/02/2027, 1/3/2027»
+function repLeerFechas(txt, anio){
+  const out = [];
+  String(txt||"").split(/[,;\s]+/).forEach(t=>{
+    const m = t.trim().match(/^(\d{1,2})[\/.-](\d{1,2})(?:[\/.-](\d{2,4}))?$/); if(!m) return;
+    let y = m[3] ? Number(m[3]) : anio; if(y < 100) y += 2000;
+    const k = y+"-"+pad(Number(m[2]))+"-"+pad(Number(m[1]));
+    if(out.indexOf(k)<0) out.push(k);
+  });
+  return out.sort();
+}
+
 function viewSolicitudes(){
-  if(MODE==="viewer"){
+  if(MODE==="viewer" && !esAdministrativo()){
+    const segV = '<div class="seg no-print" style="margin-bottom:10px">'+
+      '<button class="'+(ui.solModo!=="peticiones"?"on":"")+'" data-action="sol-modo" data-modo="cambios">Cambios</button>'+
+      '<button class="'+(ui.solModo==="peticiones"?"on":"")+'" data-action="sol-modo" data-modo="peticiones">Peticiones</button></div>';
+    if(ui.solModo==="peticiones") return segV + viewPeticiones();
+    return segV + viewSolicitudesFacultativo();
+  }
+  if(MODE==="viewer") return viewSolicitudesFacultativo();
+  return viewSolicitudesCoord();
+}
+function viewSolicitudesFacultativo(){
+  {
     if(!ui.reqModal || !ui.reqModal.tab){
       const n = new Date();
       ui.reqModal = {tab:true, pid:(state.physicians[0]||{}).id, date: keyOf(n.getFullYear(), n.getMonth(), n.getDate())};
@@ -6271,6 +6702,8 @@ function viewSolicitudes(){
     }
     return h;
   }
+}
+function viewSolicitudesCoord(){
   const rv = ui.reviewTab || (ui.reviewTab={});
   // El administrador puede alternar entre revisar las recibidas y aplicar un cambio él mismo
   if(ui.reqSub===undefined) ui.reqSub = "revisar";
@@ -6280,7 +6713,9 @@ function viewSolicitudes(){
   const pend = bandejaPendientes();
   let h = '<div class="seg no-print" style="margin-bottom:10px">'+
     '<button class="'+(ui.reqSub==="revisar"?"on":"")+'" data-action="req-sub-revisar">Bandeja'+(pend.length?' ('+pend.length+')':'')+'</button>'+
-    '<button class="'+(ui.reqSub==="crear"?"on":"")+'" data-action="req-sub-crear">Aplicar un cambio</button></div>';
+    '<button class="'+(ui.reqSub==="crear"?"on":"")+'" data-action="req-sub-crear">Aplicar un cambio</button>'+
+    '<button class="'+(ui.reqSub==="peticiones"?"on":"")+'" data-action="req-sub-peticiones">Peticiones</button></div>';
+  if(ui.reqSub==="peticiones") return h + viewPeticiones();
 
   if(ui.reqSub==="crear"){
     if(!ui.reqModal || !ui.reqModal.tab){
@@ -6806,11 +7241,11 @@ function viewCuadrante(){
 
   state.physicians.forEach(p=>{
     const esMia = (typeof miFacultativo==="function") && miFacultativo() && miFacultativo().id===p.id;
-    html += '<tr'+(esMia?' class="miFila"':'')+'><td class="namecol"><b>'+esc(p.name)+'</b>'+(p.pct<100?' <span class="muted">('+p.pct+'%)</span>':'')+'</td>';
+    html += '<tr'+(esMia?' class="miFila"':'')+'><td class="namecol"><b>'+esc(p.name)+'</b>'+(pctVisible(p)<100?' <span class="muted">('+pctVisible(p)+'%)</span>':'')+'</td>';
     days.forEach(d=>{
       const a = state.assignments[p.id+"|"+d.key];
       // Bloqueo por turno: cada mitad de la celda se sombrea por separado
-      const blocM = bloqueaM(p, d.dow), blocT = bloqueaT(p, d.dow);
+      const blocM = bloqueaM(p, d.dow, d.key), blocT = bloqueaT(p, d.dow, d.key);
       const blocked = blocM || blocT;                 // el día tiene algún turno bloqueado
       const noDisp = esDiaLibre(p.id, d.key);
       const base = d.holiday?"base-fest":(d.dow===0||d.dow===6?"base-wknd":"base-lab");
@@ -7033,7 +7468,7 @@ function viewEquipo(){
   if(MODE==="viewer"){
     let h='<div class="card"><h2>Equipo médico</h2><p class="muted" style="margin-top:2px">Modo consulta.</p><div style="margin-top:8px">';
     state.physicians.forEach(p=>{
-      h+='<div style="padding:6px 0;border-bottom:1px solid var(--slate-100);font-size:14px"><b>'+esc(p.name)+'</b><span class="muted"> · '+p.pct+'%'+
+      h+='<div style="padding:6px 0;border-bottom:1px solid var(--slate-100);font-size:14px"><b>'+esc(p.name)+'</b><span class="muted"> · '+pctVisible(p)+'%'+
         (p.noUrg?' · sin URG':'')+
         (p.noUrgf?' · sin URGF':'')+
         (p.noRhb?' · sin RHB':'')+
@@ -7067,6 +7502,8 @@ function viewEquipo(){
       '<button class="icon" data-action="del-phys" data-pid="'+p.id+'" title="Eliminar">🗑</button></div>'+
       (Array.isArray(p.pctTramos)&&p.pctTramos.length
         ? '<div class="tiny muted" style="margin-left:26px;margin-top:2px">Jornada: '+p.pct+'% al inicio · '+esc(tramosTexto(p))+'</div>' : '')+
+      (tramoVigente(p, state.year+"-"+pad(ui.month+1)) ? '<div class="tiny muted" style="margin-left:26px;margin-top:2px">Días sin trabajar de '+MONTHS[ui.month]+' '+state.year+
+        ': los del cambio de jornada vigente ('+pctVisible(p)+'%). Para los meses anteriores, cambia de mes.</div>' : '')+
       '<div class="row" style="margin-top:6px;margin-left:26px"><span class="tiny" style="margin-right:4px;min-width:64px">No trabaja:</span>'+
       '<span class="tiny" style="margin-right:3px;opacity:.7">M</span>'+
       [1,2,3,4,5].map(dow=>'<button class="dowbtn'+(bloqueaM(p,dow)?" on":"")+'" data-action="toggle-block" data-pid="'+p.id+'" data-dow="'+dow+'" data-slot="m" title="Mañana del '+WD[dow]+'">'+WD[dow]+'</button>').join("")+
@@ -7584,11 +8021,13 @@ function renderModal(){
         '<b style="font-size:17px">Cambios de jornada · '+esc(p.name)+'</b>'+
         '<p class="muted" style="margin-top:6px;font-size:13px">Su jornada de partida es del <b>'+p.pct+'%</b>. '+
         'Añade aquí los cambios con la fecha en que empiezan a aplicarse. Cada mes se calculará con la jornada vigente entonces.</p>'+
+        '<p class="muted" style="margin-top:6px;font-size:13px">Los días sin trabajar van con cada cambio: uno al 100 % empieza sin ninguno. Para ajustarlos, abre Equipo con un mes de ese periodo a la vista.</p>'+
         (tramos.length
           ? '<div style="margin-top:10px">'+tramos.map((t,i)=>{
               const pr=String(t.desde).split("-");
               return '<div class="row between" style="align-items:center;padding:6px 0;border-bottom:1px solid var(--slate-100)">'+
-                '<span style="font-size:14px">Desde <b>'+MONTHS[Number(pr[1])-1]+' '+pr[0]+'</b>: <b>'+t.pct+'%</b></span>'+
+                '<span style="font-size:14px">Desde <b>'+MONTHS[Number(pr[1])-1]+' '+pr[0]+'</b>: <b>'+t.pct+'%</b>'+
+                  (function(){ const r = resumenBloqueos(p, t.desde); return '<br><span class="tiny muted">No trabaja: '+(r.length ? r.join(", ") : "ningún día")+'</span>'; })()+'</span>'+
                 '<button class="btn" data-action="tramo-borrar" data-pid="'+p.id+'" data-i="'+i+'" style="padding:3px 9px;font-size:12px">Quitar</button>'+
               '</div>';
             }).join("")+'</div>'
@@ -7680,7 +8119,7 @@ function renderModal(){
     const p = state.physicians.find(x=>x.id===pid)||{name:"",blocked:[]};
     const a = state.assignments[pid+"|"+date]||{};
     const dow = new Date(date).getDay();
-    const blocked = bloqueaDia(p, dow);
+    const blocked = bloqueaDia(p, dow, date);
     const opt = (code,txt,cls,active)=>'<button class="chip '+cls+(active?" on":"")+'" data-action="pick" data-code="'+code+'">'+txt+'</button>';
     root.innerHTML = '<div class="overlay" data-action="close-modal"><div class="modal" data-stop="1">'+
       '<div class="row between"><div><b>'+esc(p.name)+'</b><div class="muted" style="font-size:12px">'+fmtDate(date)+'</div></div>'+
@@ -7876,7 +8315,7 @@ function exportCSV(){
     const a = state.assignments[p.id+"|"+k];
     if(!a){
       const dow = new Date(k).getDay();
-      if(bloqueaDia(p, dow)) return "BLOQ";
+      if(bloqueaDia(p, dow, k)) return "BLOQ";
       return hmap[k]?"F":"";
     }
     if(a.f) return a.f;
@@ -7913,6 +8352,7 @@ function importBackup(file){
       state.historial = d.historial||{};
       state.cerradoAdm = d.cerradoAdm||{};
       state.archivado = d.archivado||{};
+      state.repartos = (d.repartos && typeof d.repartos==="object") ? d.repartos : {};
       state.cambiosAdm = d.cambiosAdm||{};
       state.avisosTrafico = Array.isArray(d.avisosTrafico) ? d.avisosTrafico : [];
       state.buzon = Object.assign({url:"",claveEnvio:"",claveCalendario:""}, d.buzon||{});
@@ -8109,6 +8549,7 @@ function generateMonth(mode){
       state.physicians.forEach(p=>{
         const k=p.id+"|"+d.key; const a=state.assignments[k];
         if(!a) return;
+        if(a.rep) return;                            // v183: guardia de un reparto publicado: no se toca
         if(esManual(a.m) || esManual(a.t)){
           // Tráfico y ADM se asignan a mano: se conservan al regenerar
           const c = {m: esManual(a.m)?a.m:null, t: esManual(a.t)?a.t:null, f:null};
@@ -8125,7 +8566,7 @@ function generateMonth(mode){
   // No disponible: ausencia marcada o día libre solicitado por el facultativo
   const notAbsent = (p,date)=>{ const a=getA(p.id,date); return !(a&&a.f) && !esDiaLibre(p.id,date); };
   // Bloqueo por turno: "m" mañana, "t" tarde, "f" día completo (guardias)
-  const blockedOn = (p,d,slot)=> bloqueaTurno(p, d.dow, slot||"m");
+  const blockedOn = (p,d,slot)=> bloqueaTurno(p, d.dow, slot||"m", d.key);
   // Una tarde solo se asigna a quien YA tiene consulta esa mañana: nunca una tarde suelta.
   const tieneManana = (p, dkey)=>{ const a = getA(p.id, dkey); return !!(a && a.m); };
   // RHBT (rehabilitación de tarde): solo para quien tenga RHB1 o RHB2 como consulta habitual
@@ -8267,7 +8708,8 @@ function generateMonth(mode){
     // Techo (no redondeo): un 25% con 5 laborables => 1,25 => tope 2. Así una semana puede llevar
     // 2 y otra 1, promediando su 25% real. Si se redondeara a 1 nunca alcanzaría su contrato mensual.
     // El límite efectivo lo pone el objetivo del mes (proporcional exacto al contrato).
-    return Math.ceil(lab * ((p&&p.pct)||100)/100 - 1e-9);
+    // v183: con el % vigente ese mes (antes usaba el de partida y frenaba los cambios de jornada)
+    return Math.ceil(lab * (p ? pctDe(p, Number(dkey.slice(5,7))-1, Number(dkey.slice(0,4))) : 100)/100 - 1e-9);
   };
   // ¿Añadir 'add' turnos ese día dejaría al facultativo por encima de su tope semanal?
   const weekFull = (p, dkey, add)=> (weekTurnos(p.id, dkey) + add) > weekCap(p.id, dkey);
@@ -8307,7 +8749,7 @@ function generateMonth(mode){
   if(urgReq){
     const cfgExt = extCfg();
     extInf.activa = allDays.some(d=>extActiva(d.key, cfgExt));
-    if(mode==="regen") allDays.forEach(d=>{ if(state.assignments[EXT_ID+"|"+d.key]){ delete state.assignments[EXT_ID+"|"+d.key]; cleared++; } });
+    if(mode==="regen") allDays.forEach(d=>{ const aE = state.assignments[EXT_ID+"|"+d.key]; if(aE && !aE.rep){ delete state.assignments[EXT_ID+"|"+d.key]; cleared++; } });
     const deEquipo = dk => state.physicians.find(p=>esUrgencia(getA(p.id,dk)));
     allDays.forEach(d=>{
       if(extTurno(d.key, cfgExt).quien!=="EXT" || extGuardiaEn(d.key)) return;
@@ -8325,7 +8767,7 @@ function generateMonth(mode){
         if(!cand.length){
           extInf.pendiente = "Todos los fines de semana del mes en que EXT está activa ya tienen guardia: elige tú el día.";
         }else{
-          const disp = d => state.physicians.filter(p=>!p.noUrgf && puedeUrgencia(p,d.key) && !bloqueaGuardia(p,d.dow) && notAbsent(p,d.key) && freeM(p,d.key) && freeT(p,d.key)).length;
+          const disp = d => state.physicians.filter(p=>!p.noUrgf && puedeUrgencia(p,d.key) && !bloqueaGuardia(p,d.dow,d.key) && notAbsent(p,d.key) && freeM(p,d.key) && freeT(p,d.key)).length;
           const medio = Math.ceil(allDays.length/2);
           cand.sort((a,b)=> disp(a)-disp(b) || Math.abs(a.n-medio)-Math.abs(b.n-medio));
           const elegido = cand[0];
@@ -8348,7 +8790,7 @@ function generateMonth(mode){
         if(d.holiday || d.dow===0 || d.dow===6) return;        // los festivos van al reparto normal
         if(!notAbsent(p, d.key)) return;                       // vacaciones, baja o permiso
         if(esDiaLibre(p.id, d.key)) return;                    // día de no disponibilidad
-        if(bloqueaGuardia(p, d.dow)) return;                   // no trabaja ese día
+        if(bloqueaGuardia(p, d.dow, d.key)) return;                   // no trabaja ese día
         const a = getA(p.id, d.key);
         if(a && (a.f || a.m || a.t)) return;                   // ya tiene algo puesto
         // Otro compañero (o EXT) ya cubre esa urgencia
@@ -8372,7 +8814,7 @@ function generateMonth(mode){
     urgfDias.forEach(d=>{
       const has = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&(a.f==="URG"||a.f==="URGF");}) || extGuardiaEn(d.key);
       if(has) return;   // ya asignado (por el generador, a mano o a EXT): se respeta
-      const libres = state.physicians.filter(p=> !p.noUrgf && puedeUrgencia(p,d.key) && !bloqueaGuardia(p,d.dow) && notAbsent(p,d.key) && freeM(p,d.key) && freeT(p,d.key));
+      const libres = state.physicians.filter(p=> !p.noUrgf && puedeUrgencia(p,d.key) && !bloqueaGuardia(p,d.dow,d.key) && notAbsent(p,d.key) && freeM(p,d.key) && freeT(p,d.key));
       if(!libres.length){ missing_push(unfilled,d.key,"URGF"); return; }
       // Preferencia ABSOLUTA por quien aún no tiene ninguna URGF este mes.
       // Solo si no queda nadie sin URGF se permite repetir (más festivos que adjuntos disponibles).
@@ -8757,6 +9199,7 @@ function resetMonth(all){
     const date = k.slice(k.indexOf("|")+1);
     if(date.indexOf(prefix)!==0) return;
     const a = state.assignments[k];
+    if(a && a.rep && !all) return;                   // v183: lo repartido solo se borra con «Borrar TODO»
     if(all || a.f==="URG" || a.f==="URGLV" || a.f==="URGF" || (a.f==="L"&&a.auto) || !a.f){ delete state.assignments[k]; n++; }
   });
   // La foto del mes también se descarta: si no, las estadísticas seguirían
@@ -9251,6 +9694,110 @@ document.addEventListener("click", e=>{
     }
     case "req-sub-revisar": ui.reqSub = "revisar"; render(); break;
     case "req-sub-crear": ui.reqSub = "crear"; render(); break;
+    case "req-sub-peticiones": ui.reqSub = "peticiones"; ui.petMsg = ""; render(); break;
+    case "sol-modo": ui.solModo = el.dataset.modo; ui.petMsg = ""; render(); break;
+    case "pet-sub": ui.petSub = el.dataset.sub; ui.petMsg = ""; render(); break;
+    case "pet-orden-mover": {
+      const rep = repartos()[el.dataset.rep]; if(!rep) break;
+      const i = Number(el.dataset.i), j = i + Number(el.dataset.d);
+      if(j<0 || j>=rep.orden.length) break;
+      const t = rep.orden[i]; rep.orden[i] = rep.orden[j]; rep.orden[j] = t;
+      repAnotarOrden(rep, "Movido a mano: "+repNombre(t)+" pasa al puesto "+(j+1));
+      save(); render(); break;
+    }
+    case "pet-orden-rotar": {
+      const rep = repartos()[el.dataset.rep]; if(!rep || !rep.orden.length) break;
+      if(!window.confirm("¿Rotar el orden? "+repNombre(rep.orden[0])+" pasa al último puesto y el resto sube uno.")) break;
+      rep.orden.push(rep.orden.shift());
+      repAnotarOrden(rep, "Rotación anual: el primero pasa al último");
+      save(); render(); break;
+    }
+    case "pet-sel-mover": case "pet-sel-quitar": {
+      const sel = (ui.petPor && ui.petPor.rep===el.dataset.rep) ? ui.petPor.sel : ((ui.petBorr||{})[el.dataset.rep]||[]);
+      const i = Number(el.dataset.i);
+      if(act==="pet-sel-quitar") sel.splice(i,1);
+      else { const j = i + Number(el.dataset.d); if(j>=0 && j<sel.length){ const t = sel[i]; sel[i] = sel[j]; sel[j] = t; } }
+      ui.petMsg = ""; render(); break;
+    }
+    case "pet-enviar": {
+      const rep = repartos()[el.dataset.rep]; if(!rep) break;
+      const pid = el.dataset.pid;
+      const porCoord = !!(ui.petPor && ui.petPor.rep===rep.id && ui.petPor.pid===pid);
+      const sel = porCoord ? ui.petPor.sel : ((ui.petBorr||{})[rep.id]||[]);
+      if(MODE!=="editor"){ const yo = miFacultativo(); if(!yo || yo.id!==pid){ window.alert("Solo puedes enviar tus propias preferencias."); break; } }
+      ui.petMsg = "Enviando…"; render();
+      repEnviar(rep.id, pid, sel.slice(), porCoord ? "coordinador" : ((miFacultativo()||{}).name||"")).then(d=>{
+        if(d.error){ ui.petMsg = "⚠ "+d.error; render(); return; }
+        ui.petMsg = "✓ Preferencias enviadas. Vale esta versión; las anteriores quedan en el historial.";
+        if(porCoord){ repLeerMia(rep.id, pid).then(x=>{ if(!x.error && ui.petPor) ui.petPor.versiones = x.versiones||[]; if(ui.petTodas && ui.petTodas[rep.id] && !x.error) ui.petTodas[rep.id][pid] = x.versiones||[]; render(); }); }
+        else { (ui.petMia = ui.petMia || {})[rep.id] = null; render(); }
+      });
+      break;
+    }
+    case "pet-estado": {
+      const rep = repartos()[el.dataset.rep]; if(!rep) break;
+      const e = el.dataset.e;
+      if(e==="abierto" && repProblemasConfig(rep).length && !window.confirm("La configuración tiene problemas (fechas repetidas o fijas ofrecidas). ¿Abrir igualmente?")) break;
+      if(e==="config"){ rep.estado = "config"; repEstadoServidor(rep.id, "cerrado"); save(); render(); break; }
+      ui.petMsg = "Actualizando…"; render();
+      repEstadoServidor(rep.id, e).then(d=>{
+        if(d.error){ ui.petMsg = "⚠ "+d.error; render(); return; }
+        rep.estado = e; ui.petMsg = e==="abierto" ? "✓ Solicitudes abiertas: tus compañeros ya pueden enviar sus preferencias." : "✓ Solicitudes cerradas.";
+        save(); render(); ghPublish(true);
+      });
+      break;
+    }
+    case "pet-cargar": case "pet-ejecutar": {
+      const rep = repartos()[el.dataset.rep]; if(!rep) break;
+      ui.petMsg = "Leyendo las solicitudes del servidor…"; render();
+      repLeerTodas(rep.id).then(d=>{
+        if(d.error){ ui.petMsg = "⚠ "+d.error; render(); return; }
+        (ui.petTodas = ui.petTodas || {})[rep.id] = d.peticiones || {};
+        if(act==="pet-ejecutar"){
+          const vig = {}; Object.keys(d.peticiones||{}).forEach(pid=>{ vig[pid] = repVigente(d.peticiones[pid]); });
+          rep.ejecuciones = rep.ejecuciones || [];
+          rep.ejecuciones.push(repEjecutar(rep, vig));
+          (ui.petVer = ui.petVer || {})[rep.id] = rep.ejecuciones.length-1;
+          if(rep.estado!=="publicado") rep.estado = "revision";
+          ui.petMsg = "✓ Reparto ejecutado: revisa la versión "+rep.ejecuciones.length+" antes de publicarla.";
+          save();
+        }else ui.petMsg = "";
+        render();
+      });
+      break;
+    }
+    case "pet-editar-por": {
+      const rep = repartos()[el.dataset.rep]; if(!rep) break;
+      const pid = el.dataset.pid; const v = ((ui.petTodas||{})[rep.id]||{})[pid] || [];
+      ui.petPor = {rep:rep.id, pid:pid, sel:repVigente(v).slice(), versiones:v}; ui.petMsg = ""; render(); break;
+    }
+    case "pet-quitar-asig": {
+      const rep = repartos()[el.dataset.rep]; const ej = rep && rep.ejecuciones[Number(el.dataset.v)]; if(!ej) break;
+      const pid = el.dataset.pid; const id = ej.asig[pid]; if(!id) break;
+      delete ej.asig[pid]; ej.libres = (ej.libres||[]).concat([id]);
+      ej.pendientes = (ej.pendientes||[]).concat([{pid:pid, motivo:"Quitado a mano en la revisión"}]);
+      ej.ajustes = (ej.ajustes||[]).concat([repNombre(pid)+": quitado "+repOpcionTxt(rep,id)]);
+      save(); render(); break;
+    }
+    case "pet-publicar": {
+      const rep = repartos()[el.dataset.rep]; if(!rep) break;
+      const v = Number(el.dataset.v); const ej = rep.ejecuciones[v];
+      const pend = (ej.pendientes||[]).length;
+      const plan = repPlanPublicar(rep, ej);
+      const lista = (t, l)=> l.length ? "\n\n"+t+" ("+l.length+"):\n· "+l.slice(0,15).join("\n· ")+(l.length>15?"\n· …":"") : "";
+      if(!window.confirm("¿Publicar la versión "+(v+1)+"?"+(pend?"\n\nQuedan "+pend+" pendientes sin asignar.":"")+
+        lista("Se quitarán estas guardias puestas antes en el cuadrante, para no duplicar", plan.quitar.map(x=>x.txt))+
+        lista("No se escribirán (esa persona está ausente ese día)", plan.omitir)+
+        lista("Ocupan un día en que tenía consulta", plan.pisar)+
+        "\n\nLas guardias se escribirán en el cuadrante y el equipo verá el resultado.")) break;
+      const err = repPublicar(rep, v);
+      if(err){ window.alert(err); break; }
+      ui.petMsg = "✓ Versión "+(v+1)+" publicada."; render(); ghPublish(true); break;
+    }
+    case "pet-b-anadir": { const rep = repartos()[el.dataset.rep]; if(!rep) break; rep.bloques.push({id:"b"+Date.now().toString(36), nombre:"Nuevo bloque", rango:"", fijas:[], nota:"", opciones:[]}); save(); render(); break; }
+    case "pet-b-quitar": { const rep = repartos()[el.dataset.rep]; if(!rep || !window.confirm("¿Quitar este bloque y sus opciones?")) break; rep.bloques.splice(Number(el.dataset.b),1); save(); render(); break; }
+    case "pet-o-anadir": { const rep = repartos()[el.dataset.rep]; const b = rep && rep.bloques[Number(el.dataset.b)]; if(!b) break; b.opciones.push({id:"o"+Date.now().toString(36), fechas:[], etiqueta: rep.tipo==="fechas" ? "festivo" : ""}); save(); render(); break; }
+    case "pet-o-quitar": { const rep = repartos()[el.dataset.rep]; const b = rep && rep.bloques[Number(el.dataset.b)]; if(!b) break; b.opciones.splice(Number(el.dataset.o),1); save(); render(); break; }
     case "req-aplicar-directo": {
       if(ui.reqBloqueo){ window.alert("No se puede aplicar:\n\n"+ui.reqBloqueo); break; }
       const txt = buildRequestText();
@@ -9928,7 +10475,8 @@ document.addEventListener("click", e=>{
     }
     case "toggle-block": {
       const pB = state.physicians.find(x=>x.id===el.dataset.pid);
-      if(pB){ toggleBloqueo(pB, Number(el.dataset.dow), el.dataset.slot||"m"); save(); render(); }
+      // v183: se editan los días que rigen en el mes que se está viendo (los del cambio de jornada, si lo hay)
+      if(pB){ toggleBloqueo(bloqueosEditables(pB), Number(el.dataset.dow), el.dataset.slot||"m"); save(); render(); }
       break;
     }
     case "toggle-block-viejo": {
@@ -10113,6 +10661,13 @@ document.addEventListener("change", e=>{
   // Campos que deben atenderse aunque el dispositivo esté en modo consulta
   if(campoLibre==="exp-pid"){ ui.expPid = el.value; render(); return; }
   if(campoLibre==="exp-mes"){ ui.expMes = Number(el.value); render(); return; }
+  // v183: añadir una opción a la lista de preferencias (compañeros en modo consulta y coordinador)
+  if(campoLibre==="pet-anadir"){
+    const repA = el.dataset.rep, idA = el.value; if(!idA) return;
+    const selA = (ui.petPor && ui.petPor.rep===repA) ? ui.petPor.sel : ((ui.petBorr = ui.petBorr || {})[repA] = (ui.petBorr[repA]||[]));
+    if(selA.indexOf(idA)<0) selA.push(idA);
+    ui.petMsg = ""; render(); return;
+  }
   const campoTf = el.dataset ? (el.dataset.field||"") : "";
   if(campoTf.indexOf("tfa-")===0 && (MODE!=="viewer" || esAdministrativo())){
     const t = ui.tfAdm = ui.tfAdm || {};
@@ -10182,6 +10737,23 @@ document.addEventListener("change", e=>{
   else if(field==="req-email"){ state.settings.reqEmail = el.value.trim(); save(); }
   else if(field==="req-phone"){ state.settings.reqPhone = el.value.replace(/[^0-9+ ]/g,"").trim(); save(); }
   else if(field==="he-mes"){ ui.heMes = Number(el.value); render(); }
+  else if(field==="pet-ver"){ (ui.petVer = ui.petVer || {})[el.dataset.rep] = Number(el.value); render(); }
+  else if(field==="pet-asignar"){
+    const rep = repartos()[el.dataset.rep]; const ej = rep && rep.ejecuciones[Number(el.dataset.v)]; const id = el.value; const pid = el.dataset.pid;
+    if(ej && id && (ej.libres||[]).indexOf(id)>=0 && !ej.asig[pid]){
+      ej.asig[pid] = id; ej.libres = ej.libres.filter(x=>x!==id); ej.pendientes = (ej.pendientes||[]).filter(x=>x.pid!==pid);
+      ej.ajustes = (ej.ajustes||[]).concat([repNombre(pid)+": asignado a mano "+repOpcionTxt(rep,id)]); save();
+    }
+    render();
+  }
+  else if(field==="pet-b-nombre" || field==="pet-b-fijas" || field==="pet-o-fechas" || field==="pet-o-etq"){
+    const rep = repartos()[el.dataset.rep]; const b = rep && rep.bloques[Number(el.dataset.b)]; if(!b) return;
+    if(field==="pet-b-nombre") b.nombre = el.value.trim() || b.nombre;
+    if(field==="pet-b-fijas") b.fijas = repLeerFechas(el.value, rep.anio);
+    if(field==="pet-o-fechas"){ const o = b.opciones[Number(el.dataset.o)]; if(o){ o.fechas = repLeerFechas(el.value, rep.anio); if(rep.tipo==="fechas" && o.fechas.length) o.id = o.fechas[0]; } }
+    if(field==="pet-o-etq"){ const o = b.opciones[Number(el.dataset.o)]; if(o) o.etiqueta = el.value; }
+    save(); render();
+  }
   else if(field==="ext-desde" || field==="ext-hasta"){
     const c = extCfg(); const pe = c.periodos[Number(el.dataset.i)];
     if(pe){ pe[field==="ext-desde"?"desde":"hasta"] = el.value || ""; extGuardar(c); render(); }
@@ -10240,6 +10812,7 @@ function applyPublished(d){
       state.historial = d.historial||{};
       state.cerradoAdm = d.cerradoAdm||{};
       state.archivado = d.archivado||{};
+      state.repartos = (d.repartos && typeof d.repartos==="object") ? d.repartos : {};
       state.cambiosAdm = d.cambiosAdm||{};
       state.avisosTrafico = Array.isArray(d.avisosTrafico) ? d.avisosTrafico : [];
   state.buzon = Object.assign({url:"",claveEnvio:"",claveCalendario:""}, d.buzon||{});
