@@ -105,6 +105,8 @@
   .dayhead.rotoff{background:#475569; color:#fff}
   .k-urg{background:#fbbf24; color:#451a03; font-weight:600}
   .k-urgf{background:#fb923c; color:#431407; font-weight:600}
+  .k-ext{background:#111827; color:#f9fafb; font-weight:700}
+  tr.extrow td.namecol{background:#111827; color:#f9fafb}
   .k-alru{background:#c4b5fd; color:#2e1065}
   .k-ort{background:#a97142; color:#ffffff}
   .k-rxint{background:#7c3aed; color:#ffffff}
@@ -629,7 +631,8 @@ function guardarHistorial(mo){
     rotantes: filtrarPorFecha(state.rotantes, true),
     rotantesLeyenda: JSON.parse(JSON.stringify(state.rotantesLeyenda||{})),
     traficoHoras: filtrarPorFecha(state.traficoHoras, true),
-    diasLibres: filtrarPorFecha(state.diasLibres, false)
+    diasLibres: filtrarPorFecha(state.diasLibres, false),
+    ext: extResumenMes(state.year, mo)          // v182: si EXT estaba activa, cadencia, excepciones, coberturas y URGF
   };
 }
 function borrarHistorial(mo){
@@ -1249,8 +1252,8 @@ function codeMapFor(days){
   Object.entries(state.assignments).forEach(([k,a])=>{
     const i = k.indexOf("|"); const pid=k.slice(0,i), date=k.slice(i+1);
     if(!map[date]) return;
-    const p = physById[pid]; if(!p) return;
-    [a.m, a.t, (a.f==="URG"||a.f==="URGLV"||a.f==="URGF")?a.f:null].forEach(c=>{
+    const p = pid===EXT_ID ? {name:"EXT"} : physById[pid]; if(!p) return;
+    [pid===EXT_ID?null:a.m, pid===EXT_ID?null:a.t, (a.f==="URG"||a.f==="URGLV"||a.f==="URGF")?a.f:null].forEach(c=>{
       if(!c) return;
       (map[date][c]=map[date][c]||[]).push(p.name);
     });
@@ -1369,7 +1372,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v181";
+const APP_VERSION = "v182";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2200,6 +2203,7 @@ function applyRequestCore(r){
     const slot = (r.part||"").split(":")[0] || "m";
     const code = r.part ? r.part.slice(r.part.indexOf(":")+1) : "";
     if(!code) return "No se indica qué se cede.";
+    { const motivo = cadenaPerfil(pb, code); if(motivo) return pb.name+" "+motivo+"."; }   // v182: también al aprobar
     const dest = Object.assign({}, state.assignments[kB]||{});
     if(slot==="f"){
       if(dest.m||dest.t||dest.f) return "Quien la recibe ya tiene "+cellToText(dest)+" ese día.";
@@ -2306,6 +2310,10 @@ function applyRequestCore(r){
     const kBA = pb.id+"|"+r.dateA, kAB = pa.id+"|"+r.dateB;
     const cellA = state.assignments[kA] ? JSON.parse(JSON.stringify(state.assignments[kA])) : null;
     const cellB = state.assignments[kB] ? JSON.parse(JSON.stringify(state.assignments[kB])) : null;
+    // v182: cada uno solo recibe lo que su perfil le permite (también al aprobar, no solo en el formulario)
+    for(const [quien, celda] of [[pb, cellA], [pa, cellB]]){
+      for(const c of [celda&&celda.m, celda&&celda.t, celda&&celda.f]){ const motivo = c ? cadenaPerfil(quien, c) : ""; if(motivo) return quien.name+" "+motivo+"."; }
+    }
     if(cellA) state.assignments[kBA] = cellA; else delete state.assignments[kBA];
     if(cellB) state.assignments[kAB] = cellB; else delete state.assignments[kAB];
     if(kA!==kAB && kA!==kBA) delete state.assignments[kA];
@@ -4189,7 +4197,7 @@ function validarIntercambio(pidA, dateA, pidB, dateB){
   // ¿Quien recibe puede hacer esa consulta?
   const noPuedeHacer = (quien, cod)=>{
     if(!cod) return null;
-    if((cod==="RHB1"||cod==="RHB2") && quien.noRhb) return "no hace RHB";
+    if(/^RHBT?[12]?$/.test(cod) && cod!=="RHBT0" && quien.noRhb) return "no hace RHB";   // incluye las de tarde (v182)
     if(cod==="ALRU" && quien.noAlru) return "no hace ALRU";
     if(cod==="ALINTER" && quien.noInt) return "no hace ALINTER";
     if(cod==="ORT" && quien.noOrt) return "no hace ORT";
@@ -4315,7 +4323,7 @@ function validarDoble(pidA, pidB, pares){
   const avisos = [], reducciones = [];
   const noPuedeHacer = (quien, cod)=>{
     if(!cod) return null;
-    if((cod==="RHB1"||cod==="RHB2") && quien.noRhb) return "no hace RHB";
+    if(/^RHBT?[12]?$/.test(cod) && cod!=="RHBT0" && quien.noRhb) return "no hace RHB";   // incluye las de tarde (v182)
     if(cod==="ALRU" && quien.noAlru) return "no hace ALRU";
     if(cod==="ALINTER" && quien.noInt) return "no hace ALINTER";
     if(cod==="ORT" && quien.noOrt) return "no hace ORT";
@@ -4453,7 +4461,7 @@ function validarCesion(pidA, fecha, part, pidB){
   if(bloqueaTurno(pb, dow, slot)) avisarReduccion(pb, dow, slot);
   // Tarde sin mañana: permitida en cambios pactados
   // ¿puede hacerla?
-  if((code==="RHB1"||code==="RHB2") && pb.noRhb) return esc(pb.name)+" no hace RHB.";
+  if(/^RHBT?[12]?$/.test(code) && pb.noRhb) return esc(pb.name)+" no hace RHB.";   // incluye las de tarde (v182)
   if(code==="ALRU" && pb.noAlru) return esc(pb.name)+" no hace ALRU.";
   if(code==="ALINTER" && pb.noInt) return esc(pb.name)+" no hace ALINTER.";
   if(code==="ORT" && pb.noOrt) return esc(pb.name)+" no hace ORT.";
@@ -4598,6 +4606,10 @@ function simularIntercambioConsultas(pidA, fA, slotA, pidB, fB, slotB, moverDesp
   };
   if(!codA) return {error:esc(pa.name)+" no tiene consulta de "+(slotA==="t"?"tarde":"mañana")+" el "+fmtDate(fA)+": "+queTiene(celdaA, slotA)+"."};
   if(!codB) return {error:esc(pb.name)+" no tiene consulta de "+(slotB==="t"?"tarde":"mañana")+" el "+fmtDate(fB)+": "+queTiene(celdaB, slotB)+"."};
+  // v182: cada uno solo puede recibir una consulta que su perfil le permita
+  { const nA = cadenaPerfil(pa, codB), nB = cadenaPerfil(pb, codA);
+    if(nB) return {error:esc(pb.name)+" "+nB+"."};
+    if(nA) return {error:esc(pa.name)+" "+nA+"."}; }
 
   // Se vacían las dos consultas que se intercambian
   set(pa.id, fA, quitar(celdaA, slotA));
@@ -5175,6 +5187,13 @@ function tablaHistorial(g){
     });
     h += '</tr>';
   });
+  // v182: fila de EXT, si el mes la tenía
+  if(dias.some(d=>g.assignments[EXT_ID+"|"+d.key])){
+    h += '<tr class="extrow"><td class="namecol"><b>EXT</b> <span style="font-size:11px;opacity:.8">Urgencias</span></td>';
+    dias.forEach(d=>{ const a = g.assignments[EXT_ID+"|"+d.key];
+      h += '<td><span class="cell" style="display:block">'+(a && a.f ? '<span class="full k-ext">'+a.f+'</span>' : '<span class="full '+(d.holiday?"base-fest":(d.dow===0||d.dow===6?"base-wknd":"base-lab"))+'"></span>')+'</span></td>'; });
+    h += '</tr>';
+  }
   return h + '</tbody></table></div>';
 }
 
@@ -6545,6 +6564,14 @@ function incoherenciasMes(mo){
         if(noLab) out.push({dia:k, txt:"Consulta en "+(hmap[k]?"festivo":"fin de semana")+": "+p.name+" · "+c});
       });
     });
+    // v182: la guardia de EXT cuenta como urgencia del día
+    const aExt = state.assignments[EXT_ID+"|"+k];
+    if(aExt && URGS.indexOf(aExt.f)>=0) urg.push({p:{name:"EXT"}, f:aExt.f});
+    const tExt = extTurno(k);
+    if(tExt.quien==="EXT" && !(aExt && URGS.indexOf(aExt.f)>=0) && generado){
+      const q = urg.find(u=>u.p.name!=="EXT");
+      out.push({dia:k, txt:"EXT: según la "+tExt.origen+" le toca a EXT"+(q ? ", pero tiene la guardia "+q.p.name : " y no tiene la guardia puesta")});
+    }
     const ocupadas = mananasOcupadasDia(k);
     if(ocupadas > max) out.push({dia:k, txt:"Hay "+ocupadas+" consultas físicas de mañana y el tope es "+max});
     if(generado && state.settings.urgRequired!==false){
@@ -6562,6 +6589,9 @@ function incoherenciasMes(mo){
       });
     });
   }
+  // v182: la URGF mensual de EXT
+  if(generado && state.settings.urgRequired!==false && extMesActivo(year, mo) && !extUrgfMes(year, mo))
+    out.push({dia:keyOf(year, mo, 1), txt:"EXT: falta la URGF del mes (genera el mes o ponla a mano en la fila de EXT)"});
   return out;
 }
 function viewIncoherencias(){
@@ -6811,6 +6841,18 @@ function viewCuadrante(){
     html += '</tr>';
   });
 
+  // v182: fila de EXT (guardias que cubre Urgencias), si el mes la tiene o está activa
+  if(extMesActivo(state.year, ui.month) || days.some(d=>extCelda(d.key))){
+    html += '<tr class="extrow"><td class="namecol"><b>EXT</b> <span style="font-size:11px;opacity:.8">Urgencias</span></td>';
+    days.forEach(d=>{
+      const a = extCelda(d.key);
+      const base = d.holiday?"base-fest":(d.dow===0||d.dow===6?"base-wknd":"base-lab");
+      const conflictE = a && a.f && (cmap[d.key][a.f]||[]).length>1;
+      const inner = (a && a.f) ? '<span class="full k-ext">'+a.f+'</span>' : '<span class="full '+base+'"></span>';
+      html += '<td class="'+(conflictE?"conflict":"")+'"><button class="cell" data-action="ext-cell" data-date="'+d.key+'" title="Guardia de Urgencias (EXT)">'+inner+'</button></td>';
+    });
+    html += '</tr>';
+  }
   html += '<tr class="sumrow"><td class="namecol">Faltan</td>';
   days.forEach(d=>{
     const lab = d.dow!==0&&d.dow!==6&&!d.holiday;
@@ -6831,6 +6873,160 @@ function viewCuadrante(){
   html += '</tr></tbody></table></div>';
   html += '<p class="muted" style="margin-top:8px;font-size:12px">Cada celda: mitad superior = mañana, mitad inferior = tarde. URG (laborable) computa 2 turnos y genera libranza; URGF (sábado, domingo o festivo) se retribuye como extra, no genera libranza y se contabiliza aparte. La fila «Faltan» exige el mínimo de mañanas del pool y urgencias todos los días. Toca el número de día para ver la cobertura.</p>';
   return html;
+}
+
+// ================== EXT · Urgencias cubre la guardia (v182) ==================
+// EXT es el servicio de Urgencias haciendo la guardia del equipo: URG/URGLV entre semana
+// según una cadencia, y una URGF al mes. NO es una persona: se guarda en el cuadrante con
+// el identificador EXT_ID, que no está en el equipo, y por eso queda fuera de estadísticas,
+// saldos, horas extras, solicitudes, buscador, avisos y calendarios.
+// Reglas de Javier:
+//   · Martes: el equipo. Miércoles: EXT. Lunes, jueves y viernes: ciclo de 3 semanas
+//     anclado en el lunes 1 de febrero de 2027. Todo editable por el coordinador.
+//   · Festivos entre semana: los cubre el reparto del equipo (salvo excepción expresa).
+//   · Activa por periodos (p. ej. 1 feb – 31 may y de nuevo desde el 1 oct). Al reactivarla,
+//     el ciclo sigue por donde se dejó: solo cuentan las semanas activas.
+//   · Una URGF al mes en fin de semana, propuesta por la aplicación.
+const EXT_ID = "__ext__";
+const EXT_DIAS = ["L","M","X","J","V"];
+const EXT_PATRON_DEF = [
+  ["APL","APL","EXT","EXT","EXT"],     // semana 1 (la del 1 de febrero de 2027)
+  ["EXT","APL","EXT","APL","EXT"],     // semana 2
+  ["EXT","APL","EXT","EXT","APL"]      // semana 3
+];
+function extCfg(){
+  const c = (state.settings && state.settings.ext) || {};
+  const patronOk = Array.isArray(c.patron) && c.patron.length===3 && c.patron.every(f=>Array.isArray(f) && f.length===5);
+  return {
+    periodos: Array.isArray(c.periodos) ? c.periodos.filter(x=>x && typeof x==="object") : [{desde:"2027-02-01", hasta:"2027-05-31"}],
+    ancla: /^\d{4}-\d{2}-\d{2}$/.test(c.ancla||"") ? c.ancla : "2027-02-01",
+    patron: patronOk ? c.patron : JSON.parse(JSON.stringify(EXT_PATRON_DEF)),
+    excepciones: (c.excepciones && typeof c.excepciones==="object") ? c.excepciones : {}
+  };
+}
+function extGuardar(c){ state.settings.ext = c; EXT_CACHE = {}; save(); }
+let EXT_CACHE = {};
+const extFecha = (y,m,d)=> keyOf(y, m, d);
+function extLunes(dk){
+  const pr = dk.split("-").map(Number); const x = new Date(pr[0], pr[1]-1, pr[2]);
+  x.setDate(x.getDate() - ((x.getDay()+6)%7));
+  return x;
+}
+function extActiva(dk, c){
+  c = c || extCfg();
+  return c.periodos.some(p=> p.desde && dk >= p.desde && (!p.hasta || dk <= p.hasta));
+}
+// Semana del ciclo (0, 1 o 2) para una fecha: cuenta solo las semanas en que EXT estuvo activa
+function extCiclo(dk, c){
+  c = c || extCfg();
+  if(dk < c.ancla) return null;
+  const clave = JSON.stringify([c.ancla, c.periodos]) + "|" + dk.slice(0,10);
+  const lunesDia = extLunes(dk);
+  const kLunes = extFecha(lunesDia.getFullYear(), lunesDia.getMonth(), lunesDia.getDate());
+  const ck = JSON.stringify([c.ancla, c.periodos]) + "|" + kLunes;
+  if(EXT_CACHE[ck] !== undefined) return EXT_CACHE[ck];
+  let n = 0;
+  const w = extLunes(c.ancla);
+  for(let guard=0; guard<1000; guard++){
+    const kW = extFecha(w.getFullYear(), w.getMonth(), w.getDate());
+    if(kW >= kLunes) break;
+    let activa = false;
+    for(let i=0;i<5 && !activa;i++){ const x = new Date(w); x.setDate(w.getDate()+i); const k = extFecha(x.getFullYear(), x.getMonth(), x.getDate()); if(k >= c.ancla && extActiva(k, c)) activa = true; }
+    if(activa) n++;
+    w.setDate(w.getDate()+7);
+  }
+  return (EXT_CACHE[ck] = n % 3);
+}
+// Quién cubre la guardia de ese día según la configuración: {quien:"EXT"|"APL"|null, origen, ciclo}
+function extTurno(dk, c){
+  c = c || extCfg();
+  const pr = dk.split("-").map(Number); const dw = new Date(pr[0], pr[1]-1, pr[2]).getDay();
+  if(!extActiva(dk, c)) return {quien:null, origen:"inactiva"};
+  const exc = c.excepciones[dk];
+  if(exc==="EXT" || exc==="APL") return {quien:exc, origen:"excepción"};
+  if(dw===0 || dw===6) return {quien:null, origen:"fin de semana"};
+  if(Object.prototype.hasOwnProperty.call(holidayMap(), dk)) return {quien:"APL", origen:"festivo"};
+  const ci = extCiclo(dk, c);
+  if(ci===null) return {quien:null, origen:"antes del inicio"};
+  return {quien:c.patron[ci][dw-1]==="EXT" ? "EXT" : "APL", origen:"cadencia", ciclo:ci};
+}
+const extCelda = dk => state.assignments[EXT_ID+"|"+dk] || null;
+const extGuardiaEn = dk => { const a = extCelda(dk); return !!a && (a.f==="URG"||a.f==="URGLV"||a.f==="URGF"); };
+function extMesActivo(y, mo){
+  const dim = new Date(y, mo+1, 0).getDate(); const c = extCfg();
+  for(let d=1; d<=dim; d++) if(extActiva(keyOf(y,mo,d), c)) return true;
+  return false;
+}
+// URGF mensual de EXT ya puesta en ese mes (en sábado, domingo o festivo)
+function extUrgfMes(y, mo){
+  const dim = new Date(y, mo+1, 0).getDate();
+  for(let d=1; d<=dim; d++){ const k = keyOf(y,mo,d); const a = extCelda(k); if(a && a.f==="URGF") return k; }
+  return null;
+}
+// Resumen para el historial y la revisión
+function extResumenMes(y, mo){
+  const c = extCfg(); const dim = new Date(y, mo+1, 0).getDate(); const cob = [], exc = {};
+  for(let d=1; d<=dim; d++){ const k = keyOf(y,mo,d); if(extGuardiaEn(k)) cob.push(k); if(c.excepciones[k]) exc[k] = c.excepciones[k]; }
+  return {activa: extMesActivo(y, mo), periodos: c.periodos, ancla: c.ancla, patron: c.patron, excepciones: exc, coberturas: cob, urgf: extUrgfMes(y, mo)};
+}
+function viewExtConfig(){
+  if(MODE!=="editor") return '';
+  const c = extCfg();
+  const hoy = new Date(); const hoyK = keyOf(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
+  const est = 'padding:6px;border:1px solid var(--slate-300);border-radius:6px;font-size:13px';
+  const nx = ui.extNueva || {};
+  let h = '<div class="card" id="card-ext" style="border-color:#111827"><h2><span class="tiny k-ext" style="padding:2px 8px;border-radius:6px;margin-right:6px">EXT</span>Urgencias cubre la guardia</h2>'+
+    '<p class="muted" style="margin-top:2px;font-size:13px">Días en que la guardia de urgencias (URG, URGLV) la hace el servicio de Urgencias y no un adjunto del equipo, más una URGF al mes. '+
+    'No es un miembro del equipo: no aparece en estadísticas, solicitudes, horas extras ni avisos. Solo lo edita el coordinador.</p>'+
+    '<p style="margin-top:10px;font-size:14px">Hoy: <b style="color:'+(extActiva(hoyK,c)?"#111827":"var(--slate-500)")+'">'+(extActiva(hoyK,c)?"activa":"desactivada")+'</b></p>'+
+    '<p class="tiny" style="margin-top:10px">Periodos en que está activa (al desactivarla se conserva lo ya registrado; al reactivarla, el ciclo sigue por donde se dejó)</p>';
+  c.periodos.forEach((pe,i)=>{
+    h += '<div class="row" style="gap:6px;margin-top:4px;align-items:center;flex-wrap:wrap">'+
+      '<span class="tiny">desde</span><input type="date" data-field="ext-desde" data-i="'+i+'" value="'+esc(pe.desde||"")+'" style="'+est+'">'+
+      '<span class="tiny">hasta</span><input type="date" data-field="ext-hasta" data-i="'+i+'" value="'+esc(pe.hasta||"")+'" style="'+est+'">'+
+      '<span class="tiny muted">'+(pe.hasta?'':'(sin fin)')+'</span>'+
+      '<button class="btn" data-action="ext-per-del" data-i="'+i+'" style="padding:3px 8px">Quitar</button></div>';
+  });
+  h += '<div class="row" style="margin-top:6px;gap:6px;flex-wrap:wrap"><button class="btn" data-action="ext-per-add">Añadir periodo (activar)</button>'+
+    (c.periodos.some(pe=>!pe.hasta) ? '<button class="btn" data-action="ext-desactivar">Desactivar desde una fecha</button>' : '')+'</div>'+
+    '<p class="tiny" style="margin-top:12px">Inicio del ciclo (lunes de la semana 1)</p>'+
+    '<input type="date" data-field="ext-ancla" value="'+esc(c.ancla)+'" style="'+est+';margin-top:4px">'+
+    '<p class="tiny" style="margin-top:12px">Ciclo de tres semanas (quién cubre la guardia cada día)</p>'+
+    '<div style="overflow-x:auto"><table style="border-collapse:collapse;margin-top:4px;font-size:13px"><tr><th></th>'+EXT_DIAS.map(x=>'<th style="padding:3px 6px">'+x+'</th>').join("")+'</tr>'+
+    c.patron.map((fila,si)=>'<tr><td style="padding:3px 6px" class="tiny">Semana '+(si+1)+'</td>'+fila.map((v,di)=>
+      '<td style="padding:2px"><select data-field="ext-pat" data-s="'+si+'" data-d="'+di+'" style="padding:4px;border:1px solid var(--slate-300);border-radius:6px;'+(v==="EXT"?"background:#111827;color:#f9fafb":"")+'">'+
+        '<option value="EXT"'+(v==="EXT"?" selected":"")+'>EXT</option><option value="APL"'+(v!=="EXT"?" selected":"")+'>Equipo</option></select></td>').join("")+'</tr>').join("")+
+    '</table></div>'+
+    '<p class="tiny" style="margin-top:12px">Excepciones (fechas sueltas que no siguen la cadencia)</p>';
+  const excs = Object.keys(c.excepciones).sort();
+  h += excs.length ? excs.map(k=>'<div class="row between" style="padding:4px 0;border-bottom:1px solid var(--slate-100);font-size:13px;gap:8px">'+
+      '<span>'+buscaDiaTxt(k)+' · <b>'+(c.excepciones[k]==="EXT"?"EXT":"Equipo")+'</b></span>'+
+      '<button class="btn" data-action="ext-exc-del" data-k="'+k+'" style="padding:3px 8px">Quitar</button></div>').join("")
+    : '<p class="muted" style="font-size:13px;margin-top:4px">Ninguna.</p>';
+  h += '<div class="row" style="gap:6px;margin-top:6px;align-items:center;flex-wrap:wrap">'+
+      '<input type="date" data-field="ext-exc-fecha" value="'+esc(nx.fecha||"")+'" style="'+est+'">'+
+      '<select data-field="ext-exc-quien" style="'+est+'"><option value="EXT"'+(nx.quien!=="APL"?" selected":"")+'>Lo cubre EXT</option><option value="APL"'+(nx.quien==="APL"?" selected":"")+'>Lo cubre el equipo</option></select>'+
+      '<button class="btn" data-action="ext-exc-add">Añadir excepción</button></div>';
+  // Vista del mes que se planifica
+  const y = state.year, mo = ui.month, dim = new Date(y, mo+1, 0).getDate();
+  const chips = [];
+  for(let d=1; d<=dim; d++){
+    const k = keyOf(y,mo,d); const t = extTurno(k, c);
+    if(t.origen==="fin de semana" || t.origen==="inactiva" && new Date(y,mo,d).getDay()%6===0) continue;
+    const esExt = t.quien==="EXT";
+    chips.push('<span title="'+esc(t.origen)+'" style="display:inline-block;margin:2px;padding:3px 6px;border-radius:6px;font-size:12px;'+
+      (esExt?"background:#111827;color:#f9fafb":(t.quien==="APL"?"background:var(--slate-100)":"background:#fff;border:1px dashed var(--slate-300);color:var(--slate-500)"))+'">'+
+      d+' '+EXT_DIAS[new Date(y,mo,d).getDay()-1]+' · '+(esExt?"EXT":(t.quien==="APL"?"Equipo":"—"))+
+      (t.origen==="excepción"?" ✱":(t.origen==="festivo"?" (festivo)":""))+'</span>');
+  }
+  const urgf = extUrgfMes(y, mo);
+  h += '<p class="tiny" style="margin-top:12px">'+MONTHS[mo]+' '+y+' · quién cubre cada día laborable</p>'+
+    (extMesActivo(y,mo) ? '<div style="margin-top:4px">'+chips.join("")+'</div>'+
+      '<p class="muted" style="font-size:12px;margin-top:4px">✱ = excepción configurada; el resto sale de la cadencia. Los festivos los cubre el equipo.</p>'+
+      '<p style="font-size:13px;margin-top:6px">URGF del mes: <b>'+(urgf ? buscaDiaTxt(urgf) : "pendiente: se propondrá al generar el mes")+'</b></p>'
+      : '<p class="muted" style="font-size:13px;margin-top:4px">EXT no está activa este mes: sus días van al reparto habitual del equipo.</p>')+
+    '</div>';
+  return h;
 }
 
 function viewEquipo(){
@@ -6930,6 +7126,7 @@ function viewEquipo(){
       '</div></div>';
   });
   html += '</div></div>';
+  html += viewExtConfig();
   html += viewCupoPermisos();
   return html;
 }
@@ -7638,6 +7835,12 @@ function renderModal(){
           '<p style="margin-top:8px;font-size:13px;color:var(--rose-700)"><b>Huecos sin poder cubrir</b> (ningún facultativo disponible):</p>'+
           '<div style="margin-top:4px;font-size:13px">'+r.unfilled.map(u=>'<div class="cov"><span>'+fmtDate(u.date)+'</span><span style="text-align:right">'+u.codes.join(", ")+'</span></div>').join("")+'</div>'
           :'<p style="margin-top:8px;font-size:13px;color:var(--emerald-700)">✓ Cobertura completa: no quedan huecos en el mes.</p>')+
+        (r.ext && r.ext.activa ?
+          '<div style="margin-top:10px;padding:8px;border:1px solid #111827;border-radius:8px;font-size:13px"><b>EXT</b> · guardias de Urgencias puestas: <b>'+r.ext.coberturas+'</b>'+
+          '<br>URGF del mes: <b>'+(r.ext.urgf ? fmtDate(r.ext.urgf) : "pendiente")+'</b>'+(r.ext.pendiente?'<br><span style="color:var(--rose-700)">'+esc(r.ext.pendiente)+'</span>':'')+
+          (r.ext.conflictos.length ? '<br><span style="color:var(--rose-700)"><b>Conflictos a resolver</b> (no se ha duplicado ni borrado nada):</span>'+
+            r.ext.conflictos.map(x=>'<div class="cov"><span>'+fmtDate(x.date)+'</span><span style="text-align:right">'+esc(x.txt)+'</span></div>').join("") : '')+
+          (r.copiaPrevia ? '<br><span class="muted">'+esc(r.copiaPrevia)+'</span>' : '')+'</div>' : (r.copiaPrevia ? '<p class="muted" style="font-size:12px;margin-top:8px">'+esc(r.copiaPrevia)+'</p>' : ''))+
         '<button class="btn primary" style="width:100%;margin-top:14px" data-action="close-modal">Cerrar</button>'+
         '</div></div>';
     }else{
@@ -7668,6 +7871,7 @@ function exportCSV(){
   const all=[]; const dt = new Date(state.year,0,1);
   while(dt.getFullYear()===state.year){ all.push(keyOf(dt.getFullYear(),dt.getMonth(),dt.getDate())); dt.setDate(dt.getDate()+1); }
   const head = ["Facultativo","% Jornada"].concat(all.map(fmtDate));
+  const filaExt = all.some(k=>extCelda(k)) ? [["EXT (Urgencias)",""].concat(all.map(k=>{ const a=extCelda(k); return a&&a.f ? a.f : ""; }))] : [];
   const rows = state.physicians.map(p=>[p.name, p.pct+"%"].concat(all.map(k=>{
     const a = state.assignments[p.id+"|"+k];
     if(!a){
@@ -7678,7 +7882,7 @@ function exportCSV(){
     if(a.f) return a.f;
     return [a.m,a.t].filter(Boolean).join("+");
   })));
-  const csv = [head].concat(rows).map(r=>r.join(";")).join("\n");
+  const csv = [head].concat(rows).concat(filaExt).map(r=>r.join(";")).join("\n");
   download("cuadrante_"+state.year+".csv", "\uFEFF"+csv, "text/csv;charset=utf-8");
 }
 function exportBackup(){
@@ -7926,7 +8130,8 @@ function generateMonth(mode){
   const tieneManana = (p, dkey)=>{ const a = getA(p.id, dkey); return !!(a && a.m); };
   // RHBT (rehabilitación de tarde): solo para quien tenga RHB1 o RHB2 como consulta habitual
   const esRHB = p=> p.pref==="RHB1" || p.pref==="RHB2";
-  const puedeTarde = (p,c)=> c!=="RHBT" || esRHB(p);
+  // v182: «no hace RHB» excluye también las RHB de tarde
+  const puedeTarde = (p,c)=> (c!=="RHBT" || esRHB(p)) && !(/^RHBT/.test(c) && p.noRhb);
 
   // ===== OBJETIVO de contrato = TODOS los días laborables del mes × % (los bloqueos NO reducen) =====
   const target = {}, baseTarget = {}, carry = {}, ausDias = {};
@@ -8094,6 +8299,43 @@ function generateMonth(mode){
   };
 
   // =========================================================
+  // FASE EXT (v182) · antes que nada: la guardia que cubre Urgencias según la cadencia
+  // y una URGF al mes. Un día con EXT ya no recibe guardia del equipo. Si un día de EXT
+  // ya tiene guardia del equipo, no se duplica ni se borra: se informa del conflicto.
+  // =========================================================
+  const extInf = {coberturas:0, conflictos:[], urgf:null, pendiente:"", activa:false};
+  if(urgReq){
+    const cfgExt = extCfg();
+    extInf.activa = allDays.some(d=>extActiva(d.key, cfgExt));
+    if(mode==="regen") allDays.forEach(d=>{ if(state.assignments[EXT_ID+"|"+d.key]){ delete state.assignments[EXT_ID+"|"+d.key]; cleared++; } });
+    const deEquipo = dk => state.physicians.find(p=>esUrgencia(getA(p.id,dk)));
+    allDays.forEach(d=>{
+      if(extTurno(d.key, cfgExt).quien!=="EXT" || extGuardiaEn(d.key)) return;
+      const q = deEquipo(d.key);
+      if(q){ extInf.conflictos.push({date:d.key, txt:"Le toca a EXT, pero ya tiene la guardia "+q.name}); return; }
+      state.assignments[EXT_ID+"|"+d.key] = {m:null, t:null, f:tipoGuardiaDia(d.key)};
+      extInf.coberturas++; assigned++;
+    });
+    // URGF mensual: el fin de semana más difícil de cubrir para el equipo (menos adjuntos disponibles)
+    if(extInf.activa){
+      const ya = extUrgfMes(state.year, ui.month);
+      if(ya) extInf.urgf = ya;
+      else{
+        const cand = allDays.filter(d=>(d.dow===0||d.dow===6) && extActiva(d.key, cfgExt) && !extCelda(d.key) && !deEquipo(d.key));
+        if(!cand.length){
+          extInf.pendiente = "Todos los fines de semana del mes en que EXT está activa ya tienen guardia: elige tú el día.";
+        }else{
+          const disp = d => state.physicians.filter(p=>!p.noUrgf && puedeUrgencia(p,d.key) && !bloqueaGuardia(p,d.dow) && notAbsent(p,d.key) && freeM(p,d.key) && freeT(p,d.key)).length;
+          const medio = Math.ceil(allDays.length/2);
+          cand.sort((a,b)=> disp(a)-disp(b) || Math.abs(a.n-medio)-Math.abs(b.n-medio));
+          const elegido = cand[0];
+          state.assignments[EXT_ID+"|"+elegido.key] = {m:null, t:null, f:"URGF"};
+          extInf.urgf = elegido.key; assigned++;
+        }
+      }
+    }
+  }
+  // =========================================================
   // FASE 0 · Guardias FIJAS (p. ej. todos los martes de un facultativo).
   // Se saltan vacaciones, permisos, bajas, días de no disponibilidad y festivos.
   // =========================================================
@@ -8109,8 +8351,8 @@ function generateMonth(mode){
         if(bloqueaGuardia(p, d.dow)) return;                   // no trabaja ese día
         const a = getA(p.id, d.key);
         if(a && (a.f || a.m || a.t)) return;                   // ya tiene algo puesto
-        // Otro compañero ya cubre esa urgencia
-        if(state.physicians.some(q=>esUrgencia(state.assignments[q.id+"|"+d.key]))) return;
+        // Otro compañero (o EXT) ya cubre esa urgencia
+        if(state.physicians.some(q=>esUrgencia(state.assignments[q.id+"|"+d.key])) || extGuardiaEn(d.key)) return;
         const tipo = (d.dow===1 || d.dow===5 || esPrefestivo(d.key)) ? "URGLV" : "URG";
         state.assignments[p.id+"|"+d.key] = {m:null, t:null, f:tipo};
         assigned++;
@@ -8128,8 +8370,8 @@ function generateMonth(mode){
     urgfDias.forEach(d=>state.physicians.forEach(p=>{ const a=getA(p.id,d.key); if(a&&a.f==="URGF") urgfMes[p.id]++; }));
 
     urgfDias.forEach(d=>{
-      const has = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&(a.f==="URG"||a.f==="URGF");});
-      if(has) return;   // ya asignado (por el generador o a mano): se respeta
+      const has = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&(a.f==="URG"||a.f==="URGF");}) || extGuardiaEn(d.key);
+      if(has) return;   // ya asignado (por el generador, a mano o a EXT): se respeta
       const libres = state.physicians.filter(p=> !p.noUrgf && puedeUrgencia(p,d.key) && !bloqueaGuardia(p,d.dow) && notAbsent(p,d.key) && freeM(p,d.key) && freeT(p,d.key));
       if(!libres.length){ missing_push(unfilled,d.key,"URGF"); return; }
       // Preferencia ABSOLUTA por quien aún no tiene ninguna URGF este mes.
@@ -8153,7 +8395,7 @@ function generateMonth(mode){
   // =========================================================
   if(urgReq){
     labDays.forEach(d=>{
-      const has = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&(a.f==="URG"||a.f==="URGLV"||a.f==="URGF");});
+      const has = state.physicians.some(p=>{const a=getA(p.id,d.key); return a&&(a.f==="URG"||a.f==="URGLV"||a.f==="URGF");}) || extGuardiaEn(d.key);
       if(has) return;
       // URGLV: lunes, viernes, vísperas de festivo y días siguientes a un festivo
       const esLV = (d.dow===1 || d.dow===5 || esPrefestivo(d.key));
@@ -8427,7 +8669,8 @@ function generateMonth(mode){
     const freeCode = (list, dkey)=>{
       const usados = {};
       state.physicians.forEach(q=>{ const a=getA(q.id,dkey); if(a){ if(a.m)usados[a.m]=1; if(a.t)usados[a.t]=1; } });
-      return list.find(c=>!usados[c]) || list[0];
+      // v182: si todas sus consultas de tarde están ya cogidas ese día, no se repite ninguna
+      return list.find(c=>!usados[c]) || null;
     };
     // Nº de tardes que tiene un adjunto en la semana de una fecha (para respetar el tope de 1/semana)
     const tardesSemanaDe = (pid, dkey)=>{
@@ -8470,6 +8713,7 @@ function generateMonth(mode){
           if(esDiaLibre(p.id,d.key)) continue;
           if(freeT(p,d.key) && (tieneManana(p,d.key) || admiteTardeSuelta(p)) && tardesSemanaDe(p.id,d.key)===0 && !weekFull(p,d.key,1)){
             const c = freeCode(allTFor(p), d.key);
+            if(!c) continue;                         // no queda ninguna consulta de tarde libre ese día
             state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{t:c});
             load[p.id]++; assigned++; progress=true; done=true; break;
           }
@@ -8486,6 +8730,7 @@ function generateMonth(mode){
           if(esDiaLibre(p.id,d.key)) continue;
           if(freeT(p,d.key) && (tieneManana(p,d.key) || admiteTardeSuelta(p)) && !weekFull(p,d.key,1)){
             const c = freeCode(allTFor(p), d.key);
+            if(!c) continue;                         // no queda ninguna consulta de tarde libre ese día
             state.assignments[p.id+"|"+d.key]=Object.assign({},getA(p.id,d.key)||{},{t:c});
             load[p.id]++; assigned++; progress=true; done=true; break;
           }
@@ -8497,7 +8742,7 @@ function generateMonth(mode){
 
   snapshotBaseline(ui.month);   // foto del cuadrante OFICIAL de este mes
   save();
-  return {assigned, cleared, unfilled};
+  return {assigned, cleared, unfilled, ext:extInf};
 }
 
 function missing_push(arr, date, code){
@@ -8529,7 +8774,7 @@ document.addEventListener("click", e=>{
   // Administración puede gestionar los tráficos y marcar cambios como hechos
   if(["admvo-ejecutado","admvo-trafico","tfa-poner","tfa-quitar"].indexOf(act) >= 0
      && (MODE!=="viewer" || esAdministrativo())){ /* permitido */ }
-  else if(MODE==="viewer" && ["brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-urgred","toggle-tsuelta","toggle-topesem","toggle-nourgdow","pct-tramos","tramo-add","tramo-borrar","toggle-required","official-on","official-off","admvo-cerrar","admvo-abrir","deshacer","vac-marcar","vac-quitar","copia-descargar","copia-servidor","rot-cell","rot-set","rot-gen","rot-clear","puerta-toggle","guardia-dia","rot-guardia-res","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","reviewt-yahecha","buzon-recibir","buzon-guardar","tf-visto","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+  else if(MODE==="viewer" && ["ext-cell","brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-urgred","toggle-tsuelta","toggle-topesem","toggle-nourgdow","pct-tramos","tramo-add","tramo-borrar","toggle-required","official-on","official-off","admvo-cerrar","admvo-abrir","deshacer","vac-marcar","vac-quitar","copia-descargar","copia-servidor","rot-cell","rot-set","rot-gen","rot-clear","puerta-toggle","guardia-dia","rot-guardia-res","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","reviewt-yahecha","buzon-recibir","buzon-guardar","tf-visto","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
       ui.reqDraft = {}; ui.reqNote = "";
@@ -8731,6 +8976,29 @@ document.addEventListener("click", e=>{
     case "rot-print": imprimirVista(); break;
     case "traf-print": imprimirVista(); break;
     case "archivar-ahora": archivarPendientes(true); break;
+    case "ext-per-add": {
+      const c = extCfg(); const hoyE = new Date();
+      c.periodos.push({desde: keyOf(hoyE.getFullYear(), hoyE.getMonth(), hoyE.getDate()), hasta:""});
+      extGuardar(c); render(); break;
+    }
+    case "ext-per-del": {
+      if(!window.confirm("¿Quitar este periodo? Las guardias de EXT ya puestas en el cuadrante se conservan.")) break;
+      const c = extCfg(); c.periodos.splice(Number(el.dataset.i), 1); extGuardar(c); render(); break;
+    }
+    case "ext-desactivar": {
+      const f = (window.prompt("¿Desde qué día deja de estar activa EXT? (AAAA-MM-DD)\n\nEse día ya no la cubre. Lo ya registrado se conserva.", "") || "").trim();
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(f)){ if(f) window.alert("Escribe la fecha así: 2027-05-31"); break; }
+      const c = extCfg(); const pr = f.split("-").map(Number); const ant = new Date(pr[0], pr[1]-1, pr[2]-1);
+      c.periodos.forEach(pe=>{ if(!pe.hasta) pe.hasta = keyOf(ant.getFullYear(), ant.getMonth(), ant.getDate()); });
+      extGuardar(c); render(); break;
+    }
+    case "ext-exc-add": {
+      const nx = ui.extNueva || {}; const campo = document.querySelector('[data-field="ext-exc-fecha"]');
+      const f = nx.fecha || (campo ? campo.value : "");
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(f||"")){ window.alert("Elige primero una fecha."); break; }
+      const c = extCfg(); c.excepciones[f] = nx.quien==="APL" ? "APL" : "EXT"; extGuardar(c); ui.extNueva = {}; render(); break;
+    }
+    case "ext-exc-del": { const c = extCfg(); delete c.excepciones[el.dataset.k]; extGuardar(c); render(); break; }
     case "avisos-activar": {
       const quien = avisosIdentidad();
       if(!quien) break;
@@ -9587,13 +9855,32 @@ document.addEventListener("click", e=>{
           "de pendientes: tendrás que avisarles por tu cuenta.\n\n¿Continuar?")) break;
       }
       const sel = document.querySelector('input[name=genmode]:checked');
+      // v182: antes de generar se guarda en el servidor la versión anterior del cuadrante
+      let copiaPrevia = "";
+      if(publicaPorServidor()){
+        guardarCopiaServidor("Antes de generar "+MONTHS[ui.month]+" "+state.year).then(e=>{ if(e) setSave("⚠ Copia previa: "+e); });
+        copiaPrevia = "La versión anterior se ha guardado como copia en el servidor (Ajustes → Copias).";
+      }
       ui.genReport = generateMonth(sel?sel.value:"fill");
+      if(ui.genReport) ui.genReport.copiaPrevia = copiaPrevia;
       render(); break;
     }
     case "export-csv": exportCSV(); break;
     case "export-backup": exportBackup(); break;
     case "import-backup": document.getElementById("import-file").click(); break;
     case "brush": ui.brush = ui.brush===el.dataset.code?null:el.dataset.code; render(); break;
+    case "ext-cell": {
+      // Ajuste manual de la guardia de EXT en un día: pone o quita
+      const dkE = el.dataset.date; const kE = EXT_ID+"|"+dkE;
+      if(state.assignments[kE]){ marcarDeshacer("quitar guardia de EXT"); diferirSiCerrado(()=>{ delete state.assignments[kE]; return null; }); }
+      else{
+        const ocupada = state.physicians.find(p=>{ const a=state.assignments[p.id+"|"+dkE]; return a && (a.f==="URG"||a.f==="URGLV"||a.f==="URGF"); });
+        if(ocupada && !window.confirm("Ese día ya tiene la guardia "+ocupada.name+". ¿Poner también a EXT? Quedará marcado como conflicto hasta que lo resuelvas.")) break;
+        marcarDeshacer("poner guardia de EXT");
+        diferirSiCerrado(()=>{ state.assignments[kE] = {m:null, t:null, f:tipoGuardiaDia(dkE)}; return null; });
+      }
+      save(); render(); break;
+    }
     case "cell": {
       const pid = el.dataset.pid, date = el.dataset.date, blocked = el.dataset.blocked==="1";
       if(ui.brush){
@@ -9895,6 +10182,14 @@ document.addEventListener("change", e=>{
   else if(field==="req-email"){ state.settings.reqEmail = el.value.trim(); save(); }
   else if(field==="req-phone"){ state.settings.reqPhone = el.value.replace(/[^0-9+ ]/g,"").trim(); save(); }
   else if(field==="he-mes"){ ui.heMes = Number(el.value); render(); }
+  else if(field==="ext-desde" || field==="ext-hasta"){
+    const c = extCfg(); const pe = c.periodos[Number(el.dataset.i)];
+    if(pe){ pe[field==="ext-desde"?"desde":"hasta"] = el.value || ""; extGuardar(c); render(); }
+  }
+  else if(field==="ext-ancla"){ if(/^\d{4}-\d{2}-\d{2}$/.test(el.value)){ const c = extCfg(); c.ancla = el.value; extGuardar(c); render(); } }
+  else if(field==="ext-pat"){ const c = extCfg(); c.patron[Number(el.dataset.s)][Number(el.dataset.d)] = el.value==="EXT" ? "EXT" : "APL"; extGuardar(c); render(); }
+  else if(field==="ext-exc-fecha"){ (ui.extNueva = ui.extNueva || {}).fecha = el.value; }
+  else if(field==="ext-exc-quien"){ (ui.extNueva = ui.extNueva || {}).quien = el.value; }
   else if(field==="he-eur-g" || field==="he-eur-t" || field==="he-eur-fe"){
     const v = Number(String(el.value).replace(",","."));
     if(isFinite(v) && v>=0) heSetCfg({"he-eur-g":"eurGuardia","he-eur-t":"eurTrafico","he-eur-fe":"eurFE"}[field], Math.round(v*100)/100);
