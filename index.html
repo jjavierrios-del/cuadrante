@@ -1375,7 +1375,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v183";
+const APP_VERSION = "v184";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -6435,19 +6435,50 @@ function repPlanPublicar(rep, ej){
   }));
   return {escribir, quitar, omitir, pisar};
 }
+// v184: retirar la versión publicada. Quita del cuadrante lo que escribió el reparto y devuelve
+// lo que había antes en esas celdas (guardado al publicar), salvo que alguien lo haya cambiado
+// después: esas celdas no se tocan y se informa. El historial no se borra.
+function repRetirar(rep, silencioso){
+  if(!rep.publicado) return {error:"Este reparto no tiene ninguna versión publicada."};
+  const ej = rep.ejecuciones[rep.publicado.version-1];
+  const previas = (ej && ej.previas) || [];
+  const sinCopia = !(ej && Array.isArray(ej.previas));     // publicada con la v183, que aún no guardaba lo anterior
+  const noRestauradas = [];
+  if(!silencioso) marcarDeshacer("retirar "+rep.nombre);
+  diferirSiCerrado(()=>{
+    Object.keys(state.assignments).forEach(k=>{ const a = state.assignments[k]; if(a && a.rep===rep.id) delete state.assignments[k]; });
+    previas.forEach(x=>{
+      if(!x.valor) return;
+      if(state.assignments[x.k]){ noRestauradas.push(repNombre(x.k.split("|")[0])+" el "+repDia(x.k.split("|")[1])); return; }
+      state.assignments[x.k] = JSON.parse(JSON.stringify(x.valor));
+    });
+    return null;
+  });
+  rep.publicaciones = (rep.publicaciones||[]).concat([{at:new Date().toISOString(), version:rep.publicado.version, accion:"retirada"}]);
+  if(ej) ej.publicada = false;
+  rep.publicado = null;
+  if(!silencioso){ rep.estado = "revision"; save(); }
+  return {ok:true, noRestauradas, sinCopia};
+}
 function repPublicar(rep, iEj){
   const ej = rep.ejecuciones[iEj]; if(!ej) return "No existe esa versión.";
-  const plan = repPlanPublicar(rep, ej);
   marcarDeshacer("publicar "+rep.nombre);
+  // Si ya había otra versión publicada, primero se retira (y se devuelve lo que había antes)
+  if(rep.publicado) repRetirar(rep, true);
+  const plan = repPlanPublicar(rep, ej);
+  // Lo que había antes en cada celda que se va a tocar, para poder retirar la publicación
+  const previas = [];
+  plan.quitar.forEach(x=>{ const k = x.pid+"|"+x.k; previas.push({k:k, valor:JSON.parse(JSON.stringify(state.assignments[k]||null))}); });
+  plan.escribir.forEach(x=>{ const k = x.pid+"|"+x.k; if(!previas.some(y=>y.k===k)) previas.push({k:k, valor:state.assignments[k] ? JSON.parse(JSON.stringify(state.assignments[k])) : null}); });
   diferirSiCerrado(()=>{
-    // Se retira lo publicado antes por este reparto
-    Object.keys(state.assignments).forEach(k=>{ const a = state.assignments[k]; if(a && a.rep===rep.id) delete state.assignments[k]; });
     // Las guardias anteriores de esos días (del generador o puestas a mano) dejan sitio a lo repartido
     plan.quitar.forEach(x=>{ delete state.assignments[x.pid+"|"+x.k]; });
     plan.escribir.forEach(x=>{ state.assignments[x.pid+"|"+x.k] = {m:null, t:null, f:tipoGuardiaDia(x.k), rep:rep.id}; });
     return null;
   });
+  ej.previas = previas;
   ej.sustituidas = plan.quitar.map(x=>x.txt); ej.noEscritas = plan.omitir.slice();
+  rep.publicaciones = (rep.publicaciones||[]).concat([{at:new Date().toISOString(), version:iEj+1, accion:"publicada"}]);
   rep.ejecuciones.forEach((x,i)=>{ x.publicada = (i===iEj); });
   rep.publicado = {version:iEj+1, at:new Date().toISOString(), asig:JSON.parse(JSON.stringify(ej.asig))};
   rep.estado = "publicado";
@@ -6579,9 +6610,10 @@ function viewRepartoAdmin(rep){
   let h = '';
   // Estado
   h += '<div class="card"><h2>Estado</h2><div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">'+
-    (rep.estado==="config"||rep.estado==="cerrado" ? '<button class="btn primary" data-action="pet-estado" data-rep="'+rep.id+'" data-e="abierto">Abrir solicitudes</button>' : '')+
+    (rep.estado==="config"||rep.estado==="cerrado"||rep.estado==="revision" ? '<button class="btn primary" data-action="pet-estado" data-rep="'+rep.id+'" data-e="abierto">'+(rep.estado==="config"?"Abrir solicitudes":"Reabrir solicitudes")+'</button>' : '')+
+    (rep.publicado ? '<button class="btn danger" data-action="pet-retirar" data-rep="'+rep.id+'">Retirar la versión publicada</button>' : '')+
     (rep.estado==="abierto" ? '<button class="btn" data-action="pet-estado" data-rep="'+rep.id+'" data-e="cerrado">Cerrar solicitudes</button>' : '')+
-    (rep.estado!=="config" && rep.estado!=="publicado" ? '<button class="btn" data-action="pet-estado" data-rep="'+rep.id+'" data-e="config">Volver a configuración</button>' : '')+
+    (rep.estado!=="config" && !rep.publicado ? '<button class="btn" data-action="pet-estado" data-rep="'+rep.id+'" data-e="config">Volver a configuración</button>' : '')+
     '<button class="btn" data-action="pet-cargar" data-rep="'+rep.id+'">Ver solicitudes recibidas</button>'+
     '<button class="btn primary" data-action="pet-ejecutar" data-rep="'+rep.id+'">Ejecutar reparto (vista previa)</button></div>'+
     (ui.petMsg ? '<p style="margin-top:8px;font-size:13px">'+esc(ui.petMsg)+'</p>' : '')+'</div>';
@@ -6608,7 +6640,7 @@ function viewRepartoAdmin(rep){
     const conf = repConflictos(rep, ej);
     h += '<div class="card" id="pet-previa"><div class="row between" style="align-items:center;gap:8px;flex-wrap:wrap"><h2>Versión '+(i+1)+' de '+ejs.length+(ej.publicada?' · publicada':'')+'</h2>'+
       '<select data-field="pet-ver" data-rep="'+rep.id+'" style="'+est+'">'+ejs.map((x,j)=>'<option value="'+j+'"'+(j===i?" selected":"")+'>Versión '+(j+1)+' · '+
-        new Date(x.at).toLocaleString("es-ES",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})+(x.publicada?' (publicada)':'')+'</option>').join("")+'</select></div>'+
+        new Date(x.at).toLocaleString("es-ES",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})+(x.publicada?' (publicada)':'')+(x.descartada?' (descartada)':'')+'</option>').join("")+'</select></div>'+
       '<p class="muted" style="font-size:12px;margin-top:2px">Orden usado: '+(ej.orden||[]).map(repNombre).map(esc).join(" · ")+'</p>'+
       '<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px">'+(ej.orden||[]).map(pid=>{
         const a = ej.asig[pid]; const pe = (ej.pendientes||[]).find(x=>x.pid===pid);
@@ -6627,7 +6659,14 @@ function viewRepartoAdmin(rep){
         if(pl.omitir.length) l.push('<b>No se escribirán</b> (ausencia): '+pl.omitir.map(esc).join(" · "));
         if(pl.pisar.length) l.push('<b>Sustituyen una consulta</b>: '+pl.pisar.map(esc).join(" · "));
         return l.length ? '<div class="warnbox" style="margin-top:8px;font-size:12px">'+l.join("<br>")+'</div>' : ''; })()+
-      '<div class="row" style="margin-top:10px;gap:6px;flex-wrap:wrap"><button class="btn primary" data-action="pet-publicar" data-rep="'+rep.id+'" data-v="'+i+'">'+(ej.publicada?'Volver a publicar esta versión':'Publicar esta versión')+'</button></div>'+
+      (ej.descartada ? '<p style="font-size:13px;margin-top:8px;color:var(--rose-700)"><b>Versión descartada</b> · se conserva en el historial.</p>' : '')+
+      '<div class="row" style="margin-top:10px;gap:6px;flex-wrap:wrap">'+
+        (ej.descartada ? '<button class="btn" data-action="pet-recuperar" data-rep="'+rep.id+'" data-v="'+i+'">Recuperar esta versión</button>'
+          : '<button class="btn primary" data-action="pet-publicar" data-rep="'+rep.id+'" data-v="'+i+'">'+(ej.publicada?'Volver a publicar esta versión':'Publicar esta versión')+'</button>'+
+            (ej.publicada ? '' : '<button class="btn" data-action="pet-descartar" data-rep="'+rep.id+'" data-v="'+i+'">Descartar esta versión</button>'))+'</div>'+
+      ((rep.publicaciones||[]).length ? '<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px">Historial de publicaciones ('+rep.publicaciones.length+')</summary>'+
+        rep.publicaciones.slice().reverse().map(x=>'<div style="font-size:12px;padding:3px 0">Versión '+x.version+' '+(x.accion==="retirada"?"retirada":"publicada")+' · '+
+          new Date(x.at).toLocaleString("es-ES",{day:"2-digit",month:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit"})+'</div>').join("")+'</details>' : '')+
       '<p class="muted" style="font-size:12px;margin-top:6px">Al publicar, las guardias se escriben en el cuadrante (también las fijas de URG) y el generador no las tocará. El resultado lo ve todo el equipo, sin las preferencias.</p></div>';
   }
   // Configuración
@@ -9793,6 +9832,24 @@ document.addEventListener("click", e=>{
       const err = repPublicar(rep, v);
       if(err){ window.alert(err); break; }
       ui.petMsg = "✓ Versión "+(v+1)+" publicada."; render(); ghPublish(true); break;
+    }
+    case "pet-retirar": {
+      const rep = repartos()[el.dataset.rep]; if(!rep || !rep.publicado) break;
+      const ejR = rep.ejecuciones[rep.publicado.version-1];
+      const avisoV183 = (ejR && !Array.isArray(ejR.previas)) ? "\n\nAtención: esta versión se publicó antes de que la app guardara lo anterior. Se quitarán sus guardias, pero NO se podrán devolver las que había antes; esos días quedarán libres para que los rellenes." : "";
+      if(!window.confirm("¿Retirar la versión "+rep.publicado.version+" publicada?"+avisoV183+"\n\nSe quitarán del cuadrante las guardias que escribió este reparto y se devolverán las que había antes en esos días. "+
+        "El reparto vuelve a «pendiente de revisión» y nada se borra del historial.")) break;
+      const r = repRetirar(rep, false);
+      if(r.error){ window.alert(r.error); break; }
+      ui.petMsg = "✓ Publicación retirada."+(r.noRestauradas.length ? " No se han devuelto ("+r.noRestauradas.length+"), porque esas celdas cambiaron después: "+r.noRestauradas.join(", ")+"." : "")+
+        (r.sinCopia ? " Esta versión se publicó antes de que la app guardara lo anterior: sus guardias se han quitado, pero las que había antes en esos días no se pueden devolver. Cúbrelos con Generar → «Solo rellenar huecos»." : "");
+      render(); ghPublish(true); break;
+    }
+    case "pet-descartar": case "pet-recuperar": {
+      const rep = repartos()[el.dataset.rep]; const ej = rep && rep.ejecuciones[Number(el.dataset.v)]; if(!ej || ej.publicada) break;
+      if(act==="pet-descartar") ej.descartada = true; else delete ej.descartada;
+      ui.petMsg = act==="pet-descartar" ? "Versión descartada: queda en el historial y se puede recuperar." : "Versión recuperada.";
+      save(); render(); break;
     }
     case "pet-b-anadir": { const rep = repartos()[el.dataset.rep]; if(!rep) break; rep.bloques.push({id:"b"+Date.now().toString(36), nombre:"Nuevo bloque", rango:"", fijas:[], nota:"", opciones:[]}); save(); render(); break; }
     case "pet-b-quitar": { const rep = repartos()[el.dataset.rep]; if(!rep || !window.confirm("¿Quitar este bloque y sus opciones?")) break; rep.bloques.splice(Number(el.dataset.b),1); save(); render(); break; }
