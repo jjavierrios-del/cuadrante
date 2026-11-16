@@ -1412,7 +1412,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v188";
+const APP_VERSION = "v189";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -1537,6 +1537,35 @@ function setBuzonClavePublicar(v){ try{ if(v) localStorage.setItem(KEY_BUZON_PUB
 // ¿Se publica a través del servidor en lugar de con el token de GitHub?
 function publicaPorServidor(){ return !!((state.buzon||{}).url && buzonClavePublicar()); }
 
+// v189: pide una contraseña en una ventana propia, con el texto oculto (asteriscos).
+// window.prompt del navegador no permite ocultar lo que se escribe. Devuelve una promesa
+// con lo escrito, o null si se cancela.
+function pedirClave(titulo, explicacion){
+  return new Promise(resolve=>{
+    const prev = document.getElementById("ventana-clave"); if(prev) prev.remove();
+    const cap = document.createElement("div");
+    cap.id = "ventana-clave"; cap.className = "overlay"; cap.style.zIndex = "9999";
+    cap.innerHTML = '<div class="modal" data-stop="1" style="max-width:380px">'+
+      '<b style="font-size:17px">'+esc(titulo)+'</b>'+
+      (explicacion ? '<p class="muted" style="margin-top:6px;font-size:13px">'+esc(explicacion)+'</p>' : '')+
+      '<form id="vc-form" autocomplete="off" style="margin-top:12px">'+
+        '<input id="vc-clave" type="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" '+
+          'style="width:100%;padding:10px;border:1px solid var(--slate-300);border-radius:8px;font-size:16px">'+
+        '<label class="row" style="margin-top:8px;font-size:13px;gap:6px;cursor:pointer"><input type="checkbox" id="vc-ver"> Mostrar</label>'+
+        '<div class="row" style="margin-top:12px;gap:8px"><button type="submit" class="btn primary" style="flex:1">Aceptar</button>'+
+        '<button type="button" class="btn" id="vc-cancelar">Cancelar</button></div></form></div>';
+    document.body.appendChild(cap);
+    const campo = cap.querySelector("#vc-clave");
+    const cerrar = v=>{ cap.remove(); resolve(v); };
+    cap.querySelector("#vc-form").addEventListener("submit", e=>{ e.preventDefault(); e.stopPropagation(); cerrar(campo.value); });
+    cap.querySelector("#vc-cancelar").addEventListener("click", e=>{ e.stopPropagation(); cerrar(null); });
+    cap.querySelector("#vc-ver").addEventListener("change", e=>{ campo.type = e.target.checked ? "text" : "password"; });
+    cap.addEventListener("click", e=>{ e.stopPropagation(); if(e.target===cap) cerrar(null); });
+    cap.addEventListener("keydown", e=>{ e.stopPropagation(); if(e.key==="Escape") cerrar(null); });
+    setTimeout(()=>{ try{ campo.focus(); }catch(e){} }, 30);
+  });
+}
+
 // Comprueba contra el servidor si una contraseña sirve para publicar
 async function verificarClavePublicar(clave){
   const b = state.buzon||{};
@@ -1563,8 +1592,7 @@ async function prepararPublicacion(claveAdmin){
     render();
     return;
   }
-  const intento = window.prompt(
-    "Contraseña de publicación\n\n"+
+  const intento = await pedirClave("Contraseña de publicación",
     "Este dispositivo aún no puede publicar los cambios al equipo. Introduce la contraseña de publicación "+
     "(la que configuraste en el servidor). Si lo dejas en blanco, podrás editar pero los cambios no se publicarán.");
   if(!intento) return;
@@ -9552,10 +9580,11 @@ document.addEventListener("click", e=>{
         setSave("Guardando…");
         marcarEjecutadoServidor(mkE, idE, nuevoValor).then(err=>{
           if(err === "FALTA_CLAVE"){
-            const cl = window.prompt("Contraseña de administrativo\n\nIntrodúcela una vez para poder marcar los cambios como reajustados. Te la facilita el coordinador.");
-            if(!cl){ setSave("Solo consulta"); return; }
-            setClaveAdmvo(cl);
-            hacerlo();
+            pedirClave("Contraseña de administrativo", "Introdúcela una vez para poder marcar los cambios como reajustados. Te la facilita el coordinador.").then(cl=>{
+              if(!cl){ setSave("Solo consulta"); return; }
+              setClaveAdmvo(cl);
+              hacerlo();
+            });
             return;
           }
           if(err === "SIN_BUZON"){
@@ -9662,16 +9691,19 @@ document.addEventListener("click", e=>{
       if(!quien) break;
       let claveA = quien.clave;
       if(quien.rol==="coord" && !claveA){ ui.avisosMsg = "Este dispositivo aún no tiene la contraseña de publicación; introdúcela en «Buzón de solicitudes»."; render(); break; }
+      const activarCon = clave=>{
+        ui.avisosMsg = "Activando…"; render();
+        avisosActivar(quien.pid, clave).then(err=>{
+          if(!err && quien.rol==="admvo") setClaveAdmvo(clave);
+          ui.avisosMsg = err ? ("⚠ "+err) : (quien.rol==="coord" ? "✓ Avisos activados. Pulsa «Enviar un aviso de prueba» para comprobarlo." : "✓ Avisos activados en este dispositivo.");
+          render();
+        });
+      };
       if(quien.rol==="admvo" && !claveA){
-        claveA = (window.prompt("Contraseña de administrativo\n\nSolo se pide una vez en este dispositivo.") || "").trim();
-        if(!claveA) break;
+        pedirClave("Contraseña de administrativo", "Solo se pide una vez en este dispositivo.").then(c=>{ c = (c||"").trim(); if(c) activarCon(c); });
+        break;
       }
-      ui.avisosMsg = "Activando…"; render();
-      avisosActivar(quien.pid, claveA).then(err=>{
-        if(!err && quien.rol==="admvo") setClaveAdmvo(claveA);
-        ui.avisosMsg = err ? ("⚠ "+err) : (quien.rol==="coord" ? "✓ Avisos activados. Pulsa «Enviar un aviso de prueba» para comprobarlo." : "✓ Avisos activados en este dispositivo.");
-        render();
-      });
+      activarCon(claveA);
       break;
     }
     case "avisos-desactivar": {
@@ -9893,8 +9925,8 @@ document.addEventListener("click", e=>{
       // Debe reconocer los dos formatos: si solo mirara la huella antigua,
       // tras migrar a la reforzada se entraría en edición sin preguntar.
       if(hayAdminPass()){
-        const intento = window.prompt("Contraseña de administración:");
-        if(intento===null) break;                       // ha cancelado
+        pedirClave("Contraseña de administración").then(intento=>{
+        if(intento===null) return;                      // ha cancelado
         setSave("Comprobando…");
         checkAdminPassAsync(intento).then(ok=>{
           if(!ok){ window.alert("Contraseña incorrecta."); setSave("Solo consulta"); return; }
@@ -9902,19 +9934,21 @@ document.addEventListener("click", e=>{
           MODE="editor"; render();
           prepararPublicacion(intento);    // deja el dispositivo listo para publicar
         });
+        });
         break;
       }
       // Lo publicado dice que hay contraseña pero este dispositivo no tiene la huella:
       // se pide y se comprueba contra el servidor. Nunca se deja pasar sin más.
       if(PUB_TIENE_PASS===true){
-        const intentoS = window.prompt("Contraseña de administración:");
-        if(intentoS===null) break;
+        pedirClave("Contraseña de administración").then(intentoS=>{
+        if(intentoS===null) return;
         setSave("Comprobando…");
         verificarClavePublicar(intentoS).then(ok=>{
           if(!ok){ window.alert("Contraseña incorrecta."); setSave("Solo consulta"); return; }
           marcarAutenticado();
           MODE="editor"; render();
           prepararPublicacion(intentoS);
+        });
         });
         break;
       }
@@ -10344,9 +10378,11 @@ document.addEventListener("click", e=>{
         traficoServidor(pid, fecha, slot, code, hora, quitar).then(err=>{
           d.enviando = false;
           if(err === "FALTA_CLAVE"){
-            const cl = window.prompt("Contraseña de administrativo\n\nIntrodúcela una vez para poder gestionar los tráficos.");
-            if(!cl){ setSave("Solo consulta"); return; }
-            setClaveAdmvo(cl); d.enviando = true; hacerlo(); return;
+            pedirClave("Contraseña de administrativo", "Introdúcela una vez para poder gestionar los tráficos.").then(cl=>{
+              if(!cl){ setSave("Solo consulta"); render(); return; }
+              setClaveAdmvo(cl); d.enviando = true; hacerlo();
+            });
+            return;
           }
           if(err === "SIN_BUZON"){
             window.alert("El coordinador debe configurar el servidor en Ajustes para que puedas gestionar los tráficos.");
