@@ -807,6 +807,34 @@ async function atender(request, env, ctx) {
         return json({ error: "Ruta no encontrada." }, 404);
       }
 
+      // ---------- Respuestas a un recordatorio (v187): «están bien» / «falta o sobra alguno» ----------
+      //   POST /respuesta {clave (envío), rec, pid, estado, texto, por} · GET /respuestas?rec=&admin=
+      if (ruta === "/respuesta" || ruta === "/respuestas") {
+        const REC = /^r[a-z0-9]{3,24}$/, PIDR = /^[a-z0-9]{4,16}$/;
+        if (request.method === "POST" && ruta === "/respuesta") {
+          const cuerpo = await request.json().catch(() => null);
+          if (!cuerpo) return json({ error: "Petición mal formada." }, 400);
+          const okClave = (env.CLAVE_ENVIO && cuerpo.clave === env.CLAVE_ENVIO) || (env.CLAVE_ADMIN && cuerpo.clave === env.CLAVE_ADMIN);
+          if (!okClave) return json({ error: "Clave incorrecta." }, 403);
+          const rec = String(cuerpo.rec || ""), pid = String(cuerpo.pid || "");
+          if (!REC.test(rec) || !PIDR.test(pid)) return json({ error: "Datos no válidos." }, 400);
+          const estado = cuerpo.estado === "bien" ? "bien" : "revisar";
+          await env.BUZON.put("resp:" + rec + ":" + pid, JSON.stringify({ at: new Date().toISOString(), estado: estado,
+            texto: String(cuerpo.texto || "").slice(0, 300), por: String(cuerpo.por || "").slice(0, 60) }), { expirationTtl: 60 * 60 * 24 * 120 });
+          return json({ ok: true });
+        }
+        if (request.method === "GET" && ruta === "/respuestas") {
+          if (!env.CLAVE_ADMIN || (url.searchParams.get("admin") || "") !== env.CLAVE_ADMIN) return json({ error: "Clave de administración incorrecta." }, 403);
+          const rec = url.searchParams.get("rec") || "";
+          if (!REC.test(rec)) return json({ error: "Recordatorio no válido." }, 400);
+          const lista = await env.BUZON.list({ prefix: "resp:" + rec + ":" });
+          const out = {};
+          for (const k of lista.keys) out[k.name.split(":")[2]] = await env.BUZON.get(k.name, "json");
+          return json({ ok: true, respuestas: out });
+        }
+        return json({ error: "Ruta no encontrada." }, 404);
+      }
+
       // ---------- Quién tiene los avisos activados (v186, solo el coordinador) ----------
       if (request.method === "GET" && ruta === "/suscritos") {
         if (!env.CLAVE_ADMIN || (url.searchParams.get("admin") || "") !== env.CLAVE_ADMIN) return json({ error: "Clave de administración incorrecta." }, 403);

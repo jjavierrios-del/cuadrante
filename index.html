@@ -1409,7 +1409,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v186";
+const APP_VERSION = "v187";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -6024,7 +6024,18 @@ function viewHorasExtras(){
   h += '<div style="margin-top:12px;padding:8px 10px;border:1px solid var(--slate-200);border-radius:8px">'+
       '<p style="font-size:13px"><b>Antes de enviarlo a facturación:</b> pide a tus compañeros que revisen sus consultas de Tráfico de '+MONTHS[mo]+'. A cada uno le llega su propia lista.</p>'+
       '<div class="row" style="margin-top:6px"><button class="btn" data-action="he-recordar-trafico">Pedir que revisen sus tráficos</button></div>'+
-      (recsTf.length ? '<p class="muted" style="font-size:12px;margin-top:4px">Ya pedido: '+recsTf.slice(0,3).map(r=>recFecha(r.at)).join(" · ")+'</p>' : '')+'</div>'+
+      (recsTf.length ? '<p class="muted" style="font-size:12px;margin-top:4px">Ya pedido: '+recsTf.slice(0,3).map(r=>recFecha(r.at)).join(" · ")+'</p>'+
+        '<div class="row" style="margin-top:6px"><button class="btn" data-action="he-respuestas" data-rec="'+recsTf[0].id+'">Ver respuestas</button></div>'+
+        (function(){ const rs = (ui.heResp||{})[recsTf[0].id]; if(!rs) return '';
+          if(rs.error) return '<div class="warnbox" style="margin-top:6px">'+esc(rs.error)+'</div>';
+          const r0 = recsTf[0]; const para = r0.para==="todos" ? state.physicians.map(p=>p.id) : r0.para;
+          const bien = para.filter(id=>rs.lista[id] && rs.lista[id].estado==="bien"), rev = para.filter(id=>rs.lista[id] && rs.lista[id].estado!=="bien"), sin = para.filter(id=>!rs.lista[id]);
+          const nom = id => esc((state.physicians.find(p=>p.id===id)||{}).name||id);
+          return '<div id="he-resp" style="margin-top:6px;font-size:13px"><b>'+(bien.length+rev.length)+' de '+para.length+' han respondido.</b>'+
+            (rev.length ? '<div style="margin-top:4px;color:#b91c1c"><b>Falta o sobra alguna ('+rev.length+'):</b><br>'+rev.map(id=>nom(id)+(rs.lista[id].texto?': «'+esc(rs.lista[id].texto)+'»':'')).join("<br>")+'</div>' : '')+
+            (bien.length ? '<div style="margin-top:4px;color:var(--emerald-700)">Están bien: '+bien.map(nom).join(", ")+'</div>' : '')+
+            (sin.length ? '<div style="margin-top:4px" class="muted">Sin responder: '+sin.map(nom).join(", ")+'</div>' : '')+'</div>'; })()
+        : '')+'</div>'+
     '<div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap">'+
       '<button class="btn primary" data-action="he-descargar">Descargar hoja de horas extras</button></div>'+
     '<details style="margin-top:14px"><summary style="cursor:pointer;font-size:14px"><b>Nombres completos e ID de nómina</b></summary>'+
@@ -6764,6 +6775,40 @@ function recordatorioEnviar(datos, para){
   ghPublish(true);          // publica y avisa a la vez
   return r;
 }
+// Último recordatorio de tráficos dirigido a esta persona (de los últimos 45 días)
+function recTraficoPara(pid){
+  const lim = new Date(Date.now()-45*864e5).toISOString();
+  return recordatoriosDe(r=>r.tipo==="trafico" && String(r.at)>=lim && (r.para==="todos" || (Array.isArray(r.para) && r.para.indexOf(pid)>=0)))[0] || null;
+}
+const KEY_RESPUESTAS = "cuadrante-respuestas-v1";
+function respuestaDada(recId){ try{ return (JSON.parse(localStorage.getItem(KEY_RESPUESTAS)||"{}"))[recId] || null; }catch(e){ return null; } }
+function respuestaGuardar(recId, v){ try{ const o = JSON.parse(localStorage.getItem(KEY_RESPUESTAS)||"{}"); o[recId] = v; localStorage.setItem(KEY_RESPUESTAS, JSON.stringify(o)); }catch(e){} }
+function misTraficosMes(pid, mk){
+  const out = [];
+  Object.keys(state.assignments).forEach(k=>{
+    const i = k.indexOf("|"); if(k.slice(0,i)!==pid || k.slice(i+1,i+8)!==mk) return;
+    const a = state.assignments[k]; if(!a || a.f) return;
+    ["m","t"].forEach(sl=>{ if(esTrafico(a[sl])) out.push({dia:k.slice(i+1), code:a[sl], hora:(state.traficoHoras||{})[k+"|"+sl]||""}); });
+  });
+  return out.sort((x,y)=>x.dia.localeCompare(y.dia));
+}
+// Tarjeta del compañero: revisa tus tráficos y responde (se queda hasta que responda)
+function viewRevisionTraficos(){
+  const yo = miFacultativo(); if(!yo) return '';
+  const r = recTraficoPara(yo.id); if(!r) return '';
+  const dada = respuestaDada(r.id);
+  const pr = String(r.mes).split("-").map(Number);
+  if(dada) return '';
+  const lista = misTraficosMes(yo.id, r.mes);
+  return '<div class="card no-print" id="card-revtf" style="margin-bottom:10px;border-color:#1d4ed8;background:#eff6ff">'+
+    '<b style="font-size:15px;color:#1d4ed8">Revisa tus consultas de Tráfico de '+MONTHS[pr[1]-1]+'</b>'+
+    '<p class="muted" style="font-size:13px;margin-top:2px">Antes de enviarlas a facturación. Si falta o sobra alguna, indícalo.</p>'+
+    '<div style="margin-top:6px;font-size:14px">'+(lista.length ? lista.map(x=>'• '+esc(repDia(x.dia))+' · '+esc(x.code)+(x.hora?' a las '+esc(x.hora):'')).join("<br>") : 'No tienes ninguna registrada este mes.')+'</div>'+
+    '<div class="row" style="margin-top:10px;gap:6px;flex-wrap:wrap">'+
+      '<button class="btn primary" data-action="revtf-responder" data-rec="'+r.id+'" data-estado="bien">Están bien</button>'+
+      '<button class="btn" data-action="revtf-responder" data-rec="'+r.id+'" data-estado="revisar">Falta o sobra alguna</button></div>'+
+    (ui.revtfMsg ? '<p style="font-size:13px;margin-top:6px">'+esc(ui.revtfMsg)+'</p>' : '')+'</div>';
+}
 function recordatoriosDe(f){ return (state.recordatorios||[]).filter(f).sort((a,b)=>String(b.at).localeCompare(String(a.at))); }
 const recFecha = iso => new Date(iso).toLocaleString("es-ES",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
 
@@ -7296,7 +7341,7 @@ function viewCuadrante(){
         '</div>';
     }
   }
-  if(MODE==="viewer"){ html += viewNovedades(); }
+  if(MODE==="viewer"){ html += viewRevisionTraficos(); html += viewNovedades(); }
   if(false){
     const yoV = miFacultativo();
     const nov = yoV ? novedadesDe(yoV.id) : [];
@@ -7941,6 +7986,7 @@ function viewAjustes(){
     '<p class="muted" style="margin-top:12px;font-size:13px">La guardia de urgencias (URG/URGLV) computa como <b>2 jornadas laborales</b> y no genera libranza. En festivo o fin de semana se registra como <b>URGF</b> (se retribuye aparte y no suma jornadas).</p></div>';
 
   html += viewAjustesAvisos();
+  html += viewCopiasServidor();
   html += viewAjustesHorasExtras();
   html += '<div class="card"><h2>Cobertura diaria</h2>'+
     '<label class="row" style="margin-top:10px;font-size:14px;cursor:pointer">'+
@@ -8446,8 +8492,17 @@ function exportBackup(){
 function importBackup(file){
   const r = new FileReader();
   r.onload = ()=>{
+    let d = null;
+    try{ d = JSON.parse(r.result); }catch(e){ d = null; }
+    if(!aplicarCopia(d)){ alert("El archivo no es una copia de seguridad válida."); return; }
+    alert("Copia restaurada correctamente.");
+  };
+  r.readAsText(file);
+}
+// Carga en la aplicación los datos de una copia (archivo o servidor). Devuelve true si es válida.
+function aplicarCopia(d){
+  {
     try{
-      const d = JSON.parse(r.result);
       if(!d || typeof d!=="object" || !("assignments" in d) || !("physicians" in d)) throw 0;
       state.physicians = (d.physicians||[]).map(p=>{const q=Object.assign({blocked:[]},p); if(q.noUrgf===undefined) q.noUrgf=!!q.noUrg; return q;});
       state.assignments = d.assignments||{};
@@ -8491,10 +8546,41 @@ function importBackup(file){
       else{ state.settings.required = Object.assign({}, DEFAULT_REQUIRED, d.settings.required||{}); }
       state.year = d.year||2026;
       save(); render();
-      alert("Copia restaurada correctamente.");
-    }catch(e){ alert("El archivo no es una copia de seguridad válida."); }
-  };
-  r.readAsText(file);
+      return true;
+    }catch(e){ return false; }
+  }
+}
+// ---- Copias del servidor: ver y restaurar (v187) ----
+// Antes de restaurar se enseña qué cambia y se guarda una copia del estado actual.
+function copiaDiferencias(d){
+  const meses = {}; const a = state.assignments||{}, b = (d&&d.assignments)||{};
+  const claves = {}; Object.keys(a).forEach(k=>claves[k]=1); Object.keys(b).forEach(k=>claves[k]=1);
+  Object.keys(claves).forEach(k=>{
+    const x = a[k]||null, y = b[k]||null;
+    const t = c => c ? [c.m||"",c.t||"",c.f||""].join("/") : "";
+    if(t(x)!==t(y)){ const mk = k.slice(k.indexOf("|")+1, k.indexOf("|")+8); meses[mk] = (meses[mk]||0)+1; }
+  });
+  const nombres = ps => (ps||[]).map(p=>p.name).sort().join(",");
+  return {meses:meses, equipoCambia: nombres(state.physicians)!==nombres(d&&d.physicians),
+          oficiales:[Object.keys(state.official||{}).sort().join(","), Object.keys((d&&d.official)||{}).sort().join(",")]};
+}
+function viewCopiasServidor(){
+  if(MODE!=="editor" || !(state.buzon||{}).url) return '';
+  const cs = ui.copiasSrv;
+  let h = '<div class="card" id="card-copias"><h2>Copias en el servidor</h2>'+
+    '<p class="muted" style="margin-top:2px;font-size:13px">La diaria al abrir la app, la nocturna del servidor, la de antes de generar un mes y las que guardes a mano. Se conservan 180 días.</p>'+
+    '<div class="row" style="margin-top:8px;gap:6px"><button class="btn" data-action="copias-ver">'+(cs?"Actualizar la lista":"Ver las copias")+'</button></div>';
+  if(cs && cs.error) h += '<div class="warnbox" style="margin-top:8px">'+esc(cs.error)+'</div>';
+  if(cs && cs.cargando) h += '<p class="muted" style="margin-top:8px">Cargando…</p>';
+  if(cs && cs.lista){
+    h += '<div style="margin-top:8px;max-height:340px;overflow:auto">'+(cs.lista.length ? cs.lista.map(c=>
+      '<div class="row between" style="gap:8px;padding:6px 0;border-bottom:1px solid var(--slate-100);align-items:center">'+
+        '<span style="font-size:13px"><b>'+new Date(c.fecha).toLocaleString("es-ES",{day:"2-digit",month:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit"})+'</b>'+
+        '<br><span class="muted">'+esc(c.nota||"Copia")+' · '+Math.round((c.bytes||0)/1024)+' KB</span></span>'+
+        '<button class="btn" data-action="copia-restaurar" data-id="'+esc(c.id)+'" style="padding:3px 9px">Restaurar…</button></div>').join("")
+      : '<p class="muted" style="font-size:13px">No hay copias.</p>')+'</div>';
+  }
+  return h+'</div>';
 }
 
 // ------------------ Generación automática ------------------
@@ -9642,6 +9728,60 @@ document.addEventListener("click", e=>{
           ()=>window.prompt("Copia esta dirección:", txt)
         );
       }catch(e){ window.prompt("Copia esta dirección:", txt); }
+      break;
+    }
+    case "revtf-responder": {
+      const yoR = miFacultativo(); if(!yoR) break;
+      const recId = el.dataset.rec, estado = el.dataset.estado;
+      let texto = "";
+      if(estado==="revisar"){ texto = (window.prompt("¿Qué falta o sobra? Por ejemplo: «falta el 12/11 por la tarde»", "")||"").trim(); if(!texto) break; }
+      const claveR = claveEnvio() || pedirClaveEnvio(); if(!claveR) break;
+      ui.revtfMsg = "Enviando…"; render();
+      repServidor("/respuesta", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({clave:claveR, rec:recId, pid:yoR.id, estado:estado, texto:texto, por:yoR.name})}).then(d=>{
+        if(d.error){ ui.revtfMsg = "⚠ "+d.error; render(); return; }
+        respuestaGuardar(recId, {estado:estado, texto:texto, at:new Date().toISOString()});
+        ui.revtfMsg = ""; setSave(estado==="bien" ? "✓ Gracias: tráficos confirmados" : "✓ Enviado al coordinador"); render();
+      });
+      break;
+    }
+    case "he-respuestas": {
+      const recId = el.dataset.rec; const admin = buzonClaveAdmin();
+      if(!admin){ window.alert("Falta la clave de administración del buzón (Ajustes → Buzón de solicitudes)."); break; }
+      repServidor("/respuestas?rec="+encodeURIComponent(recId)+"&admin="+encodeURIComponent(admin)+"&t="+Date.now()).then(d=>{
+        (ui.heResp = ui.heResp || {})[recId] = d.error ? {error:d.error} : {lista:d.respuestas||{}}; render(); });
+      break;
+    }
+    case "copias-ver": {
+      const clave = buzonClavePublicar();
+      if(!clave){ window.alert("Falta la contraseña de publicación (Ajustes → Buzón de solicitudes)."); break; }
+      ui.copiasSrv = {cargando:true}; render();
+      repServidor("/copias?clave="+encodeURIComponent(clave)+"&t="+Date.now()).then(d=>{ ui.copiasSrv = d.error ? {error:d.error} : {lista:d.copias||[]}; render(); });
+      break;
+    }
+    case "copia-restaurar": {
+      const clave = buzonClavePublicar(); const id = el.dataset.id; const b = state.buzon||{};
+      if(!clave || !b.url) break;
+      setSave("Descargando la copia…");
+      fetch(b.url.replace(/\/+$/,"")+"/copia?clave="+encodeURIComponent(clave)+"&id="+encodeURIComponent(id)).then(r=>r.ok ? r.json() : null).catch(()=>null).then(d=>{
+        if(!d || !d.assignments || !d.physicians){ setSave("⚠ No se ha podido leer la copia"); window.alert("No se ha podido leer esa copia."); return; }
+        const dif = copiaDiferencias(d);
+        const meses = Object.keys(dif.meses).sort();
+        const resumen = meses.length ? meses.map(mk=>{ const pr = mk.split("-").map(Number); return "· "+MONTHS[pr[1]-1]+" "+pr[0]+": "+dif.meses[mk]+" celda"+(dif.meses[mk]>1?"s":"")+" distinta"+(dif.meses[mk]>1?"s":""); }).join("\n") : "· El cuadrante es igual al actual.";
+        const c = (ui.copiasSrv && ui.copiasSrv.lista || []).find(x=>x.id===id) || {};
+        if(!window.confirm("¿Restaurar la copia del "+(c.fecha ? new Date(c.fecha).toLocaleString("es-ES") : id)+"?\n\nQué cambia respecto a lo actual:\n"+resumen+
+          (dif.equipoCambia ? "\n· El equipo es distinto." : "")+(dif.oficiales[0]!==dif.oficiales[1] ? "\n· Cambian los meses oficiales." : "")+
+          "\n\nAntes de restaurar se guardará una copia del estado actual en el servidor, por si quieres volver. Después se publicará para todo el equipo.")){ setSave("✓ Guardado"); return; }
+        guardarCopiaServidor("Antes de restaurar la copia del "+(c.fecha ? new Date(c.fecha).toLocaleString("es-ES") : id)).then(err=>{
+          if(err && !window.confirm("No se ha podido guardar la copia del estado actual ("+err+"). ¿Restaurar igualmente?")) return;
+          const buzonActual = JSON.parse(JSON.stringify(state.buzon||{}));
+          if(!aplicarCopia(d)){ window.alert("La copia no es válida."); return; }
+          state.buzon = Object.assign({}, state.buzon||{}, buzonActual);   // la configuración del buzón de este dispositivo se mantiene
+          marcarDeshacer("restaurar copia");
+          save(); NEWER = false; FORZAR_PUB = true; render();
+          ghPublish(true);
+          setSave("✓ Copia restaurada"); window.alert("Copia restaurada. Se está publicando para todo el equipo.");
+        });
+      });
       break;
     }
     case "he-recordar-trafico": {
