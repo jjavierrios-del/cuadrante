@@ -807,6 +807,15 @@ async function atender(request, env, ctx) {
         return json({ error: "Ruta no encontrada." }, 404);
       }
 
+      // ---------- Quién tiene los avisos activados (v186, solo el coordinador) ----------
+      if (request.method === "GET" && ruta === "/suscritos") {
+        if (!env.CLAVE_ADMIN || (url.searchParams.get("admin") || "") !== env.CLAVE_ADMIN) return json({ error: "Clave de administración incorrecta." }, 403);
+        const lista = await env.BUZON.list({ prefix: "push:" });
+        const cuenta = {};
+        lista.keys.forEach((k) => { const pid = k.name.split(":")[1]; if (pid) cuenta[pid] = (cuenta[pid] || 0) + 1; });
+        return json({ ok: true, suscritos: cuenta });
+      }
+
       // ---------- Avisos agrupados tras una tanda de cambios del coordinador (v180) ----------
       if (request.method === "POST" && ruta === "/avisar") {
         const cuerpo = await request.json().catch(() => null);

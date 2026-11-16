@@ -26,6 +26,27 @@ function avisoFechasReq(r) {
 function avisoFechasOpcion(r, id) {
   let f = []; (r.bloques || []).forEach((b) => (b.opciones || []).forEach((o) => { if (o.id === id) f = o.fechas || []; })); return f;
 }
+// Texto de un recordatorio para una persona concreta
+function avisoTextoRecordatorio(r, d, pid) {
+  if (r.tipo === "trafico") {
+    const mk = String(r.mes || ""); const p = mk.split("-").map(Number);
+    const dias = [];
+    Object.keys(d.assignments || {}).forEach((k) => {
+      const i = k.indexOf("|"); if (k.slice(0, i) !== pid || k.slice(i + 1, i + 8) !== mk) return;
+      const a = d.assignments[k] || {}; if (a.f) return;
+      ["m", "t"].forEach((sl) => { if (/^TF[MT]\d$/.test(a[sl] || "")) dias.push(k.slice(i + 1)); });
+    });
+    dias.sort();
+    const mes = p.length === 2 ? AVISO_MESES[p[1] - 1] : mk;
+    const lista = dias.length ? "tienes " + dias.length + ": " + dias.map(avisoFecha).join(", ") : "no tienes ninguna registrada";
+    return { texto: "Revisa tus consultas de Tráfico de " + mes + " (" + lista + "). Si falta o sobra alguna, avisa al coordinador antes de que se envíen a facturación.", tab: "cuadrante", dia: mk + "-01" };
+  }
+  if (r.tipo === "reparto") {
+    const rep = (d.repartos || {})[r.reparto] || {};
+    return { texto: "Recordatorio: envía tus preferencias del reparto «" + (rep.nombre || r.reparto) + "» en Solicitudes → Peticiones.", tab: "solicitudes" };
+  }
+  return { texto: String(r.texto || "Recordatorio del coordinador."), tab: "cuadrante" };
+}
 function avisoOpcion(r, id) { const f = avisoFechasOpcion(r, id); return f.length ? f.map(avisoDiaLargo).join(" + ") : id; }
 const avisoFecha = (k) => String(k || "").split("-").reverse().slice(0, 2).join("/");      // 2027-01-12 → 12/01
 const AVISO_MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
@@ -72,7 +93,9 @@ function avisoComponer(pid, d, visto, hoy) {
   // v185: repartos publicados (fecha de publicación de cada uno)
   const rep = {};
   Object.keys(d.repartos || {}).forEach((id) => { const r = d.repartos[id]; if (r && r.publicado && r.publicado.at) rep[id] = r.publicado.at; });
-  const nuevo = { of: of, asg: asg, sol: sol, rep: rep };
+  // v186: recordatorios que manda el coordinador (repartos, revisar tráficos…)
+  const recs = (Array.isArray(d.recordatorios) ? d.recordatorios : []).filter((r) => r && r.id && (r.para === "todos" || (Array.isArray(r.para) && r.para.indexOf(pid) >= 0)));
+  const nuevo = { of: of, asg: asg, sol: sol, rep: rep, rec: recs.map((r) => r.id) };
   let ir = { tab: "cuadrante" };
   const items = [];          // v185: detalle para la tarjeta de novedades de la app
   if (visto) {
@@ -107,6 +130,15 @@ function avisoComponer(pid, d, visto, hoy) {
     if (cambiados.length) partes.push((cambiados.length === 1 ? "Ha cambiado tu turno del " : "Han cambiado tus turnos del ") + cambiados.slice(0, 2).map(avisoFecha).join(" y el ") + (cambiados.length > 2 ? " (y " + (cambiados.length - 2) + " más)" : "") + ".");
     mesesNuevos.forEach((mk) => { const p = mk.split("-").map(Number); partes.push("Ya está el cuadrante oficial de " + AVISO_MESES[p[1] - 1] + ".");
       items.push({ tipo: "mes", texto: "Ya está el cuadrante oficial de " + AVISO_MESES[p[1] - 1] + " " + p[0] + ".", dia: mk + "-01" }); });
+    // v186: recordatorios nuevos (con una foto anterior a la v186, valen los de los últimos 3 días)
+    const vistos = Array.isArray(visto.rec) ? visto.rec : null;
+    const limite = new Date(Date.now() - 3 * 864e5).toISOString();
+    recs.forEach((r) => {
+      if (vistos ? vistos.indexOf(r.id) >= 0 : String(r.at || "") < limite) return;
+      const t = avisoTextoRecordatorio(r, d, pid);
+      partes.unshift(t.texto); items.unshift({ tipo: "recordatorio", texto: t.texto, tab: t.tab, dia: t.dia || "" });
+      if (t.tab === "solicitudes") ir = { tab: "solicitudes" };
+    });
     // v185: repartos publicados (o vueltos a publicar) desde la última vez
     Object.keys(rep).forEach((id) => {
       if (visto.rep && visto.rep[id] === rep[id]) return;

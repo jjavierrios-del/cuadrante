@@ -551,6 +551,8 @@ let state = {
   archivado: {},
   // Repartos de puentes, Semana Santa y Feria (v183). Sin preferencias: esas viven en el servidor
   repartos: {},
+  // Recordatorios que manda el coordinador (v186): repartos, revisar tráficos…
+  recordatorios: [],
   // Tráficos puestos o quitados por administración, para avisarte
   avisosTrafico: [],
   // Buzón de solicitudes (Cloudflare Worker). La dirección y la clave de envío se
@@ -1104,6 +1106,7 @@ function loadState(){
       state.cerradoAdm = d.cerradoAdm||{};
       state.archivado = d.archivado||{};
       state.repartos = (d.repartos && typeof d.repartos==="object") ? d.repartos : {};
+      state.recordatorios = Array.isArray(d.recordatorios) ? d.recordatorios : [];
       state.cambiosAdm = d.cambiosAdm||{};
       state.avisosTrafico = Array.isArray(d.avisosTrafico) ? d.avisosTrafico : [];
       state.buzon = Object.assign({url:"",claveEnvio:"",claveCalendario:""}, d.buzon||{});
@@ -1406,7 +1409,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v185";
+const APP_VERSION = "v186";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -6016,7 +6019,13 @@ function viewHorasExtras(){
         '<td style="'+celda+'">'+r.tot.hFE+' h · '+heEur(r.tot.eFE)+' €</td></tr>'+
       '</table></div>';
   }
-  h += '<div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap">'+
+  const mkHe = state.year+"-"+pad(mo+1);
+  const recsTf = recordatoriosDe(r=>r.tipo==="trafico" && r.mes===mkHe);
+  h += '<div style="margin-top:12px;padding:8px 10px;border:1px solid var(--slate-200);border-radius:8px">'+
+      '<p style="font-size:13px"><b>Antes de enviarlo a facturación:</b> pide a tus compañeros que revisen sus consultas de Tráfico de '+MONTHS[mo]+'. A cada uno le llega su propia lista.</p>'+
+      '<div class="row" style="margin-top:6px"><button class="btn" data-action="he-recordar-trafico">Pedir que revisen sus tráficos</button></div>'+
+      (recsTf.length ? '<p class="muted" style="font-size:12px;margin-top:4px">Ya pedido: '+recsTf.slice(0,3).map(r=>recFecha(r.at)).join(" · ")+'</p>' : '')+'</div>'+
+    '<div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap">'+
       '<button class="btn primary" data-action="he-descargar">Descargar hoja de horas extras</button></div>'+
     '<details style="margin-top:14px"><summary style="cursor:pointer;font-size:14px"><b>Nombres completos e ID de nómina</b></summary>'+
       '<p class="muted" style="font-size:12px;margin-top:6px">Son los que aparecen en la hoja descargada. Los nombres ya vienen puestos; lo que cambies aquí y los ID se guardan solo en este dispositivo.</p>'+
@@ -6648,6 +6657,14 @@ function viewRepartoAdmin(rep){
     '<button class="btn" data-action="pet-cargar" data-rep="'+rep.id+'">Ver solicitudes recibidas</button>'+
     '<button class="btn primary" data-action="pet-ejecutar" data-rep="'+rep.id+'">Ejecutar reparto (vista previa)</button></div>'+
     (ui.petMsg ? '<p style="margin-top:8px;font-size:13px">'+esc(ui.petMsg)+'</p>' : '')+'</div>';
+  // Recordatorio (lo envía el coordinador cuando quiere)
+  const recsRep = recordatoriosDe(r=>r.tipo==="reparto" && r.reparto===rep.id);
+  h += '<div class="card"><h2>Recordatorio</h2>'+
+    '<p class="muted" style="font-size:13px;margin-top:2px">Envía un aviso al móvil para que manden sus preferencias. Quien no tenga los avisos activados lo verá al entrar en la app.</p>'+
+    '<div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">'+
+      '<button class="btn primary" data-action="pet-recordar" data-rep="'+rep.id+'" data-modo="faltan">A quien aún no ha enviado</button>'+
+      '<button class="btn" data-action="pet-recordar" data-rep="'+rep.id+'" data-modo="todos">A todos</button></div>'+
+    (recsRep.length ? '<p class="muted" style="font-size:12px;margin-top:6px">Enviados: '+recsRep.slice(0,5).map(r=>recFecha(r.at)+" ("+(r.para==="todos"?"todos":r.para.length+" personas")+")").join(" · ")+'</p>' : '')+'</div>';
   // Solicitudes recibidas
   const todas = (ui.petTodas||{})[rep.id];
   if(todas){
@@ -6735,6 +6752,20 @@ function repLeerFechas(txt, anio){
   });
   return out.sort();
 }
+
+// ---- Recordatorios del coordinador (v186) ----
+// Se guardan con el cuadrante; a cada destinatario le llega una notificación y una línea
+// en su tarjeta de novedades (también a quien no tiene los avisos activados, al entrar).
+function recordatorioEnviar(datos, para){
+  const r = Object.assign({id:"r"+Date.now().toString(36)+Math.random().toString(36).slice(2,5), at:new Date().toISOString()}, datos, {para:para});
+  state.recordatorios = (Array.isArray(state.recordatorios) ? state.recordatorios : []).concat([r]).slice(-60);
+  save();
+  avisosAcumular(para==="todos" ? state.physicians.map(p=>p.id) : para);
+  ghPublish(true);          // publica y avisa a la vez
+  return r;
+}
+function recordatoriosDe(f){ return (state.recordatorios||[]).filter(f).sort((a,b)=>String(b.at).localeCompare(String(a.at))); }
+const recFecha = iso => new Date(iso).toLocaleString("es-ES",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
 
 function viewSolicitudes(){
   if(MODE==="viewer" && !esAdministrativo()){
@@ -7565,6 +7596,9 @@ function viewEquipo(){
       '<span class="updown"><button data-action="move-phys" data-pid="'+p.id+'" data-dir="-1">▲</button>'+
       '<button data-action="move-phys" data-pid="'+p.id+'" data-dir="1">▼</button></span>'+
       '<input type="text" value="'+esc(p.name)+'" data-field="phys-name" data-pid="'+p.id+'">'+
+      (function(){ const s2 = ui.suscritos; if(!s2 || s2.error) return '';
+        return s2.lista[p.id] ? '<span class="tiny" title="Avisos activados en '+s2.lista[p.id]+' dispositivo(s)" style="margin:0 4px;color:var(--emerald-700)">🔔</span>'
+                              : '<span class="tiny" title="No tiene los avisos activados" style="margin:0 4px;color:#b45309;white-space:nowrap">sin avisos</span>'; })()+
       '<input type="number" value="'+p.pct+'" min="10" max="100" step="5" class="pctin" data-field="phys-pct" data-pid="'+p.id+'"><span class="muted">%</span>'+
       '<button class="btn" data-action="pct-tramos" data-pid="'+p.id+'" title="Cambios de jornada con fecha de efecto" '+
         'style="padding:3px 8px;font-size:12px;margin-left:4px'+(Array.isArray(p.pctTramos)&&p.pctTramos.length?';background:#7c3aed;color:#fff;border-color:#7c3aed':'')+'">'+
@@ -7633,6 +7667,18 @@ function viewEquipo(){
       '</div></div>';
   });
   html += '</div></div>';
+  // v186: quién tiene los avisos activados (se consulta al servidor una vez por sesión)
+  if(!ui.suscritos && buzonClaveAdmin() && (state.buzon||{}).url){
+    ui.suscritos = {cargando:true};
+    repServidor("/suscritos?admin="+encodeURIComponent(buzonClaveAdmin())+"&t="+Date.now()).then(d=>{ ui.suscritos = d.error ? {error:d.error} : {lista:d.suscritos||{}}; if(ui.tab==="equipo") render(); });
+  }
+  if(ui.suscritos && ui.suscritos.lista){
+    const sin = state.physicians.filter(p=>!ui.suscritos.lista[p.id]);
+    html += '<div class="card"><h2>Avisos al móvil</h2><p style="font-size:13px;margin-top:4px">'+
+      (sin.length ? 'Sin los avisos activados ('+sin.length+'): <b>'+sin.map(p=>esc(p.name)).join(", ")+'</b>. Pueden activarlos en Solicitudes → «Avisos en este dispositivo».'
+                  : '✓ Todos tienen los avisos activados.')+
+      ' Los recordatorios les llegan igualmente al entrar en la app.</p></div>';
+  }
   html += viewExtConfig();
   html += viewCupoPermisos();
   return html;
@@ -8423,6 +8469,7 @@ function importBackup(file){
       state.cerradoAdm = d.cerradoAdm||{};
       state.archivado = d.archivado||{};
       state.repartos = (d.repartos && typeof d.repartos==="object") ? d.repartos : {};
+      state.recordatorios = Array.isArray(d.recordatorios) ? d.recordatorios : [];
       state.cambiosAdm = d.cambiosAdm||{};
       state.avisosTrafico = Array.isArray(d.avisosTrafico) ? d.avisosTrafico : [];
       state.buzon = Object.assign({url:"",claveEnvio:"",claveCalendario:""}, d.buzon||{});
@@ -9597,6 +9644,13 @@ document.addEventListener("click", e=>{
       }catch(e){ window.prompt("Copia esta dirección:", txt); }
       break;
     }
+    case "he-recordar-trafico": {
+      if(!heVisible()) break;
+      const moR = heMesSel(); const mkR = state.year+"-"+pad(moR+1);
+      if(!window.confirm("¿Enviar a todos los facultativos un aviso para que revisen sus consultas de Tráfico de "+MONTHS[moR]+"?\n\nA cada uno le llegará su propia lista.")) break;
+      recordatorioEnviar({tipo:"trafico", mes:mkR}, "todos");
+      setSave("✓ Recordatorio enviado"); render(); break;
+    }
     case "he-descargar": {
       if(!heVisible()) break;
       const moH = heMesSel();
@@ -9869,6 +9923,26 @@ document.addEventListener("click", e=>{
       const err = repPublicar(rep, v);
       if(err){ window.alert(err); break; }
       ui.petMsg = "✓ Versión "+(v+1)+" publicada."; render(); ghPublish(true); break;
+    }
+    case "pet-recordar": {
+      const rep = repartos()[el.dataset.rep]; if(!rep) break;
+      const participantes = (rep.orden||[]).filter(pid=>pid!==EXT_ID);
+      if(el.dataset.modo==="todos"){
+        if(!window.confirm("¿Enviar el recordatorio de «"+rep.nombre+"» a los "+participantes.length+" participantes?")) break;
+        recordatorioEnviar({tipo:"reparto", reparto:rep.id}, participantes);
+        ui.petMsg = "✓ Recordatorio enviado a todos."; render(); break;
+      }
+      ui.petMsg = "Comprobando quién ha enviado ya…"; render();
+      repLeerTodas(rep.id).then(d=>{
+        if(d.error){ ui.petMsg = "⚠ "+d.error; render(); return; }
+        (ui.petTodas = ui.petTodas || {})[rep.id] = d.peticiones || {};
+        const faltan = participantes.filter(pid=>!repVigente((d.peticiones||{})[pid]).length);
+        if(!faltan.length){ ui.petMsg = "Todos han enviado ya sus preferencias."; render(); return; }
+        if(!window.confirm("Aún no han enviado preferencias ("+faltan.length+"):\n· "+faltan.map(repNombre).join("\n· ")+"\n\n¿Enviarles el recordatorio?")){ ui.petMsg = ""; render(); return; }
+        recordatorioEnviar({tipo:"reparto", reparto:rep.id}, faltan);
+        ui.petMsg = "✓ Recordatorio enviado a "+faltan.length+" persona"+(faltan.length>1?"s":"")+": "+faltan.map(repNombre).join(", ")+"."; render();
+      });
+      break;
     }
     case "pet-retirar": {
       const rep = repartos()[el.dataset.rep]; if(!rep || !rep.publicado) break;
@@ -10907,6 +10981,7 @@ function applyPublished(d){
       state.cerradoAdm = d.cerradoAdm||{};
       state.archivado = d.archivado||{};
       state.repartos = (d.repartos && typeof d.repartos==="object") ? d.repartos : {};
+      state.recordatorios = Array.isArray(d.recordatorios) ? d.recordatorios : [];
       state.cambiosAdm = d.cambiosAdm||{};
       state.avisosTrafico = Array.isArray(d.avisosTrafico) ? d.avisosTrafico : [];
   state.buzon = Object.assign({url:"",claveEnvio:"",claveCalendario:""}, d.buzon||{});
@@ -10990,6 +11065,8 @@ async function boot(){
     state.year = hoy.getFullYear();
     ui.month = hoy.getMonth();
   }catch(e){}
+  // v186: la configuración de EXT queda guardada en los datos (antes dependía de los valores de fábrica)
+  try{ if(MODE==="editor" && state.settings && !state.settings.ext){ state.settings.ext = extCfg(); } }catch(e){}
   // Punto de partida de los avisos: lo último publicado (lo que ya han visto los demás)
   try{ AVISOS_BASE = avisosFoto(published && published.assignments ? published : state); }catch(e){}
   loadStatsView();
