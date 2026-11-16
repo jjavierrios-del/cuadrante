@@ -106,6 +106,9 @@
   .k-urg{background:#fbbf24; color:#451a03; font-weight:600}
   .k-urgf{background:#fb923c; color:#431407; font-weight:600}
   .k-ext{background:#111827; color:#f9fafb; font-weight:700}
+  /* v188: un desplegable nunca puede ser más ancho que la pantalla (si no, el móvil aleja toda la página) */
+  select{max-width:100%}
+  #main input[type=text], #main input[type=date]{max-width:100%}
   tr.extrow td.namecol{background:#111827; color:#f9fafb}
   .k-alru{background:#c4b5fd; color:#2e1065}
   .k-ort{background:#a97142; color:#ffffff}
@@ -1409,7 +1412,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v187";
+const APP_VERSION = "v188";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -6642,7 +6645,7 @@ function viewRepEditor(rep, pid, sel, st, puede, titulo){
         '<button class="btn" data-action="pet-sel-quitar" data-rep="'+rep.id+'" data-i="'+i+'" style="padding:2px 8px">Quitar</button></span>' : '')+'</span></li>').join("")+'</ol>'
     : '<p class="muted" style="margin-top:8px;font-size:14px">Ninguna opción elegida.</p>';
   if(puede){
-    h += (libres.length ? '<div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap"><select data-field="pet-anadir" data-rep="'+rep.id+'" style="flex:1;min-width:200px;'+est+'"><option value="">— Añadir una opción —</option>'+
+    h += (libres.length ? '<div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap"><select data-field="pet-anadir" data-rep="'+rep.id+'" style="flex:1;width:100%;min-width:0;'+est+'"><option value="">— Añadir una opción —</option>'+
         libres.map(o=>'<option value="'+esc(o.id)+'">'+esc(repOpcionTxt(rep,o.id))+'</option>').join("")+'</select></div>' : '')+
       '<div class="row" style="margin-top:10px"><button class="btn primary" style="flex:1" data-action="pet-enviar" data-rep="'+rep.id+'" data-pid="'+pid+'"'+(sel.length?'':' disabled')+'>Enviar preferencias</button></div>';
   }
@@ -6698,18 +6701,21 @@ function viewRepartoAdmin(rep){
     const ej = ejs[i];
     const conf = repConflictos(rep, ej);
     h += '<div class="card" id="pet-previa"><div class="row between" style="align-items:center;gap:8px;flex-wrap:wrap"><h2>Versión '+(i+1)+' de '+ejs.length+(ej.publicada?' · publicada':'')+'</h2>'+
-      '<select data-field="pet-ver" data-rep="'+rep.id+'" style="'+est+'">'+ejs.map((x,j)=>'<option value="'+j+'"'+(j===i?" selected":"")+'>Versión '+(j+1)+' · '+
+      '<select data-field="pet-ver" data-rep="'+rep.id+'" style="'+est+';max-width:100%">'+ejs.map((x,j)=>'<option value="'+j+'"'+(j===i?" selected":"")+'>Versión '+(j+1)+' · '+
         new Date(x.at).toLocaleString("es-ES",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})+(x.publicada?' (publicada)':'')+(x.descartada?' (descartada)':'')+'</option>').join("")+'</select></div>'+
       '<p class="muted" style="font-size:12px;margin-top:2px">Orden usado: '+(ej.orden||[]).map(repNombre).map(esc).join(" · ")+'</p>'+
-      '<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px">'+(ej.orden||[]).map(pid=>{
+            // v188: filas apiladas (en móvil, una tabla con desplegables largos desbordaba la pantalla)
+      '<div style="margin-top:8px;font-size:13px">'+(ej.orden||[]).map(pid=>{
         const a = ej.asig[pid]; const pe = (ej.pendientes||[]).find(x=>x.pid===pid);
         if(pid===EXT_ID && !a && !pe) return '';
-        return '<tr style="border-bottom:1px solid var(--slate-100)"><td style="padding:4px"><b>'+esc(repNombre(pid))+'</b></td><td style="padding:4px">'+
-          (a ? esc(repOpcionTxt(rep,a)) : '<span style="color:var(--rose-700)">Pendiente: '+esc(pe?pe.motivo:"")+'</span>')+'</td><td style="padding:4px;text-align:right">'+
-          (a ? '<button class="btn" data-action="pet-quitar-asig" data-rep="'+rep.id+'" data-v="'+i+'" data-pid="'+pid+'" style="padding:2px 8px">Quitar</button>'
-             : ((ej.libres||[]).length ? '<select data-field="pet-asignar" data-rep="'+rep.id+'" data-v="'+i+'" data-pid="'+pid+'" style="'+est+'"><option value="">Asignar a mano…</option>'+
-                 ej.libres.map(id=>'<option value="'+esc(id)+'">'+esc(repOpcionTxt(rep,id))+'</option>').join("")+'</select>' : ''))+'</td></tr>';
-      }).join("")+'</table>'+
+        return '<div style="padding:6px 0;border-bottom:1px solid var(--slate-100)">'+
+          '<div class="row between" style="gap:8px;align-items:center"><b>'+esc(repNombre(pid))+'</b>'+
+            (a ? '<button class="btn" data-action="pet-quitar-asig" data-rep="'+rep.id+'" data-v="'+i+'" data-pid="'+pid+'" style="padding:2px 8px">Quitar</button>' : '')+'</div>'+
+          '<div style="margin-top:2px;overflow-wrap:anywhere">'+(a ? esc(repOpcionTxt(rep,a)) : '<span style="color:var(--rose-700)">Pendiente: '+esc(pe?pe.motivo:"")+'</span>')+'</div>'+
+          (!a && (ej.libres||[]).length ? '<select data-field="pet-asignar" data-rep="'+rep.id+'" data-v="'+i+'" data-pid="'+pid+'" style="'+est+';width:100%;margin-top:4px"><option value="">Asignar a mano…</option>'+
+                 ej.libres.map(id=>'<option value="'+esc(id)+'">'+esc(repOpcionTxt(rep,id))+'</option>').join("")+'</select>' : '')+
+        '</div>';
+      }).join("")+'</div>'+
       ((ej.libres||[]).length ? '<p style="font-size:13px;margin-top:8px">Sin asignar: '+ej.libres.map(id=>esc(repOpcionTxt(rep,id))).join(" · ")+'</p>' : '')+
       (conf.length ? '<div class="warnbox" style="margin-top:8px"><b>Conflictos a revisar</b> (no impiden publicar):<br>'+conf.map(esc).join("<br>")+'</div>' : '<p style="font-size:13px;margin-top:8px;color:var(--emerald-700)">✓ Sin conflictos con el cuadrante.</p>')+
       ((ej.ajustes||[]).length ? '<p class="muted" style="font-size:12px;margin-top:6px">Ajustes manuales: '+ej.ajustes.map(x=>esc(x)).join(" · ")+'</p>' : '')+
