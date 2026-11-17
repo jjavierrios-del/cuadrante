@@ -289,9 +289,22 @@ async function enviarToques(env, pids) {
   }
   return { enviados, caducados };
 }
+// v190: motivo de cada aviso al coordinador y a administración. El móvil lo consulta para escribir
+// el texto (antes lo deducía del cuadrante publicado, que GitHub tarda unos minutos en servir, y
+// ponía «solicitud nueva» cuando en realidad era un reajuste de administración).
+async function anotarMotivo(env, pids, motivo) {
+  if (!motivo) return;
+  for (const pid of pids) {
+    if (pid !== PID_COORD && pid !== PID_ADMVO) continue;
+    const k = "mot:" + pid;
+    const lista = ((await env.BUZON.get(k, "json")) || []).concat([Object.assign({ at: new Date().toISOString() }, motivo)]).slice(-12);
+    await env.BUZON.put(k, JSON.stringify(lista), { expirationTtl: 60 * 60 * 24 * 3 });
+  }
+}
 // Avisa a esas personas ahora o, fuera del horario de avisos, lo deja en cola hasta las 9:00
-async function avisar(env, pids) {
+async function avisar(env, pids, motivo) {
   try {
+    await anotarMotivo(env, pids, motivo);
     if (enSilencio(env)) {
       for (const pid of pids) if (pid) await env.BUZON.put("cola:" + pid, "1", { expirationTtl: 60 * 60 * 24 });
       return { enCola: true };
@@ -444,7 +457,7 @@ async function atender(request, env, ctx) {
         // Se conservan 60 días y luego caducan solas
         await env.BUZON.put(id, JSON.stringify(registro), { expirationTtl: 60 * 60 * 24 * 60 });
         // Aviso al coordinador: ha llegado una solicitud. No retrasa la respuesta.
-        const toque = avisar(env, [PID_COORD]);
+        const toque = avisar(env, [PID_COORD], { t: "solicitud" });
         if (ctx && ctx.waitUntil) ctx.waitUntil(toque);
         return json({ ok: true, id });
       }
@@ -655,7 +668,7 @@ async function atender(request, env, ctx) {
           });
         if (res.error) return json({ error: res.error }, res.status || 502);
         // v179: administración ha puesto o quitado un tráfico → aviso al facultativo y al coordinador
-        const toqueTf = avisar(env, [pid, PID_COORD]);
+        const toqueTf = avisar(env, [pid, PID_COORD], { t: "trafico", accion: quitar ? "quitar" : "poner", pid: pid, fecha: fecha });
         if (ctx && ctx.waitUntil) ctx.waitUntil(toqueTf);
         return json({ ok: true });
       }
@@ -713,7 +726,7 @@ async function atender(request, env, ctx) {
         if (res.error) return json({ error: res.error }, res.status || 502);
         // v179: administración ha reajustado el cambio → ya está aplicado: aviso a los facultativos afectados y al coordinador
         if (cuerpo.valor !== false) {
-          const toqueEj = avisar(env, Object.keys(afectados).filter(pidAvisable).concat([PID_COORD]));
+          const toqueEj = avisar(env, Object.keys(afectados).filter(pidAvisable).concat([PID_COORD]), { t: "reajuste" });
           if (ctx && ctx.waitUntil) ctx.waitUntil(toqueEj);
         }
         return json({ ok: true, ejecutado: cuerpo.valor !== false });
@@ -854,11 +867,19 @@ async function atender(request, env, ctx) {
         return json({ ok: true, avisados: lista.length });
       }
 
+      // ---------- Motivos de los últimos avisos (v190): solo el tipo, sin datos personales ----------
+      if (request.method === "GET" && ruta === "/motivos") {
+        const pid = url.searchParams.get("pid") || "";
+        if (pid !== PID_COORD && pid !== PID_ADMVO) return json({ error: "Destinatario no válido." }, 400);
+        return json({ ok: true, motivos: (await env.BUZON.get("mot:" + pid, "json")) || [] });
+      }
+
       // ---------- Aviso de prueba al coordinador (ignora el horario de silencio) ----------
       if (request.method === "POST" && ruta === "/aviso-prueba") {
         const cuerpo = await request.json().catch(() => null);
         if (!cuerpo) return json({ error: "Petición mal formada." }, 400);
         if (!env.CLAVE_PUBLICAR || cuerpo.clave !== env.CLAVE_PUBLICAR) return json({ error: "Contraseña incorrecta." }, 403);
+        await anotarMotivo(env, [PID_COORD], { t: "prueba" });
         const r = await enviarToques(env, [PID_COORD]);
         return json({ ok: true, enviados: r.enviados || 0, caducados: r.caducados || 0, motivo: r.motivo || "" });
       }
@@ -981,7 +1002,7 @@ async function atender(request, env, ctx) {
         // v179: la aplicación indica a quién afecta lo publicado (compararlo aquí costaría demasiado cálculo)
         const destinos = Array.isArray(cuerpo.avisar) ? cuerpo.avisar.filter(pidAvisable).slice(0, 40) : [];
         if (destinos.length) {
-          const toquePub = avisar(env, destinos);
+          const toquePub = avisar(env, destinos, { t: "espera" });
           if (ctx && ctx.waitUntil) ctx.waitUntil(toquePub);
         }
         try { await env.BUZON.put("pub-ultima", selloPub); } catch (e) { /* ayuda para detectar choques */ }

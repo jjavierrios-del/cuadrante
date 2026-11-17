@@ -57,9 +57,41 @@ function avisoParticipa(r, pid) {
 }
 // Devuelve {cuerpo, tag, visto}: el texto del aviso y la foto que se guarda para la próxima vez.
 // «visto» es la foto anterior (o null la primera vez); «hoy» es la fecha AAAA-MM-DD.
-function avisoComponer(pid, d, visto, hoy) {
+// Texto a partir de los motivos que anota el servidor (coordinador y administración)
+function avisoDesdeMotivos(pid, d, visto, motivos) {
+  const ult = (motivos || []).reduce((m, x) => (x && x.at > m ? x.at : m), (visto && visto.motAt) || "");
+  const lim = new Date(Date.now() - 10 * 60000).toISOString();
+  const nuevos = (motivos || []).filter((m) => m && m.at && (visto && visto.motAt ? m.at > visto.motAt : m.at > lim));
+  const partes = []; let ir = null;
+  const n = (t) => nuevos.filter((m) => m.t === t).length;
+  const nombre = (id) => ((d.physicians || []).find((p) => p.id === id) || {}).name || "un compañero";
+  if (n("prueba")) partes.push("Aviso de prueba: los avisos funcionan en este dispositivo.");
+  if (n("solicitud")) { partes.push(n("solicitud") === 1 ? "Ha llegado una solicitud nueva al buzón." : "Han llegado " + n("solicitud") + " solicitudes nuevas al buzón."); ir = { tab: "solicitudes" }; }
+  if (n("reajuste")) { partes.push("Administración ha reajustado " + (n("reajuste") === 1 ? "un cambio." : n("reajuste") + " cambios.")); ir = ir || { tab: "administrativo" }; }
+  nuevos.filter((m) => m.t === "trafico").slice(-3).forEach((m) => {
+    partes.push("Administración ha " + (m.accion === "quitar" ? "quitado" : "puesto") + " un tráfico a " + nombre(m.pid) + " el " + avisoFecha(m.fecha) + ".");
+    ir = ir || { tab: "cuadrante", dia: m.fecha };
+  });
+  if (n("espera")) { partes.push(n("espera") === 1 ? "Hay un cambio nuevo pendiente de reajustar." : "Hay " + n("espera") + " cambios nuevos pendientes de reajustar."); ir = ir || { tab: "administrativo" }; }
+  return { partes: partes, ir: ir, motAt: ult };
+}
+function avisoComponer(pid, d, visto, hoy, motivos) {
   d = d || {};
   const partes = [];
+  if (pid === "__coord__" || pid === "__admvo__") {
+    // v190: si el servidor dice el motivo, manda él (el cuadrante publicado puede llegar con retraso)
+    const m = avisoDesdeMotivos(pid, d, visto, motivos);
+    if (m.partes.length) {
+      const base = avisoComponer(pid, d, visto, hoy, null);       // para guardar la foto actualizada
+      base.visto.motAt = m.motAt;
+      return { cuerpo: m.partes.join(" "), tag: pid === "__coord__" ? "cuadrante-coord" : "cuadrante-admvo", visto: base.visto, ir: m.ir || base.ir };
+    }
+    if (motivos) {
+      const base = avisoComponer(pid, d, visto, hoy, null);
+      base.visto.motAt = m.motAt;
+      return base;
+    }
+  }
   if (pid === "__coord__") {
     const tf = d.avisosTrafico || []; const ult = tf.length ? tf[tf.length - 1] : null;
     let ej = 0; Object.keys(d.cambiosAdm || {}).forEach((mk) => (d.cambiosAdm[mk] || []).forEach((c) => { if (c && c.ejecutado) ej++; }));
@@ -70,14 +102,15 @@ function avisoComponer(pid, d, visto, hoy) {
     if (visto && ej > (visto.ej || 0)) { const n = ej - (visto.ej || 0); partes.push("Administración ha reajustado " + (n === 1 ? "un cambio" : n + " cambios") + "."); }
     let ir = { tab: "solicitudes" };
     if (partes.length) ir = (visto && ult && nuevo.tf !== visto.tf && ult.fecha) ? { tab: "cuadrante", dia: ult.fecha } : { tab: "administrativo" };
-    if (!partes.length) partes.push("Ha llegado una solicitud nueva al buzón.");
+    if (visto && visto.motAt) nuevo.motAt = visto.motAt;
+    if (!partes.length) partes.push("Hay novedades en el cuadrante.");          // v190: sin motivo, no se afirma que haya una solicitud
     return { cuerpo: partes.join(" "), tag: "cuadrante-coord", visto: nuevo, ir: ir };
   }
   if (pid === "__admvo__") {
     let pend = 0; Object.keys(d.cambiosAdm || {}).forEach((mk) => (d.cambiosAdm[mk] || []).forEach((c) => { if (c && !c.ejecutado) pend++; }));
     const n = visto ? pend - (visto.pend || 0) : 0;
     partes.push(n > 0 ? ("Hay " + (n === 1 ? "un cambio nuevo pendiente" : n + " cambios nuevos pendientes") + " de reajustar.") : "Hay novedades en el cuadrante.");
-    return { cuerpo: partes.join(" "), tag: "cuadrante-admvo", visto: { pend: pend }, ir: { tab: "administrativo" } };
+    return { cuerpo: partes.join(" "), tag: "cuadrante-admvo", visto: { pend: pend, motAt: (visto && visto.motAt) || "" }, ir: { tab: "administrativo" } };
   }
   // Facultativo
   const of = Object.keys(d.official || {}).sort();

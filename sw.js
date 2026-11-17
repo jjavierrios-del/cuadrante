@@ -1,4 +1,4 @@
-const CACHE = "cuadrante-pwa-v189";
+const CACHE = "cuadrante-pwa-v190";
 const ASSETS = ["./", "./index.html", "./avisos-comun.js", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./icon-180.png"];
 
 self.addEventListener("install", (e) => {
@@ -80,18 +80,26 @@ function avisoHoy() { const n = new Date(); return n.getFullYear() + "-" + Strin
 async function avisoPreparar(soloFoto) {
   const quien = (await avisoLeer("./__quien.json")) || {};
   const pid = quien.pid || "";
-  let res = { cuerpo: pid === "__coord__" ? "Ha llegado una solicitud nueva al buzón." : "Hay novedades en el cuadrante.", tag: "cuadrante-novedad" };
+  let res = { cuerpo: "Hay novedades en el cuadrante.", tag: "cuadrante-novedad" };
   if (!pid) return res;
+  // v190: al coordinador y a administración, el servidor les dice el motivo de cada aviso
+  let motivos = null;
+  if ((pid === "__coord__" || pid === "__admvo__") && quien.buzon) {
+    try {
+      const rm = await fetch(String(quien.buzon).replace(/\/+$/, "") + "/motivos?pid=" + encodeURIComponent(pid) + "&t=" + Date.now(), { cache: "no-store" });
+      if (rm.ok) { const dm = await rm.json(); if (dm && Array.isArray(dm.motivos)) motivos = dm.motivos; }
+    } catch (e) { /* sin motivos: se deduce del cuadrante */ }
+  }
+  let d = {};
+  try { const r = await fetch(avisoUrlDatos(), { cache: "no-store" }); if (r.ok) d = await r.json(); } catch (e) { /* sin conexión */ }
   try {
-    const r = await fetch(avisoUrlDatos(), { cache: "no-store" });
-    if (r.ok) {
-      const d = await r.json();
-      const visto = soloFoto ? null : await avisoLeer("./__visto.json");
-      const c = avisoComponer(pid, d, visto && visto.pid === pid ? visto.foto : null, avisoHoy());
-      await avisoGuardar("./__visto.json", { pid: pid, foto: c.visto });
-      res = { cuerpo: c.cuerpo, tag: c.tag, ir: c.ir };
-    }
-  } catch (e) { /* sin conexión: aviso genérico */ }
+    const visto = soloFoto ? null : await avisoLeer("./__visto.json");
+    if (!d.assignments && !motivos) return res;
+    const c = avisoComponer(pid, d, visto && visto.pid === pid ? visto.foto : null, avisoHoy(), motivos);
+    if (d.assignments) await avisoGuardar("./__visto.json", { pid: pid, foto: c.visto });
+    else if (visto && visto.foto) { visto.foto.motAt = c.visto.motAt; await avisoGuardar("./__visto.json", visto); }
+    res = { cuerpo: c.cuerpo, tag: c.tag, ir: c.ir };
+  } catch (e) { /* aviso genérico */ }
   return res;
 }
 self.addEventListener("push", (e) => {

@@ -1412,7 +1412,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v189";
+const APP_VERSION = "v190";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -6231,7 +6231,7 @@ async function avisosActivar(pid, clave){
   }catch(e){ return "Sin conexión con el servidor."; }
   try{ localStorage.setItem(KEY_AVISOS, JSON.stringify({pid: pid, endpoint: datos.endpoint, desde: new Date().toISOString()})); }catch(e){}
   // El service worker necesita saber quién usa el dispositivo para componer el texto
-  try{ const c = await caches.open("cuadrante-avisos"); await c.put("./__quien.json", new Response(JSON.stringify({pid: pid}), {headers:{"Content-Type":"application/json"}})); }catch(e){}
+  try{ const c = await caches.open("cuadrante-avisos"); await c.put("./__quien.json", new Response(JSON.stringify({pid: pid, buzon: (state.buzon||{}).url||""}), {headers:{"Content-Type":"application/json"}})); }catch(e){}
   // Foto de partida: los avisos contarán lo que cambie desde ahora
   try{ const reg2 = await navigator.serviceWorker.ready; if(reg2.active && reg2.active.postMessage) reg2.active.postMessage({tipo:"avisos-inicia"}); }catch(e){}
   return null;
@@ -10579,7 +10579,8 @@ document.addEventListener("click", e=>{
       setSave("Consultando el buzón…");
       buzonRecibir().then(r=>{
         if(r.error){ ui.reviewTab = {err:r.error}; setSave("⚠ Error"); render(); return; }
-        ui.reviewTab = {ok: r.total===0 ? "El buzón está vacío."
+        const pendB = bandejaPendientes().length;
+        ui.reviewTab = {ok: r.total===0 ? ("No hay solicitudes nuevas en el buzón. "+(pendB ? "Tienes "+pendB+" pendiente"+(pendB>1?"s":"")+" en la bandeja." : "Las que han llegado ya están en tu bandeja (en «Resueltas», si ya las resolviste)."))
           : (r.nuevas+(r.nuevas===1?" solicitud recibida":" solicitudes recibidas")+(r.repetidas?" · "+r.repetidas+" ya estaban":""))};
         setSave("✓ Buzón consultado");
         render();
@@ -11262,6 +11263,9 @@ async function boot(){
   // v177: la copia diaria se hace al abrir la aplicación (antes solo al entrar en Solicitudes),
   // y antes de archivar, para que la copia del día incluya lo que el archivado va a retirar.
   abrirDesdeDireccion();                 // si se ha abierto tocando un aviso, va a su pantalla
+  // v190: los dispositivos con avisos guardan también la dirección del servidor (para leer el motivo)
+  try{ const gA = avisosGuardados(); if(gA && gA.pid && (state.buzon||{}).url && "caches" in window){
+    caches.open("cuadrante-avisos").then(c=>c.put("./__quien.json", new Response(JSON.stringify({pid:gA.pid, buzon:state.buzon.url}), {headers:{"Content-Type":"application/json"}}))).catch(()=>{}); } }catch(e){}
   setTimeout(()=>{ try{ copiaDiariaAuto(); }catch(e){} }, 3000);
   setTimeout(()=>{ try{ archivarPendientes(false); }catch(e){} }, 8000);
 }
