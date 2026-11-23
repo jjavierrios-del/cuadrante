@@ -867,6 +867,18 @@ async function atender(request, env, ctx) {
         return json({ ok: true, avisados: lista.length });
       }
 
+      // ---------- El cuadrante publicado, al instante (v191, solo el coordinador) ----------
+      // raw.githubusercontent tarda minutos en servir la versión nueva; la API de GitHub no.
+      // Lo usa la app del coordinador para juntar sus cambios con los de administración.
+      if (request.method === "GET" && ruta === "/datos") {
+        if (!env.CLAVE_PUBLICAR || (url.searchParams.get("clave") || "") !== env.CLAVE_PUBLICAR) return json({ error: "Contraseña incorrecta." }, 403);
+        if (!env.GITHUB_TOKEN || !env.GH_OWNER || !env.GH_REPO) return json({ error: "El servidor no tiene configurado el destino en GitHub." }, 500);
+        const r = await fetch("https://api.github.com/repos/" + env.GH_OWNER + "/" + env.GH_REPO + "/contents/data.json?ref=" + encodeURIComponent(env.GH_BRANCH || "main") + "&t=" + Date.now(), {
+          headers: { "Authorization": "Bearer " + env.GITHUB_TOKEN, "Accept": "application/vnd.github.raw", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "buzon-cuadrante" } });
+        if (!r.ok) return json({ error: "No se ha podido leer el cuadrante (" + r.status + ")." }, 502);
+        return new Response(await r.text(), { headers: { "Content-Type": "application/json; charset=utf-8", ...CORS } });
+      }
+
       // ---------- Motivos de los últimos avisos (v190): solo el tipo, sin datos personales ----------
       if (request.method === "GET" && ruta === "/motivos") {
         const pid = url.searchParams.get("pid") || "";

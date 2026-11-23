@@ -1,4 +1,4 @@
-const CACHE = "cuadrante-pwa-v190";
+const CACHE = "cuadrante-pwa-v191";
 const ASSETS = ["./", "./index.html", "./avisos-comun.js", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./icon-180.png"];
 
 self.addEventListener("install", (e) => {

@@ -337,6 +337,131 @@ async function fetchPublished(){
 }
 
 let pubT = null, pubBusy = false, pubAgain = false;
+// ================== Ponerse al día solo (v191) ==================
+// Cuando administración (u otro dispositivo tuyo) publica después de lo último que conoce este
+// dispositivo, la app ya no da error: si aquí no hay nada pendiente, carga lo publicado; si lo
+// hay, junta los dos (lo de administración en sus celdas y lo tuyo en las tuyas) y solo pregunta
+// si los dos habéis tocado la misma celda. Para juntar hace falta la versión de partida, que se
+// guarda en este dispositivo cada vez que se publica o se carga.
+const KEY_BASE = "cuadrante-base-v1";
+function baseGuardar(d){ try{ localStorage.setItem(KEY_BASE, JSON.stringify(d)); }catch(e){} }
+function baseLeer(){ try{ return JSON.parse(localStorage.getItem(KEY_BASE)||"null"); }catch(e){ return null; } }
+// Lo publicado, recién leído: a través del servidor (al instante) o, si no, desde GitHub
+async function leerPublicadoFresco(){
+  const b = state.buzon||{};
+  if(b.url && buzonClavePublicar()){
+    try{
+      const r = await fetch(b.url.replace(/\/+$/,"")+"/datos?clave="+encodeURIComponent(buzonClavePublicar())+"&t="+Date.now(), {cache:"no-store"});
+      if(r.ok){ const d = await r.json().catch(()=>null); if(d && d.assignments) return d; }
+    }catch(e){}
+  }
+  try{ return await fetchPublished(); }catch(e){ return null; }
+}
+// Igualdad que no depende del orden de las claves ({m,t,f} y {f,m,t} son lo mismo)
+function canon(x){
+  if(x===undefined || x===null) return "∅";
+  if(Array.isArray(x)) return "["+x.map(canon).join(",")+"]";
+  if(typeof x==="object") return "{"+Object.keys(x).filter(k=>x[k]!==undefined && x[k]!==null).sort().map(k=>k+":"+canon(x[k])).join(",")+"}";
+  return JSON.stringify(x);
+}
+const SYNC_META = ["publishedAt","publishedBy","tienePass","updatedAt","buzon","year","adminPass","adminPass2"];
+const SYNC_MAPAS = ["assignments","traficoHoras","diasLibres","official","cerradoAdm","archivado","historial","baseline","rotantes","puerta","guardiaRot","permisosCupo","rotBloqueados","repartos","rotantesLeyenda"];
+// En la bandeja, lo publicado no lleva los motivos: no cuenta como diferencia
+const sinPrivado = it => { if(!it || typeof it!=="object") return it; const c = JSON.parse(JSON.stringify(it)); if(c.req) delete c.req.note; delete c.texto; delete c.motivo; return c; };
+function fusionar(base, local, remoto){
+  const conflictos = [], datos = {};
+  base = base||{};
+  const tri = (b, l, r, zona, clave, norm)=>{
+    const n = norm || (x=>x);
+    const cl = canon(n(l)), cr = canon(n(r)), cb = canon(n(b));
+    if(cl===cr) return l;
+    if(cl===cb) return r;
+    if(cr===cb) return l;
+    conflictos.push({zona, clave, mio:l, suyo:r});
+    return l;
+  };
+  const mapa = (b, l, r, zona)=>{
+    b = b||{}; l = l||{}; r = r||{}; const out = {};
+    const ks = {}; [b,l,r].forEach(o=>Object.keys(o).forEach(k=>ks[k]=1));
+    Object.keys(ks).forEach(k=>{ const v = tri(b[k], l[k], r[k], zona, k); if(v!==undefined && v!==null) out[k] = v; });
+    return out;
+  };
+  const lista = (b, l, r, zona, idDe, norm)=>{
+    const ix = a=>{ const o = {}; (a||[]).forEach(x=>{ if(x) o[idDe(x)] = x; }); return o; };
+    const B = ix(b), L = ix(l), Rr = ix(r); const orden = [];
+    (r||[]).concat(l||[]).forEach(x=>{ if(x){ const id = idDe(x); if(orden.indexOf(id)<0) orden.push(id); } });
+    const out = [];
+    orden.forEach(id=>{ const v = tri(B[id], L[id], Rr[id], zona, id, norm); if(v!==undefined && v!==null) out.push(v); });
+    return out;
+  };
+  const claves = {}; Object.keys(remoto||{}).forEach(k=>claves[k]=1); Object.keys(base).forEach(k=>claves[k]=1);
+  Object.keys(claves).forEach(k=>{
+    if(SYNC_META.indexOf(k)>=0) return;
+    const b = base[k], l = local[k], r = remoto[k];
+    if(SYNC_MAPAS.indexOf(k)>=0) datos[k] = mapa(b, l, r, k);
+    else if(k==="bandeja") datos[k] = lista(b, l, r, k, x=>x.id, sinPrivado);
+    else if(k==="recordatorios") datos[k] = lista(b, l, r, k, x=>x.id);
+    else if(k==="avisosTrafico"){ const u = {}; (b||[]).concat(r||[], l||[]).forEach(x=>{ if(x) u[[x.at,x.phys,x.fecha,x.accion,x.code].join("|")] = x; });
+      datos[k] = Object.values(u).sort((x,y)=>String(x.at).localeCompare(String(y.at))).slice(-100); }
+    else if(k==="cambiosAdm"){ const bs = b||{}, ls = l||{}, rs = r||{}; const out = {}; const mks = {}; [bs,ls,rs].forEach(o=>Object.keys(o).forEach(m=>mks[m]=1));
+      Object.keys(mks).forEach(m=>{ if(!(m in ls) && !(m in rs)) return; out[m] = lista(bs[m], ls[m], rs[m], "cambiosAdm", x=>x.id||canon(x)); }); datos[k] = out; }
+    else datos[k] = tri(b, l, r, k, "");
+  });
+  return {datos, conflictos};
+}
+function conflictoTxt(c){
+  if(c.zona==="assignments"){ const i = c.clave.indexOf("|"); const pid = c.clave.slice(0,i), dia = c.clave.slice(i+1);
+    const nom = pid===EXT_ID ? "EXT" : ((state.physicians.find(p=>p.id===pid)||{}).name||pid);
+    return nom+" el "+fmtDate(dia)+": aquí "+cellToText(c.mio)+" · publicado "+cellToText(c.suyo); }
+  return c.zona+(c.clave?" ("+c.clave+")":"");
+}
+// Devuelve {estado}: "al-dia", "cargado", "fusionado" (queda por publicar) o "sin-resolver"
+let SINCRONIZANDO = false;
+async function sincronizarCoord(){
+  if(MODE!=="editor" || SINCRONIZANDO) return {estado:"al-dia"};
+  SINCRONIZANDO = true;
+  try{
+    const remoto = await leerPublicadoFresco();
+    if(!remoto || !remoto.publishedAt) return {estado:"al-dia"};
+    const baseP = BASE_PUB || PUBLISHED_AT;
+    if(baseP && remoto.publishedAt <= baseP) return {estado:"al-dia"};
+    // Solo se usa lo publicado si trae el cuadrante completo; si no, aviso de siempre
+    if(!remoto.assignments || !Array.isArray(remoto.physicians) || !remoto.physicians.length){ NEWER = true; PUBLISHED_AT = remoto.publishedAt; render(); return {estado:"sin-resolver"}; }
+    if(remoto.publishedBy===DEVICE_ID && baseP && state.updatedAt && remoto.publishedAt >= state.updatedAt){
+      BASE_PUB = PUBLISHED_AT = remoto.publishedAt; baseGuardar(remoto); return {estado:"al-dia"};
+    }
+    const pendiente = hayPendiente();
+    if(!pendiente){
+      applyPublished(remoto);
+      BASE_PUB = PUBLISHED_AT = remoto.publishedAt; state.updatedAt = remoto.publishedAt; marcarPendiente(false);
+      try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){}
+      baseGuardar(remoto); try{ AVISOS_BASE = avisosFoto(remoto); }catch(e){}
+      NEWER = false; FORZAR_PUB = false; render(); setSave("✓ Al día con lo publicado");
+      return {estado:"cargado"};
+    }
+    const base = baseLeer();
+    if(!base || !base.publishedAt){ NEWER = true; PUBLISHED_AT = remoto.publishedAt; render(); return {estado:"sin-resolver"}; }
+    const f = fusionar(base, state, remoto);
+    if(f.conflictos.length){
+      const celdas = f.conflictos.filter(c=>c.zona==="assignments");
+      const otros = f.conflictos.length - celdas.length;
+      const usarLoMio = window.confirm("Mientras editabas, se publicó otro cambio que toca lo mismo que tú:\n\n· "+
+        f.conflictos.slice(0,10).map(conflictoTxt).join("\n· ")+(f.conflictos.length>10?"\n· …":"")+
+        "\n\nAceptar: te quedas con lo tuyo en esas "+(celdas.length?"celdas":"partes")+".\nCancelar: te quedas con lo publicado.\n\nEl resto se junta solo.");
+      if(!usarLoMio) f.conflictos.forEach(c=>{
+        if(c.zona==="assignments" || SYNC_MAPAS.indexOf(c.zona)>=0){ if(c.suyo===undefined || c.suyo===null) delete f.datos[c.zona][c.clave]; else f.datos[c.zona][c.clave] = c.suyo; }
+        else if(!c.clave) f.datos[c.zona] = c.suyo;
+      });
+    }
+    Object.keys(f.datos).forEach(k=>{ state[k] = f.datos[k]; });
+    BASE_PUB = PUBLISHED_AT = remoto.publishedAt; baseGuardar(remoto); try{ AVISOS_BASE = avisosFoto(remoto); }catch(e){}
+    NEWER = false; FORZAR_PUB = false;
+    try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){}
+    render(); setSave("✓ Juntado con lo publicado");
+    return {estado:"fusionado"};
+  }catch(e){ try{ console.warn("sincronizar:", e); }catch(e2){} NEWER = true; render(); return {estado:"sin-resolver"}; }   // ante cualquier fallo, no se arriesga
+  finally{ SINCRONIZANDO = false; }
+}
 // v180: versión publicada sobre la que trabaja este dispositivo, y si el coordinador ha
 // decidido expresamente que valga su copia («Seguir con la local»).
 let BASE_PUB = null, FORZAR_PUB = false;
@@ -382,28 +507,20 @@ async function ghPublish(manual){
     if(!manual && !state.physicians.length) return;
     // v180: mientras haya una versión más reciente sin resolver, no se publica nada
     // (antes, una segunda publicación manual se colaba y pisaba el cambio ajeno).
-    if(NEWER && !FORZAR_PUB){
-      setSave("⚠ Hay una versión más reciente: no se publica");
-      if(manual) window.alert(MSG_CHOQUE);
-      return;
-    }
     if(pubBusy){ pubAgain = true; return; }
     pubBusy = true;
+    // v191: si hay una versión publicada más nueva, primero se junta con ella (sin error)
+    if(!FORZAR_PUB){
+      const sy = await sincronizarCoord();
+      if(sy.estado==="sin-resolver"){ pubBusy = false; pubAgain = false; setSave("⚠ Hay una versión más reciente: no se publica"); if(manual) window.alert(MSG_CHOQUE); return; }
+      if(sy.estado==="cargado"){ pubBusy = false; pubAgain = false; return; }   // no había nada propio que publicar
+      // El servidor rechazó antes por un cambio más reciente que aún no se ha podido leer: no se insiste
+      if(NEWER){ pubBusy = false; pubAgain = false; setSave("⚠ Hay una versión más reciente: no se publica"); if(manual) window.alert(MSG_CHOQUE); return; }
+    }
     // v172: si administración (u otro dispositivo) ha publicado después de lo último que
     // conoce este dispositivo, no se pisa: se avisa y se decide qué versión vale.
-    try{
-      const ult = FORZAR_PUB ? null : await fetchPublished();
-      const base = BASE_PUB || PUBLISHED_AT;
-      if(ult && ult.publishedAt && base && ult.publishedAt > base &&
-         !(ult.publishedBy && ult.publishedBy===DEVICE_ID)){
-        NEWER = true; PUBLISHED_AT = ult.publishedAt; pubBusy = false; pubAgain = false;
-        setSave("⚠ Hay una versión más reciente: no se publica");
-        render();
-        window.alert(MSG_CHOQUE);
-        return;
-      }
-    }catch(e){ /* sin conexión: fallará la publicación y se avisará */ }
     setSave("Publicando…");
+    const genAlPublicar = PEND_GEN;
     const body = paraPublicar();
     // v180: a quién afecta. Una publicación manual (aprobar, deshacer…) avisa en el momento;
     // las automáticas, mientras se edita, se agrupan en un solo aviso por persona.
@@ -419,6 +536,8 @@ async function ghPublish(manual){
         try{ AVISOS_BASE = avisosFoto(body); }catch(e){}
         const sello = (d.publicado && typeof d.publicado==="string") ? d.publicado : body.publishedAt;   // la hora la pone el servidor
         PUBLISHED_AT = sello; BASE_PUB = sello; FORZAR_PUB = false;
+        try{ baseGuardar(Object.assign(JSON.parse(JSON.stringify(body)), {publishedAt:sello})); }catch(e){}
+        if(PEND_GEN===genAlPublicar) marcarPendiente(false);      // si no se ha tocado nada mientras se publicaba
         PUB_TIENE_PASS = !!(body.tienePass || body.adminPass || body.adminPass2);
         state.updatedAt = sello;
         try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){}
@@ -426,8 +545,17 @@ async function ghPublish(manual){
         setSave("✓ Publicado");
         if(!manual) avisosAcumular(destinos);
       }else if(r.status===409 && d && d.conflicto){
-        // El servidor ha detectado un cambio ajeno más reciente: no se ha pisado nada
+        // El servidor ha detectado un cambio ajeno más reciente: no se ha pisado nada.
+        // v191: se junta con él y se vuelve a intentar una vez
         avisosAcumular(avisarYa);
+        pubBusy = false;
+        if(!ghPublish.reintento){
+          ghPublish.reintento = true;
+          const sy = await sincronizarCoord();
+          if(sy.estado==="fusionado"){ try{ await ghPublish(manual); } finally { ghPublish.reintento = false; } return; }
+          ghPublish.reintento = false;
+          if(sy.estado==="cargado") return;
+        }
         NEWER = true; if(d.publishedAt) PUBLISHED_AT = d.publishedAt;
         setSave("⚠ Hay una versión más reciente: no se publica");
         render();
@@ -1234,10 +1362,18 @@ function deshacer(){
 
 // v150: mientras se simula/aplica una solicitud, el guardado espera al resultado
 let PAUSA_GUARDADO = false, GUARDADO_APLAZADO = false;
+// v191: ¿hay cambios de este dispositivo sin publicar? Un indicador, no una comparación de
+// horas: si el reloj del dispositivo fuera atrasado, comparar horas podría dar por publicados
+// unos cambios que no lo están y perderlos al ponerse al día.
+const KEY_PENDIENTE = "cuadrante-pendiente-v1";
+let PEND_GEN = 0;
+function hayPendiente(){ try{ return localStorage.getItem(KEY_PENDIENTE)==="1"; }catch(e){ return true; } }
+function marcarPendiente(v){ try{ if(v) localStorage.setItem(KEY_PENDIENTE,"1"); else localStorage.removeItem(KEY_PENDIENTE); }catch(e){} }
 function save(){
   if(PAUSA_GUARDADO){ GUARDADO_APLAZADO = true; return; }
   if(MODE==="viewer"){ setSave("Solo consulta"); return; }
   state.updatedAt = new Date().toISOString();
+  PEND_GEN++; marcarPendiente(true);
   setSave("Guardando…");
   clearTimeout(saveT);
   saveT = setTimeout(()=>{
@@ -1412,7 +1548,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v190";
+const APP_VERSION = "v191";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -10305,6 +10441,7 @@ document.addEventListener("click", e=>{
             applyPublished(d);
             NEWER = false; FORZAR_PUB = false;
             if(d.publishedAt) BASE_PUB = d.publishedAt;
+            baseGuardar(d); marcarPendiente(false);
             try{ AVISOS_BASE = avisosFoto(d); }catch(e){}
             state.updatedAt = PUBLISHED_AT || new Date().toISOString();
             try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){}
@@ -11199,7 +11336,10 @@ async function autoRefresh(){
     }else{
       // En un dispositivo de edición no se sobrescribe nada: solo se avisa
       if(d.publishedBy && d.publishedBy===DEVICE_ID){ PUBLISHED_AT = d.publishedAt; return; }   // publicado por este mismo dispositivo
-      if(!state.updatedAt || d.publishedAt > state.updatedAt){ NEWER = true; PUBLISHED_AT = d.publishedAt; render(); }
+      // v191: se pone al día solo; si junta cambios propios pendientes, los publica
+      if(ocupadoEditando()) return;
+      const sy = await sincronizarCoord();
+      if(sy.estado==="fusionado") schedulePublish();
     }
   }catch(e){ /* sin conexión: se reintenta más adelante */ }
 }
@@ -11231,7 +11371,7 @@ async function boot(){
     NEWER = true; PUBLISHED_AT = published.publishedAt;
   }else if(published && published.publishedAt){ PUBLISHED_AT = published.publishedAt; }
   // Versión publicada sobre la que trabaja este dispositivo (si su copia no es más antigua)
-  if(published && published.publishedAt && !NEWER) BASE_PUB = published.publishedAt;
+  if(published && published.publishedAt && !NEWER){ BASE_PUB = published.publishedAt; if(!baseLeer()) baseGuardar(published); }
   // Si hay contraseña configurada, no se entra en edición sin haberla introducido en esta sesión
   // Se comprueban los dos formatos: la huella reforzada (adminPass2) y la antigua.
   // Mirando solo la antigua, tras migrar quedaba vacía y se entraba sin contraseña.
@@ -11260,6 +11400,8 @@ async function boot(){
   // salvo que exista una publicación más reciente sin resolver.
   ARRANCANDO = false;
   if(NEWER) setSave("⚠ Hay una versión más reciente publicada");
+  // v191: en edición, si hay una versión más nueva se carga o se junta sola
+  if(MODE==="editor" && NEWER){ NEWER = false; sincronizarCoord().then(sy=>{ if(sy.estado==="fusionado") schedulePublish(); }); }
   // v177: la copia diaria se hace al abrir la aplicación (antes solo al entrar en Solicitudes),
   // y antes de archivar, para que la copia del día incluya lo que el archivado va a retirar.
   abrirDesdeDireccion();                 // si se ha abierto tocando un aviso, va a su pantalla
