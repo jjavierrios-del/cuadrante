@@ -66,6 +66,7 @@
   .k-alt{background:#93a4fb; color:#141238}
   .k-rhbt{background:#84cc16; color:#1a2e05}
   .k-adm{background:#64748b; color:#fff}
+  .pendn{display:inline-block;min-width:18px;padding:0 5px;margin-left:3px;border-radius:999px;background:#b91c1c;color:#fff;font-size:11px;font-weight:700;line-height:18px;text-align:center}
   .custd .cell{box-shadow:inset 0 -3px 0 #7c3aed}
   @media print{ .custd .cell{box-shadow:none} }
   .nodisp{background:repeating-linear-gradient(45deg,#fee2e2,#fee2e2 5px,#fecaca 5px,#fecaca 10px)!important; color:#991b1b!important}
@@ -1550,7 +1551,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v193";
+const APP_VERSION = "v194";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2573,11 +2574,12 @@ function applyRequestCore(r){
 
 // ------------------ Render ------------------
 function render(){
-  if(MODE==="viewer" && (ui.tab==="equipo" || ui.tab==="ajustes")) ui.tab = "cuadrante";
+  if(MODE==="viewer" && (ui.tab==="equipo" || ui.tab==="ajustes" || ui.tab==="pendientes")) ui.tab = "cuadrante";
   renderNav();
   const main = document.getElementById("main");
   try{
     if(ui.tab==="cuadrante") main.innerHTML = viewCuadrante();
+    else if(ui.tab==="pendientes") main.innerHTML = viewPendientes();
     else if(ui.tab==="equipo") main.innerHTML = viewEquipo();
     else if(ui.tab==="stats") main.innerHTML = viewStats();
     else if(ui.tab==="rotantes") main.innerHTML = viewRotantes();
@@ -7419,8 +7421,119 @@ function viewSolicitudesCoord(){
   return h;
 }
 
+// ===================== Panel de pendientes del coordinador (v194) =====================
+// Reúne en una pestaña lo que espera una decisión o una revisión del coordinador. Solo
+// informa y lleva a donde se resuelve: no cambia nada por sí mismo. Lo local se calcula al
+// momento; lo que está en el servidor (buzón, respuestas, peticiones, custodia) se lee al
+// abrir la pestaña y una vez al arrancar.
+const PEND = {estado:"", buzon:null, respuestas:null, repartos:{}, at:""};
+function pendMesesVista(){ const h = new Date(); return [0,1].map(i=>{ const d = new Date(h.getFullYear(), h.getMonth()+i, 1); return {y:d.getFullYear(), mo:d.getMonth()}; }); }
+function pendCargarServidor(){
+  if(MODE!=="editor" || !custPuedeServidor() || PEND.estado==="cargando") return Promise.resolve();
+  PEND.estado = "cargando";
+  const url = (state.buzon.url||"").replace(/\/+$/,""), admin = encodeURIComponent(buzonClaveAdmin());
+  const tareas = [];
+  // Solicitudes que siguen en el buzón sin bajar a la bandeja (solo se cuentan: no se borran)
+  tareas.push(repServidor("/?admin="+admin+"&t="+Date.now()).then(d=>{ PEND.buzon = d.error ? {error:d.error} : {n:(d.solicitudes||[]).filter(x=>x && x.req && x.req.type).length}; }));
+  // Respuestas al último recordatorio de tráficos
+  const rec = recordatoriosDe(r=>r.tipo==="trafico" && String(r.at)>=new Date(Date.now()-45*864e5).toISOString())[0];
+  if(rec) tareas.push(repServidor("/respuestas?rec="+encodeURIComponent(rec.id)+"&admin="+admin+"&t="+Date.now()).then(d=>{ PEND.respuestas = d.error ? {error:d.error} : {rec, lista:d.respuestas||{}}; }));
+  else PEND.respuestas = null;
+  // Repartos con la recepción abierta: quién no ha enviado todavía
+  PEND.repartos = {};
+  Object.values(repartos()).filter(r=>r && r.estado==="abierto").forEach(rep=>{
+    tareas.push(repLeerTodas(rep.id).then(d=>{ if(d.error){ PEND.repartos[rep.id] = {error:d.error}; return; }
+      const env = {}; Object.keys(d.peticiones||{}).forEach(pid=>{ if(repVigente(d.peticiones[pid]).length) env[pid] = true; });
+      PEND.repartos[rep.id] = {faltan:(rep.orden||[]).filter(pid=>pid!==EXT_ID && !env[pid])}; }));
+  });
+  // Custodia: la lista y los meses que se ven en el panel
+  tareas.push(custCargarLista());
+  pendMesesVista().forEach(({y, mo})=>tareas.push(custCargarMes(y, mo, true)));
+  return Promise.all(tareas).catch(()=>{}).then(()=>{ PEND.estado = "ok"; PEND.at = new Date().toISOString(); });
+}
+// Cada pendiente: {nivel:"alta"|"media"|"info", titulo, lineas:[], boton:{txt, attrs}}
+function pendLista(){
+  const out = [];
+  const hoyK = (()=>{ const h = new Date(); return keyOf(h.getFullYear(), h.getMonth(), h.getDate()); })();
+  const boton = (txt, attrs)=>({txt, attrs});
+  // 1) Solicitudes de los compañeros
+  const pb = bandejaPendientes();
+  if(pb.length) out.push({nivel:"alta", titulo:pb.length+(pb.length>1?" solicitudes pendientes":" solicitud pendiente")+" de aprobación",
+    lineas:pb.slice(0,6).map(it=>{ try{ return resumenSolicitud(it.req); }catch(e){ return "Solicitud"; } }).concat(pb.length>6?["y "+(pb.length-6)+" más"]:[]),
+    boton:boton("Ir a la bandeja", 'data-action="pend-ir" data-tab="solicitudes" data-sub="revisar"')});
+  if(PEND.buzon && PEND.buzon.n) out.push({nivel:"alta", titulo:PEND.buzon.n+(PEND.buzon.n>1?" solicitudes nuevas":" solicitud nueva")+" en el buzón, sin recibir",
+    lineas:[], boton:boton("Recibir del buzón", 'data-action="pend-buzon"')});
+  // 2) Cambios que esperan a que se abra un mes cerrado
+  const esp = cambiosEnEspera();
+  if(esp.length) out.push({nivel:"media", titulo:esp.length+(esp.length>1?" cambios en espera":" cambio en espera")+" (mes cerrado para administración)",
+    lineas:[], boton:boton("Ver en el cuadrante", 'data-action="pend-ir" data-tab="cuadrante"')});
+  // 3) Lo que ha tocado administración
+  const tf = (state.avisosTrafico||[]).filter(a=>!a.visto);
+  if(tf.length) out.push({nivel:"media", titulo:"Administración ha tocado "+tf.length+" consulta"+(tf.length>1?"s":"")+" de Tráfico",
+    lineas:tf.slice(-5).reverse().map(a=>(a.accion==="poner"?"+ ":"− ")+(a.phys||"")+" · "+(a.code||"")+" el "+fmtDate(a.fecha)), boton:boton("Ver y marcar «Enterado»", 'data-action="pend-ir" data-tab="cuadrante"')});
+  // 4) Incoherencias de este mes y el siguiente, en días que aún no han pasado
+  pendMesesVista().forEach(({y, mo})=>{
+    if(y!==state.year) return;                       // los datos cargados son de un solo año
+    let l = []; try{ l = incoherenciasMes(mo).filter(x=>x.dia>=hoyK); }catch(e){}
+    if(l.length) out.push({nivel:"media", titulo:l.length+" aviso"+(l.length>1?"s":"")+" de incoherencias en "+MONTHS[mo],
+      lineas:l.slice(0,5).map(x=>fmtDate(x.dia)+" · "+x.txt).concat(l.length>5?["y "+(l.length-5)+" más"]:[]),
+      boton:boton("Ver "+MONTHS[mo], 'data-action="pend-mes" data-y="'+y+'" data-mo="'+mo+'"')});
+  });
+  // 5) Custodia: quién no ha marcado su fin de semana de los meses que vienen
+  if(CUST.lista){
+    const quien = state.physicians.filter(p=>CUST.lista[p.id]);
+    pendMesesVista().forEach(({y, mo})=>{
+      const c = CUST.meses[custRep(y, mo)]; if(!quien.length || !c || c.estado!=="ok" || !c.abierto) return;
+      const faltan = quien.filter(p=>!c.porPid[p.id]);
+      if(faltan.length) out.push({nivel:"info", titulo:"Custodia de "+MONTHS[mo]+": "+faltan.length+" sin marcar su fin de semana",
+        lineas:[faltan.map(p=>p.name).join(", ")], boton:boton("Ver custodia", 'data-action="pend-ir" data-tab="solicitudes" data-sub="peticiones" data-pet="custodia"')});
+    });
+  }
+  // 6) Repartos con la recepción abierta
+  Object.values(repartos()).filter(r=>r && r.estado==="abierto").forEach(rep=>{
+    const st = PEND.repartos[rep.id];
+    out.push({nivel:"info", titulo:(rep.nombre||"Reparto")+": recepción de peticiones abierta"+(st && st.faltan ? " · faltan "+st.faltan.length : ""),
+      lineas:(st && st.faltan && st.faltan.length) ? ["Sin enviar: "+st.faltan.map(repNombre).join(", ")] : [],
+      boton:boton("Ver el reparto", 'data-action="pend-ir" data-tab="solicitudes" data-sub="peticiones" data-pet="'+(rep.tipo==="paquetes"?"puentes":"ssferia")+'"')});
+  });
+  // 7) Respuestas al recordatorio de tráficos
+  if(PEND.respuestas && PEND.respuestas.lista){
+    const L = PEND.respuestas.lista, rec = PEND.respuestas.rec;
+    const para = rec.para==="todos" ? state.physicians.map(p=>p.id) : (rec.para||[]);
+    const revisar = para.filter(pid=>L[pid] && L[pid].estado==="revisar"), sin = para.filter(pid=>!L[pid]);
+    const pr = String(rec.mes||"").split("-").map(Number); const mesTxt = pr[1] ? MONTHS[pr[1]-1] : "";
+    if(revisar.length) out.push({nivel:"media", titulo:revisar.length+" dice"+(revisar.length>1?"n":"")+" que le falta o sobra algún tráfico de "+mesTxt,
+      lineas:revisar.map(pid=>repNombre(pid)+(L[pid].texto?": «"+L[pid].texto+"»":"")), boton:boton("Ver tráficos", 'data-action="pend-ir" data-tab="traficos"')});
+    if(sin.length) out.push({nivel:"info", titulo:sin.length+" sin responder al recordatorio de tráficos de "+mesTxt, lineas:[sin.map(repNombre).join(", ")], boton:null});
+  }
+  // 8) Mantenimiento
+  if(NEWER) out.push({nivel:"alta", titulo:"Hay una versión publicada más reciente que la de este dispositivo", lineas:["Mira el aviso de arriba: «Cargar la publicada» o «Seguir con la local»."], boton:null});
+  let arch = []; try{ arch = mesesArchivables(); }catch(e){}
+  if(arch.length) out.push({nivel:"info", titulo:"Meses pasados pendientes de archivar: "+arch.join(", "), lineas:[], boton:boton("Archivar ahora", 'data-action="archivar-ahora"')});
+  const orden = {alta:0, media:1, info:2};
+  return out.sort((a,b)=>orden[a.nivel]-orden[b.nivel]);
+}
+function pendCuenta(){ try{ return pendLista().filter(x=>x.nivel!=="info").length; }catch(e){ return 0; } }
+function viewPendientes(){
+  if(PEND.estado==="" && custPuedeServidor()) pendCargarServidor().then(()=>{ if(ui.tab==="pendientes") render(); });
+  const lista = pendLista();
+  const COL = {alta:["#b91c1c","#fff1f2"], media:["#b45309","#fffbeb"], info:["#475569","#f8fafc"]};
+  let h = '<div class="card"><div class="row between" style="align-items:center;gap:8px;flex-wrap:wrap"><h2>Pendientes</h2>'+
+    '<span class="row" style="gap:6px;align-items:center"><span class="tiny muted">'+(PEND.estado==="cargando" ? "Consultando el servidor…" : PEND.at ? "Servidor consultado a las "+new Date(PEND.at).toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}) : "")+'</span>'+
+    (custPuedeServidor() ? '<button class="btn" data-action="pend-refrescar" style="padding:4px 10px;font-size:13px">⟳ Actualizar</button>' : '')+'</span></div>'+
+    '<p class="muted" style="margin-top:4px;font-size:13px">Lo que espera tu decisión o tu revisión. Solo informa: cada botón te lleva a donde se resuelve.</p></div>';
+  if(!lista.length) return h+'<div class="card"><p style="font-size:15px;color:var(--emerald-700)">✓ No tienes nada pendiente.</p></div>';
+  lista.forEach(x=>{
+    const c = COL[x.nivel];
+    h += '<div class="card pend-item" style="border-color:'+c[0]+';background:'+c[1]+'"><div class="row between" style="align-items:center;gap:8px;flex-wrap:wrap">'+
+      '<b style="font-size:15px;color:'+c[0]+'">'+esc(x.titulo)+'</b>'+(x.boton ? '<button class="btn" '+x.boton.attrs+' style="padding:4px 10px;font-size:13px">'+esc(x.boton.txt)+'</button>' : '')+'</div>'+
+      (x.lineas.length ? '<div style="margin-top:6px;font-size:13px">'+x.lineas.map(l=>'<div style="padding:2px 0">'+esc(l)+'</div>').join("")+'</div>' : '')+'</div>';
+  });
+  return h;
+}
+
 function renderNav(){
-  let tabs = [["cuadrante","Cuadrante"],["rotantes","Rotantes"],["traficos","Tráficos"],["administrativo","Administrativo"],["solicitudes","Solicitudes"],["exportar","Exportar"],["equipo","Equipo"],["stats","Estadísticas"],["vacaciones","Vacaciones"],["historial","Historial"],["ajustes","Ajustes"]];
+  let tabs = [["cuadrante","Cuadrante"],["pendientes","Pendientes"],["rotantes","Rotantes"],["traficos","Tráficos"],["administrativo","Administrativo"],["solicitudes","Solicitudes"],["exportar","Exportar"],["equipo","Equipo"],["stats","Estadísticas"],["vacaciones","Vacaciones"],["historial","Historial"],["ajustes","Ajustes"]];
   if(MODE==="viewer"){
     const permitidas = esAdministrativo()
       ? ["cuadrante","rotantes","traficos","administrativo","stats"]      // el administrativo no pide cambios
@@ -7428,7 +7541,9 @@ function renderNav(){
     tabs = tabs.filter(t=>permitidas.indexOf(t[0])>=0);
   }
   // Las de uso diario quedan a la vista; el resto, en un menú.
-  const PRINCIPALES = ["cuadrante","rotantes","solicitudes","stats"];
+  const PRINCIPALES = ["cuadrante","pendientes","rotantes","solicitudes","stats"];
+  // v194: la pestaña de pendientes lleva la cuenta de lo que espera al coordinador
+  if(MODE==="editor"){ const nP = pendCuenta(); tabs = tabs.map(t=>t[0]==="pendientes" && nP ? [t[0], 'Pendientes <span class="pendn">'+nP+'</span>'] : t); }
   const visibles = tabs.filter(t=>PRINCIPALES.indexOf(t[0])>=0 || t[0]===ui.tab);
   const enMenu   = tabs.filter(t=>visibles.indexOf(t)<0);
   let navHTML = visibles.map(([id,l])=>
@@ -9789,7 +9904,7 @@ document.addEventListener("click", e=>{
   // Administración puede gestionar los tráficos y marcar cambios como hechos
   if(["admvo-ejecutado","admvo-trafico","tfa-poner","tfa-quitar"].indexOf(act) >= 0
      && (MODE!=="viewer" || esAdministrativo())){ /* permitido */ }
-  else if(MODE==="viewer" && ["ext-cell","brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-custodia","cust-estado","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-urgred","toggle-tsuelta","toggle-topesem","toggle-nourgdow","pct-tramos","tramo-add","tramo-borrar","toggle-required","official-on","official-off","admvo-cerrar","admvo-abrir","deshacer","vac-marcar","vac-quitar","copia-descargar","copia-servidor","rot-cell","rot-set","rot-gen","rot-clear","puerta-toggle","guardia-dia","rot-guardia-res","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","reviewt-yahecha","buzon-recibir","buzon-guardar","tf-visto","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+  else if(MODE==="viewer" && ["ext-cell","brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-custodia","cust-estado","pend-buzon","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-urgred","toggle-tsuelta","toggle-topesem","toggle-nourgdow","pct-tramos","tramo-add","tramo-borrar","toggle-required","official-on","official-off","admvo-cerrar","admvo-abrir","deshacer","vac-marcar","vac-quitar","copia-descargar","copia-servidor","rot-cell","rot-set","rot-gen","rot-clear","puerta-toggle","guardia-dia","rot-guardia-res","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","reviewt-yahecha","buzon-recibir","buzon-guardar","tf-visto","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
       ui.reqDraft = {}; ui.reqNote = "";
@@ -9805,7 +9920,19 @@ document.addEventListener("click", e=>{
       break;
     }
     case "nav-mas": ui.navMas = !ui.navMas; render(); break;
-    case "tab": ui.tab = el.dataset.tab; ui.confirmReset=false; ui.navMas=false; render(); break;
+    case "tab": ui.tab = el.dataset.tab; ui.confirmReset=false; ui.navMas=false; if(ui.tab==="pendientes" && PEND.estado==="ok") PEND.estado = ""; render(); break;
+    // v194: botones del panel de pendientes
+    case "pend-ir": ui.tab = el.dataset.tab; ui.navMas = false;
+      if(el.dataset.sub) ui.reqSub = el.dataset.sub;
+      if(el.dataset.pet){ ui.petSub = el.dataset.pet; ui.petMsg = ""; ui.custMsg = ""; }
+      window.scrollTo(0,0); render(); break;
+    case "pend-mes": state.year = Number(el.dataset.y); ui.month = Number(el.dataset.mo); ui.tab = "cuadrante"; ui.incAbierto = true; window.scrollTo(0,0); render(); break;
+    case "pend-refrescar": PEND.estado = ""; render(); break;
+    case "pend-buzon":
+      setSave("Consultando el buzón…");
+      buzonRecibir().then(r=>{ if(r.error){ window.alert(r.error); setSave("⚠ Error"); return; }
+        setSave("✓ "+(r.nuevas||0)+" recibida"+(r.nuevas===1?"":"s")); PEND.buzon = {n:0}; render(); });
+      break;
     // Cambiar de mes es solo mirar: no se guarda ni se publica. Antes cada clic
     // publicaba el cuadrante entero y difundía a todos el año que se estuviera viendo.
     case "prev-month": if(ui.month===0){ui.month=11; state.year--;} else ui.month--; render(); break;
@@ -11645,6 +11772,7 @@ async function boot(){
   ARRANCANDO = false;
   if(NEWER) setSave("⚠ Hay una versión más reciente publicada");
   // v191: en edición, si hay una versión más nueva se carga o se junta sola
+  if(MODE==="editor") setTimeout(()=>{ pendCargarServidor().then(()=>{ try{ renderNav(); }catch(e){} }); }, 4000);   // v194: para la cuenta de pendientes
   if(MODE==="editor" && NEWER){ NEWER = false; sincronizarCoord().then(sy=>{ if(sy.estado==="fusionado") schedulePublish(); }); }
   // v177: la copia diaria se hace al abrir la aplicación (antes solo al entrar en Solicitudes),
   // y antes de archivar, para que la copia del día incluya lo que el archivado va a retirar.
