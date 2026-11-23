@@ -1550,7 +1550,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v192";
+const APP_VERSION = "v193";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -6814,10 +6814,10 @@ function custCerrarMes(y, mo){
   const rep = custRep(y, mo);
   repEstadoServidor(rep, "cerrado").then(d=>{ if(!d.error && CUST.meses[rep] && CUST.meses[rep].estado==="ok") CUST.meses[rep].abierto = false; });
 }
-// Los meses que se pueden pedir: el actual y los tres siguientes
+// Los meses que se pueden pedir: el actual y los seis siguientes (v193)
 function custMesesVisibles(){
   const hoy = new Date(); const out = [];
-  for(let i=0; i<4; i++){ const d = new Date(hoy.getFullYear(), hoy.getMonth()+i, 1); out.push({y:d.getFullYear(), mo:d.getMonth()}); }
+  for(let i=0; i<7; i++){ const d = new Date(hoy.getFullYear(), hoy.getMonth()+i, 1); out.push({y:d.getFullYear(), mo:d.getMonth()}); }
   return out;
 }
 // ---- Pantalla del compañero ----
