@@ -765,14 +765,19 @@ async function atender(request, env, ctx) {
       //   GET  /peticiones?reparto=&admin=       → todas (solo el coordinador)
       //   POST /peticiones-estado {admin, reparto, estado}   → abre o cierra la recepción
       //   GET  /peticiones-estado?reparto=       → abierto / cerrado
+      //   Custodia de hijos (v192): reparto «custodia-AAAA-MM», una opción como mucho (el viernes
+      //   de un fin de semana cuyo sábado cae en ese mes); abierto salvo que el coordinador lo cierre
+      //   (al generar el mes) y solo para quien él haya marcado en la lista `custodia-lista`.
       if (ruta === "/peticion" || ruta === "/peticiones" || ruta === "/peticiones-estado") {
         const REP = /^[a-z0-9-]{3,40}$/, PID = /^([a-z0-9]{4,16}|__ext__)$/, OPC = /^[a-z0-9-]{1,40}$/;
         const esAdmin = (c) => !!env.CLAVE_ADMIN && c === env.CLAVE_ADMIN;
         const esEnvio = (c) => !!env.CLAVE_ENVIO && c === env.CLAVE_ENVIO;
+        const esCust = (r) => CUST_REP.test(r);
+        const estadoDe = async (r) => (await env.BUZON.get("pet-estado:" + r)) || (esCust(r) ? "abierto" : "cerrado");
         if (request.method === "GET") {
           const reparto = url.searchParams.get("reparto") || "";
           if (!REP.test(reparto)) return json({ error: "Reparto no válido." }, 400);
-          if (ruta === "/peticiones-estado") return json({ ok: true, estado: (await env.BUZON.get("pet-estado:" + reparto)) || "cerrado" });
+          if (ruta === "/peticiones-estado") return json({ ok: true, estado: await estadoDe(reparto) });
           if (ruta === "/peticiones") {
             if (!esAdmin(url.searchParams.get("admin") || "")) return json({ error: "Clave de administración incorrecta." }, 403);
             const lista = await env.BUZON.list({ prefix: "pet:" + reparto + ":" });
@@ -805,7 +810,12 @@ async function atender(request, env, ctx) {
             if (!opciones || opciones.length > 40 || opciones.some((o) => !OPC.test(o)) || new Set(opciones).size !== opciones.length) {
               return json({ error: "Lista de preferencias no válida." }, 400);
             }
-            if (!admin && (await env.BUZON.get("pet-estado:" + reparto)) !== "abierto") {
+            if (esCust(reparto)) {
+              if (opciones.length > 1 || (opciones.length && !viernesCustodiaValido(reparto, opciones[0]))) return json({ error: "Elige un único fin de semana de ese mes." }, 400);
+              if (!admin && ((await env.BUZON.get("custodia-lista", "json")) || []).indexOf(pid) < 0) return json({ error: "Esta opción no está activada para ti." }, 403);
+              if (!admin && (await estadoDe(reparto)) !== "abierto") return json({ error: "Ese mes ya está generado: para cambiarlo, habla con el coordinador." }, 409);
+            }
+            else if (!admin && (await env.BUZON.get("pet-estado:" + reparto)) !== "abierto") {
               return json({ error: "La recepción de solicitudes de este reparto está cerrada." }, 409);
             }
             const clave = "pet:" + reparto + ":" + pid;
@@ -816,6 +826,38 @@ async function atender(request, env, ctx) {
             await env.BUZON.put(clave, JSON.stringify(versiones.slice(-50)));
             return json({ ok: true, version: versiones.length });
           }
+        }
+        return json({ error: "Ruta no encontrada." }, 404);
+      }
+
+      // ---------- Custodia de hijos (v192): quién tiene activada la opción ----------
+      //   GET  /custodia?admin=            → {pids} (solo el coordinador)
+      //   GET  /custodia?pid=&clave=       → {activo} (clave de envío: cada uno pregunta por sí mismo)
+      //   POST /custodia {admin, pid, activo}
+      if (ruta === "/custodia") {
+        const PIDC = /^[a-z0-9]{4,16}$/;
+        const lista = (await env.BUZON.get("custodia-lista", "json")) || [];
+        if (request.method === "GET") {
+          const admin = url.searchParams.get("admin") || "";
+          if (admin) {
+            if (!env.CLAVE_ADMIN || admin !== env.CLAVE_ADMIN) return json({ error: "Clave de administración incorrecta." }, 403);
+            return json({ ok: true, pids: lista });
+          }
+          const clave = url.searchParams.get("clave") || "", pid = url.searchParams.get("pid") || "";
+          if (!(env.CLAVE_ENVIO && clave === env.CLAVE_ENVIO)) return json({ error: "Clave incorrecta." }, 403);
+          if (!PIDC.test(pid)) return json({ error: "Persona no válida." }, 400);
+          return json({ ok: true, activo: lista.indexOf(pid) >= 0 });
+        }
+        if (request.method === "POST") {
+          const cuerpo = await request.json().catch(() => null);
+          if (!cuerpo) return json({ error: "Petición mal formada." }, 400);
+          if (!env.CLAVE_ADMIN || cuerpo.admin !== env.CLAVE_ADMIN) return json({ error: "Clave de administración incorrecta." }, 403);
+          const pid = String(cuerpo.pid || "");
+          if (!PIDC.test(pid)) return json({ error: "Persona no válida." }, 400);
+          const nueva = lista.filter((x) => x !== pid);
+          if (cuerpo.activo) nueva.push(pid);
+          await env.BUZON.put("custodia-lista", JSON.stringify(nueva.slice(0, 60)));
+          return json({ ok: true, pids: nueva });
         }
         return json({ error: "Ruta no encontrada." }, 404);
       }
@@ -1029,6 +1071,17 @@ async function atender(request, env, ctx) {
 }
 
 // v150: tope de consultas físicas de mañana (RXINT, ADM y ADMT no ocupan despacho)
+// Custodia (v192): el reparto de un mes y el viernes de uno de sus fines de semana (sábado dentro del mes)
+const CUST_REP = /^custodia-\d{4}-(0[1-9]|1[0-2])$/;
+function viernesCustodiaValido(reparto, dia) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dia || ""));
+  if (!m) return false;
+  const f = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  if (isNaN(f) || f.getUTCDay() !== 5 || f.toISOString().slice(0, 10) !== dia) return false;
+  const sab = new Date(f.getTime() + 86400000).toISOString().slice(0, 7);
+  return "custodia-" + sab === reparto;
+}
+
 function excesoTopeServidor(datos, celdas) {
   const SIN_DESPACHO = ["RXINT", "ADM", "ADMT"];
   const max = (datos.settings && datos.settings.maxMorning) || 8;

@@ -66,6 +66,8 @@
   .k-alt{background:#93a4fb; color:#141238}
   .k-rhbt{background:#84cc16; color:#1a2e05}
   .k-adm{background:#64748b; color:#fff}
+  .custd .cell{box-shadow:inset 0 -3px 0 #7c3aed}
+  @media print{ .custd .cell{box-shadow:none} }
   .nodisp{background:repeating-linear-gradient(45deg,#fee2e2,#fee2e2 5px,#fecaca 5px,#fecaca 10px)!important; color:#991b1b!important}
   .k-tfm{background:#f59e0b; color:#3b2005}
   .k-tft{background:#8b5cf6; color:#fff}
@@ -1548,7 +1550,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v191";
+const APP_VERSION = "v192";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -6736,14 +6738,173 @@ async function repEstadoServidor(repId, estado){
 }
 const repVigente = versiones => { const v = (versiones||[]).filter(x=>x && x.vigente); return v.length ? v[v.length-1].opciones : []; };
 
+// ===================== Custodia de hijos (v192) =====================
+// Los adjuntos que el coordinador marca en Equipo (lista guardada en el Worker, no en el
+// cuadrante público) piden UN fin de semana al mes en Peticiones. Se guarda como el reparto
+// «custodia-AAAA-MM» del Worker (el mes del sábado; la opción es la fecha del viernes).
+// Al generar, el generador intenta no ponerles guardia ese viernes, sábado y domingo; si no
+// queda nadie más, la pone y lo avisa. La no disponibilidad normal manda siempre.
+// Solo lo ve el coordinador (y cada uno el suyo).
+const custRep = (y,mo)=>{ const d = new Date(y, mo, 1); return "custodia-"+d.getFullYear()+"-"+pad(d.getMonth()+1); };
+function custFinesMes(y, mo){                       // viernes de los fines de semana cuyo sábado cae en el mes
+  const out = []; const dim = new Date(y, mo+1, 0).getDate();
+  for(let d=1; d<=dim; d++){ if(new Date(y, mo, d).getDay()===6){ const v = new Date(y, mo, d-1); out.push(keyOf(v.getFullYear(), v.getMonth(), v.getDate())); } }
+  return out;
+}
+function custDiasDe(vk){                            // viernes, sábado y domingo
+  const p = vk.split("-").map(Number); const out = [];
+  for(let i=0; i<3; i++){ const d = new Date(p[0], p[1]-1, p[2]+i); out.push(keyOf(d.getFullYear(), d.getMonth(), d.getDate())); }
+  return out;
+}
+function custTxt(vk){
+  const ds = custDiasDe(vk); const a = ds[0].split("-").map(Number), b = ds[2].split("-").map(Number);
+  return "del viernes "+a[2]+(a[1]!==b[1]?" de "+MONTHS[a[1]-1].toLowerCase():"")+" al domingo "+b[2]+" de "+MONTHS[b[1]-1].toLowerCase();
+}
+// Lo que sabe el coordinador: quién la tiene y lo pedido en cada mes
+const CUST = {lista:null, listaEstado:"", meses:{}};   // meses[rep] = {estado:"cargando"|"ok"|"error", porPid, abierto}
+const custPuedeServidor = ()=> !!((state.buzon||{}).url && buzonClaveAdmin());
+function custCargarLista(){
+  if(!custPuedeServidor()) return Promise.resolve();
+  if(CUST.listaEstado==="cargando") return CUST.listaProm;
+  CUST.listaEstado = "cargando";
+  return CUST.listaProm = repServidor("/custodia?admin="+encodeURIComponent(buzonClaveAdmin())+"&t="+Date.now()).then(d=>{
+    if(d.error){ CUST.listaEstado = "error"; return; }
+    CUST.lista = {}; (d.pids||[]).forEach(pid=>CUST.lista[pid]=true); CUST.listaEstado = "ok";
+  });
+}
+function custCargarMes(y, mo, forzar){
+  const rep = custRep(y, mo);
+  const ya = CUST.meses[rep];
+  if(!custPuedeServidor() || (ya && ya.estado==="ok" && !forzar)) return Promise.resolve();
+  if(ya && ya.estado==="cargando") return ya.prom;
+  const marca = CUST.meses[rep] = {estado:"cargando"};
+  return marca.prom = Promise.all([repLeerTodas(rep), repServidor("/peticiones-estado?reparto="+rep+"&t="+Date.now())]).then(([t, e])=>{
+    if(t.error || e.error){ CUST.meses[rep] = {estado:"error", error:t.error||e.error}; return; }
+    const porPid = {};
+    Object.keys(t.peticiones||{}).forEach(pid=>{ const v = repVigente(t.peticiones[pid]); if(v.length) porPid[pid] = v[0]; });
+    CUST.meses[rep] = {estado:"ok", porPid, abierto:e.estado!=="cerrado"};
+  });
+}
+// Lo necesario para generar un mes: la lista y los meses anterior, actual y siguiente
+// (un fin de semana puede empezar o acabar en el mes de al lado)
+function custPreparar(y, mo, alAcabar){
+  if(!custPuedeServidor()) return;
+  const ps = [CUST.listaEstado==="ok" ? null : custCargarLista(), custCargarMes(y, mo-1), custCargarMes(y, mo), custCargarMes(y, mo+1)].filter(Boolean);
+  Promise.all(ps).then(()=>{ if(alAcabar) alAcabar(); });
+}
+// "ok" (leído), "cargando", "error" o "" (no hay buzón: no puede haber peticiones)
+function custEstadoGen(y, mo){
+  if(!custPuedeServidor()) return "";
+  const ms = [mo-1, mo, mo+1].map(m=>CUST.meses[custRep(y, m)]);
+  if(CUST.listaEstado==="error" || ms.some(m=>m && m.estado==="error")) return "error";
+  if(CUST.listaEstado!=="ok" || ms.some(m=>!m || m.estado!=="ok")) return "cargando";
+  return "ok";
+}
+// {pid: {dia:true}} con los viernes, sábados y domingos pedidos (solo de quien la tiene activada)
+function custDiasGen(y, mo){
+  const out = {};
+  if(!CUST.lista) return out;
+  [mo-1, mo, mo+1].forEach(m=>{ const c = CUST.meses[custRep(y, m)]; if(!c || c.estado!=="ok") return;
+    Object.keys(c.porPid).forEach(pid=>{ if(!CUST.lista[pid]) return; custDiasDe(c.porPid[pid]).forEach(k=>{ (out[pid] = out[pid]||{})[k] = true; }); }); });
+  return out;
+}
+// Al generar un mes se cierra su recepción: a partir de ahí solo lo cambia el coordinador
+function custCerrarMes(y, mo){
+  if(!custPuedeServidor()) return;
+  const rep = custRep(y, mo);
+  repEstadoServidor(rep, "cerrado").then(d=>{ if(!d.error && CUST.meses[rep] && CUST.meses[rep].estado==="ok") CUST.meses[rep].abierto = false; });
+}
+// Los meses que se pueden pedir: el actual y los tres siguientes
+function custMesesVisibles(){
+  const hoy = new Date(); const out = [];
+  for(let i=0; i<4; i++){ const d = new Date(hoy.getFullYear(), hoy.getMonth()+i, 1); out.push({y:d.getFullYear(), mo:d.getMonth()}); }
+  return out;
+}
+// ---- Pantalla del compañero ----
+function custMiActivo(){
+  const yo = miFacultativo();
+  if(MODE!=="viewer" || !yo || !(state.buzon||{}).url || !claveEnvio()) return false;
+  if(!ui.miCust || ui.miCust.pid!==yo.id){
+    ui.miCust = {pid:yo.id, cargando:true};
+    repServidor("/custodia?pid="+encodeURIComponent(yo.id)+"&clave="+encodeURIComponent(claveEnvio())+"&t="+Date.now()).then(d=>{
+      ui.miCust = {pid:yo.id, activo:!d.error && !!d.activo}; if(ui.miCust.activo) render(); });
+    return false;
+  }
+  return !!ui.miCust.activo;
+}
+function viewCustodiaFacultativo(){
+  const yo = miFacultativo();
+  if(!yo) return '<div class="card"><p class="muted">Identifícate para marcar tu fin de semana.</p></div>';
+  const st = (ui.custMia = ui.custMia || {});
+  let h = '<div class="card"><h2>Custodia de hijos · '+esc(yo.name)+'</h2>'+
+    '<p class="muted" style="margin-top:4px;font-size:13px">Marca cada mes el fin de semana en que tienes a tus hijos. Al generar el mes se intentará no ponerte guardia ese viernes, sábado y domingo (la consulta del viernes por la mañana no cambia). '+
+    'El otro fin de semana pídelo como día de no disponibilidad. Puedes cambiarlo hasta que el coordinador genere el mes. Solo lo ve el coordinador.</p></div>';
+  custMesesVisibles().forEach(({y, mo})=>{
+    const rep = custRep(y, mo);
+    const s = st[rep];
+    if(!s){
+      st[rep] = {cargando:true};
+      Promise.all([repLeerMia(rep, yo.id), repServidor("/peticiones-estado?reparto="+rep+"&t="+Date.now())]).then(([m, e])=>{
+        st[rep] = (m.error || e.error) ? {error:m.error||e.error} : {vk:(repVigente(m.versiones)[0]||""), abierto:e.estado!=="cerrado"}; render(); });
+    }
+    h += '<div class="card"><div class="row between" style="align-items:center;gap:8px;flex-wrap:wrap"><h2>'+MONTHS[mo]+' '+y+'</h2>';
+    if(!s || s.cargando){ h += '</div><p class="muted" style="margin-top:6px">Cargando…</p></div>'; return; }
+    if(s.error){ h += '</div><div class="warnbox" style="margin-top:8px">'+esc(s.error)+'</div></div>'; return; }
+    h += '<span class="tiny muted">'+(s.abierto ? 'Abierto' : 'Mes ya generado')+'</span></div>';
+    h += '<p style="margin-top:6px;font-size:14px">'+(s.vk ? 'Marcado: <b>'+esc(custTxt(s.vk))+'</b>' : '<span class="muted">Sin fin de semana marcado.</span>')+'</p>';
+    if(s.abierto){
+      h += '<div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">'+custFinesMes(y, mo).map(vk=>
+        '<button class="btn'+(vk===s.vk?' primary':'')+'" data-action="cust-marcar" data-rep="'+rep+'" data-vk="'+vk+'" style="font-size:13px">'+esc(custTxt(vk).replace(/^del /,""))+'</button>').join("")+'</div>';
+      if(s.vk) h += '<button class="btn" data-action="cust-marcar" data-rep="'+rep+'" data-vk="" style="margin-top:8px;font-size:13px">Quitar el fin de semana marcado</button>';
+    }else{
+      h += '<p class="tiny muted" style="margin-top:6px">Para cambiarlo, habla con el coordinador.</p>';
+    }
+    if(s.msg) h += '<p style="margin-top:8px;font-size:13px">'+esc(s.msg)+'</p>';
+    h += '</div>';
+  });
+  return h;
+}
+// ---- Pantalla del coordinador ----
+function viewCustodiaAdmin(){
+  if(!custPuedeServidor()) return '<div class="card"><p class="muted">Hace falta el buzón configurado con la clave de administración (Ajustes → Buzón de solicitudes).</p></div>';
+  const meses = custMesesVisibles();
+  if(CUST.listaEstado!=="ok" && CUST.listaEstado!=="cargando" && CUST.listaEstado!=="error") custCargarLista().then(render);
+  meses.forEach(({y, mo})=>{ if(!CUST.meses[custRep(y, mo)]) custCargarMes(y, mo).then(render); });
+  let h = '<div class="card"><h2>Custodia de hijos</h2><p class="muted" style="margin-top:4px;font-size:13px">Fin de semana que ha marcado cada adjunto con custodia (se activa en Equipo). '+
+    'El generador intenta no ponerles guardia ese viernes, sábado y domingo; si no queda nadie más, la pone y lo avisa. Al generar un mes se cierra para ellos; tú puedes cambiarlo siempre. Solo lo ves tú.</p></div>';
+  if(CUST.listaEstado==="error") return h+'<div class="card"><div class="warnbox">No se ha podido leer la lista del servidor.</div></div>';
+  if(CUST.listaEstado!=="ok") return h+'<div class="card"><p class="muted">Cargando…</p></div>';
+  const quien = state.physicians.filter(p=>CUST.lista[p.id]);
+  if(!quien.length) return h+'<div class="card"><p class="muted">Nadie tiene activada la custodia. Actívala en Equipo, en la ficha de cada adjunto.</p></div>';
+  const est = 'padding:5px;border:1px solid var(--slate-300);border-radius:6px;font-size:13px;max-width:100%';
+  meses.forEach(({y, mo})=>{
+    const rep = custRep(y, mo); const c = CUST.meses[rep];
+    h += '<div class="card"><div class="row between" style="align-items:center;gap:8px;flex-wrap:wrap"><h2>'+MONTHS[mo]+' '+y+'</h2>';
+    if(!c || c.estado==="cargando"){ h += '</div><p class="muted" style="margin-top:6px">Cargando…</p></div>'; return; }
+    if(c.estado==="error"){ h += '</div><div class="warnbox" style="margin-top:8px">'+esc(c.error||"Error")+'</div></div>'; return; }
+    h += '<span class="row" style="gap:6px;align-items:center"><span class="tiny muted">'+(c.abierto?'Abierto':'Cerrado (generado)')+'</span>'+
+      '<button class="btn" data-action="cust-estado" data-rep="'+rep+'" data-e="'+(c.abierto?'cerrado':'abierto')+'" style="padding:3px 8px;font-size:12px">'+(c.abierto?'Cerrar':'Reabrir')+'</button></span></div>';
+    quien.forEach(p=>{
+      h += '<div class="row between" style="gap:6px;margin-top:6px;align-items:center;flex-wrap:wrap"><span style="font-size:14px">'+esc(p.name)+'</span>'+
+        '<select data-field="cust-por" data-rep="'+rep+'" data-pid="'+p.id+'" style="'+est+'"><option value="">— Sin marcar —</option>'+
+        custFinesMes(y, mo).map(vk=>'<option value="'+vk+'"'+(c.porPid[p.id]===vk?' selected':'')+'>'+esc(custTxt(vk))+'</option>').join("")+'</select></div>';
+    });
+    h += '</div>';
+  });
+  if(ui.custMsg) h += '<p style="font-size:13px">'+esc(ui.custMsg)+'</p>';
+  return h;
+}
+
 // ---- Pantallas ----
 function viewPeticiones(){
   const reps = MODE==="editor" ? repAsegurar() : repartos();
   const lista = Object.values(reps).sort((a,b)=>String(a.id).localeCompare(String(b.id)));
-  const sub = ui.petSub || "orden";
+  const conCust = MODE==="editor" || custMiActivo();   // v192: solo a quien tiene activada la custodia
+  const sub = (ui.petSub==="custodia" && !conCust) ? "orden" : (ui.petSub || "orden");
   let h = '<div class="seg no-print" style="margin-bottom:10px">'+
-    [["orden","Orden de elección"],["puentes","Puentes"],["ssferia","SS y Feria"]].map(x=>
+    [["orden","Orden de elección"],["puentes","Puentes"],["ssferia","SS y Feria"]].concat(conCust?[["custodia","Custodia"]]:[]).map(x=>
       '<button class="'+(sub===x[0]?"on":"")+'" data-action="pet-sub" data-sub="'+x[0]+'">'+x[1]+'</button>').join("")+'</div>';
+  if(sub==="custodia") return h + (MODE==="editor" ? viewCustodiaAdmin() : viewCustodiaFacultativo());
   if(!lista.length) return h+'<div class="card"><p class="muted">Todavía no hay repartos. Los crea el coordinador.</p></div>';
   if(sub==="orden") return h + lista.map(viewRepOrden).join("");
   const rep = lista.find(r=> sub==="puentes" ? r.tipo==="paquetes" : r.tipo==="fechas");
@@ -7343,10 +7504,21 @@ function incoherenciasMes(mo){
   // v182: la URGF mensual de EXT
   if(generado && state.settings.urgRequired!==false && extMesActivo(year, mo) && !extUrgfMes(year, mo))
     out.push({dia:keyOf(year, mo, 1), txt:"EXT: falta la URGF del mes (genera el mes o ponla a mano en la fila de EXT)"});
+  // v192: guardia en un fin de semana de custodia (solo el coordinador, con las peticiones leídas)
+  if(MODE==="editor" && custEstadoGen(year, mo)==="ok"){
+    const cg = custDiasGen(year, mo), mPref = year+"-"+pad(mo+1)+"-";
+    state.physicians.forEach(p=>Object.keys(cg[p.id]||{}).forEach(k=>{
+      if(k.indexOf(mPref)!==0) return; const a = state.assignments[p.id+"|"+k];
+      if(a && URGS.indexOf(a.f)>=0) out.push({dia:k, txt:"Guardia en su fin de semana de custodia: "+p.name+" · "+a.f}); }));
+  }
   return out;
 }
 function viewIncoherencias(){
   if(MODE!=="editor") return '';
+  // v192: se leen las peticiones de custodia del mes (una vez; al terminar se repinta)
+  if(custEstadoGen(state.year, ui.month)==="cargando" && !CUST.preparando){
+    CUST.preparando = true; custPreparar(state.year, ui.month, ()=>{ CUST.preparando = false; render(); });
+  }
   let lista;
   try{ lista = incoherenciasMes(ui.month); }catch(e){ return ''; }
   if(!lista.length) return '';
@@ -7555,6 +7727,7 @@ function viewCuadrante(){
   });
   html += '</tr></thead><tbody>';
 
+  const custV = MODE==="editor" ? custDiasGen(state.year, ui.month) : {};   // v192: solo lo ve el coordinador
   state.physicians.forEach(p=>{
     const esMia = (typeof miFacultativo==="function") && miFacultativo() && miFacultativo().id===p.id;
     html += '<tr'+(esMia?' class="miFila"':'')+'><td class="namecol"><b>'+esc(p.name)+'</b>'+(pctVisible(p)<100?' <span class="muted">('+pctVisible(p)+'%)</span>':'')+'</td>';
@@ -7587,7 +7760,8 @@ function viewCuadrante(){
                                 :('<span class="half '+(bloq?"blockcell":base)+'"></span>');
         inner = half(a.m, blocM)+half(a.t, blocT);
       }
-      html += '<td class="'+(conflict?"conflict":"")+'"><button class="cell" data-action="cell" data-pid="'+p.id+'" data-date="'+d.key+'" data-blocked="'+(blocked?1:0)+'">'+inner+'</button></td>';
+      const enCustV = !!(custV[p.id] && custV[p.id][d.key]);
+      html += '<td class="'+(conflict?"conflict":"")+(enCustV?" custd":"")+'"><button class="cell" data-action="cell" data-pid="'+p.id+'" data-date="'+d.key+'" data-blocked="'+(blocked?1:0)+'"'+(enCustV?' title="Fin de semana de custodia de hijos"':'')+'>'+inner+'</button></td>';
     });
     html += '</tr>';
   });
@@ -7853,6 +8027,8 @@ function viewEquipo(){
         'data-action="toggle-nourgdow" data-pid="'+p.id+'" data-dow="'+dw+'">'+WD[dw]+'</button>').join("")+
       '<span class="tiny" style="margin-left:10px;margin-right:2px" title="Exime de la regla de una guardia por semana. Mantiene el resto: nunca días seguidos y máximo 2 en 6 días. Útil para quien tiene guardia fija un día concreto.">Sin tope semanal:</span>'+
       '<button class="dowbtn'+(p.sinTopeSemanal?" on":"")+'" style="width:auto;padding:0 8px'+(p.sinTopeSemanal?";background:#7c3aed;border-color:#7c3aed":"")+'" data-action="toggle-topesem" data-pid="'+p.id+'">'+(p.sinTopeSemanal?"Sí":"No")+'</button>'+
+      (CUST.lista ? '<span class="tiny" style="margin-left:10px;margin-right:2px" title="Puede marcar en Peticiones el fin de semana en que tiene a sus hijos. Solo lo ves tú.">Custodia:</span>'+
+        '<button class="dowbtn'+(CUST.lista[p.id]?" on":"")+'" style="width:auto;padding:0 8px'+(CUST.lista[p.id]?";background:#7c3aed;border-color:#7c3aed":"")+'" data-action="toggle-custodia" data-pid="'+p.id+'">'+(CUST.lista[p.id]?"Sí":"No")+'</button>' : '')+
       '<span class="tiny" style="margin-left:10px;margin-right:2px" title="¿Puede tener tarde sin consulta esa mañana?">Tarde suelta:</span>'+
       '<button class="dowbtn'+(p.tardeSuelta?" on":"")+'" style="width:auto;padding:0 8px'+(p.tardeSuelta?";background:var(--teal-700);border-color:var(--teal-700)":"")+'" data-action="toggle-tsuelta" data-pid="'+p.id+'">'+(p.tardeSuelta?"Sí":"No")+'</button>'+
       '<span class="tiny" style="margin-left:10px;margin-right:2px" title="Día de la semana en que prefiere quedarse por la tarde">Tarde pref.:</span>'+
@@ -7883,6 +8059,7 @@ function viewEquipo(){
   });
   html += '</div></div>';
   // v186: quién tiene los avisos activados (se consulta al servidor una vez por sesión)
+  if(MODE==="editor" && !CUST.listaEstado && custPuedeServidor()) custCargarLista().then(()=>{ if(ui.tab==="equipo") render(); });
   if(!ui.suscritos && buzonClaveAdmin() && (state.buzon||{}).url){
     ui.suscritos = {cargando:true};
     repServidor("/suscritos?admin="+encodeURIComponent(buzonClaveAdmin())+"&t="+Date.now()).then(d=>{ ui.suscritos = d.error ? {error:d.error} : {lista:d.suscritos||{}}; if(ui.tab==="equipo") render(); });
@@ -8612,6 +8789,13 @@ function renderModal(){
           (r.ext.conflictos.length ? '<br><span style="color:var(--rose-700)"><b>Conflictos a resolver</b> (no se ha duplicado ni borrado nada):</span>'+
             r.ext.conflictos.map(x=>'<div class="cov"><span>'+fmtDate(x.date)+'</span><span style="text-align:right">'+esc(x.txt)+'</span></div>').join("") : '')+
           (r.copiaPrevia ? '<br><span class="muted">'+esc(r.copiaPrevia)+'</span>' : '')+'</div>' : (r.copiaPrevia ? '<p class="muted" style="font-size:12px;margin-top:8px">'+esc(r.copiaPrevia)+'</p>' : ''))+
+        (r.custEstado==="ok" ? '<div style="margin-top:10px;padding:8px;border:1px solid #7c3aed;border-radius:8px;font-size:13px"><b>Custodia de hijos</b> · '+
+          (r.custPeticiones ? r.custPeticiones+' adjunto'+(r.custPeticiones>1?'s':'')+' con fin de semana marcado. ' : 'Nadie ha marcado fin de semana. ')+
+          (r.custodia && r.custodia.length ? '<br><span style="color:var(--rose-700)"><b>Guardias puestas en su fin de semana de custodia</b> (no quedaba nadie más):</span>'+
+            r.custodia.map(x=>'<div class="cov"><span>'+fmtDate(x.date)+'</span><span style="text-align:right">'+esc(x.name)+' · '+x.code+'</span></div>').join("")
+            : (r.custPeticiones ? 'Se han respetado todos.' : ''))+
+          '<br><span class="muted">La recepción de '+MONTHS[ui.month]+' queda cerrada para ellos; tú puedes cambiarla en Peticiones → Custodia.</span></div>'
+         : r.custEstado==="error" ? '<p style="margin-top:8px;font-size:13px;color:var(--rose-700)">⚠ No se han tenido en cuenta las peticiones de custodia de hijos (no se pudieron leer).</p>' : '')+
         '<button class="btn primary" style="width:100%;margin-top:14px" data-action="close-modal">Cerrar</button>'+
         '</div></div>';
     }else{
@@ -8620,6 +8804,10 @@ function renderModal(){
         '<p class="muted" style="margin-top:8px;font-size:13px">Cada día se asigna una urgencia (URG en laborables, con libranza al día siguiente; URGF en sábados, domingos y festivos, retribuida como extra y sin libranza), repartida equitativamente solo entre quienes hacen urgencias. En laborables se cubre además el mínimo de consultas de mañana del pool y las tardes obligatorias, respetando ausencias, días bloqueados y consultas habituales, y equilibrando la carga según el % de contrato.</p>'+
         '<label class="row" style="margin-top:12px;font-size:14px;cursor:pointer"><input type="radio" name="genmode" value="fill" checked style="accent-color:var(--teal-700)"> Solo rellenar huecos (respeta lo ya asignado)</label>'+
         '<label class="row" style="margin-top:8px;font-size:14px;cursor:pointer"><input type="radio" name="genmode" value="regen" style="accent-color:var(--teal-700)"> Regenerar el mes (borra consultas, URG, URGF y libranzas automáticas; conserva vacaciones, bajas y permisos)</label>'+
+        (function(){ const e = custEstadoGen(state.year, ui.month); if(!e) return '';
+          return '<p class="tiny" style="margin-top:10px;color:'+(e==="error"?'var(--rose-700)':'#6d28d9')+'">'+
+            (e==="ok" ? 'Custodia de hijos: peticiones leídas ('+Object.keys(custDiasGen(state.year, ui.month)).length+' adjunto(s) con fin de semana marcado).' :
+             e==="cargando" ? 'Custodia de hijos: leyendo peticiones…' : '⚠ Custodia de hijos: no se han podido leer las peticiones.')+'</p>'; })()+
         '<div class="row" style="margin-top:14px"><button class="btn primary" style="flex:1" data-action="gen-run">Generar</button>'+
         '<button class="btn" data-action="close-modal">Cancelar</button></div>'+
         '</div></div>';
@@ -8817,6 +9005,11 @@ function generateMonth(mode){
   const alruTarget = (state.settings.alruPerWeek!==undefined ? state.settings.alruPerWeek : 2);
   let cleared=0, assigned=0; const unfilled=[];
   const labDays = allDays.filter(d=> d.dow!==0 && d.dow!==6 && !d.holiday);
+  // v192: fines de semana de custodia (se evitan las guardias; si no queda nadie más, se ponen y se avisa)
+  const custG = custDiasGen(state.year, ui.month);
+  const enCust = (p, dk)=> !!(custG[p.id] && custG[p.id][dk]);
+  const sinCust = (cands, dk)=> cands.filter(p=>!enCust(p, dk));
+  const custForzadas = [];
   // TOPE FÍSICO de consultas de mañana: solo hay N despachos disponibles a la vez.
   // Cuenta TODAS las de mañana (AL, RHB, ALINTER, ALRU, ORT, RXINT). Al llenarse,
   // los facultativos que queden pasan a la tarde.
@@ -9163,6 +9356,7 @@ function generateMonth(mode){
         if(d.holiday || d.dow===0 || d.dow===6) return;        // los festivos van al reparto normal
         if(!notAbsent(p, d.key)) return;                       // vacaciones, baja o permiso
         if(esDiaLibre(p.id, d.key)) return;                    // día de no disponibilidad
+        if(enCust(p, d.key)) return;                           // v192: viernes de custodia: va al reparto normal
         if(bloqueaGuardia(p, d.dow, d.key)) return;                   // no trabaja ese día
         const a = getA(p.id, d.key);
         if(a && (a.f || a.m || a.t)) return;                   // ya tiene algo puesto
@@ -9189,14 +9383,17 @@ function generateMonth(mode){
       if(has) return;   // ya asignado (por el generador, a mano o a EXT): se respeta
       const libres = state.physicians.filter(p=> !p.noUrgf && puedeUrgencia(p,d.key) && !bloqueaGuardia(p,d.dow,d.key) && notAbsent(p,d.key) && freeM(p,d.key) && freeT(p,d.key));
       if(!libres.length){ missing_push(unfilled,d.key,"URGF"); return; }
+      // v192: antes que nada, quien no tiene ese fin de semana de custodia
+      const libresC = sinCust(libres, d.key).length ? sinCust(libres, d.key) : libres;
       // Preferencia ABSOLUTA por quien aún no tiene ninguna URGF este mes.
       // Solo si no queda nadie sin URGF se permite repetir (más festivos que adjuntos disponibles).
-      const sinRepetir = libres.filter(p=>urgfMes[p.id]===0);
-      const cand = sinRepetir.length ? sinRepetir : libres;
+      const sinRepetir = libresC.filter(p=>urgfMes[p.id]===0);
+      const cand = sinRepetir.length ? sinRepetir : libresC;
       const minR = Math.min.apply(null, cand.map(p=>urgfLoad[p.id]));   // equilibrio a lo largo del año
       const ronda = cand.filter(p=>urgfLoad[p.id]===minR);
       ronda.sort((x,y)=> (urgfMes[x.id]-urgfMes[y.id]) || (load[x.id]/weight(x)-load[y.id]/weight(y)) || (Math.random()-0.5));
       const p=ronda[0];
+      if(enCust(p, d.key)) custForzadas.push({date:d.key, pid:p.id, name:p.name, code:"URGF"});
       state.assignments[p.id+"|"+d.key]={f:"URGF"}; urgfLoad[p.id]++; urgfMes[p.id]++; assigned++;
     });
   }
@@ -9219,7 +9416,9 @@ function generateMonth(mode){
       );
       const counter = esLV ? urglvLoad : urgLoad;
       const code = esLV ? "URGLV" : "URG";
-      const p = pickRound(cand, counter, 2, d.key);
+      // v192: primero entre quienes no tienen ese viernes de custodia; si no sale nadie, entre todos
+      const p = pickRound(sinCust(cand, d.key), counter, 2, d.key) || pickRound(cand, counter, 2, d.key);
+      if(p && enCust(p, d.key)) custForzadas.push({date:d.key, pid:p.id, name:p.name, code:code});
       if(p){ state.assignments[p.id+"|"+d.key]={f:code}; load[p.id]+=2; counter[p.id]++; assigned++; }
       else if(!cand.length) missing_push(unfilled,d.key,code);
       else missing_push(unfilled,d.key,code+" (cupos completos)");
@@ -9557,7 +9756,7 @@ function generateMonth(mode){
 
   snapshotBaseline(ui.month);   // foto del cuadrante OFICIAL de este mes
   save();
-  return {assigned, cleared, unfilled, ext:extInf};
+  return {assigned, cleared, unfilled, ext:extInf, custodia:custForzadas, custPeticiones:Object.keys(custG).length};
 }
 
 function missing_push(arr, date, code){
@@ -9590,7 +9789,7 @@ document.addEventListener("click", e=>{
   // Administración puede gestionar los tráficos y marcar cambios como hechos
   if(["admvo-ejecutado","admvo-trafico","tfa-poner","tfa-quitar"].indexOf(act) >= 0
      && (MODE!=="viewer" || esAdministrativo())){ /* permitido */ }
-  else if(MODE==="viewer" && ["ext-cell","brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-urgred","toggle-tsuelta","toggle-topesem","toggle-nourgdow","pct-tramos","tramo-add","tramo-borrar","toggle-required","official-on","official-off","admvo-cerrar","admvo-abrir","deshacer","vac-marcar","vac-quitar","copia-descargar","copia-servidor","rot-cell","rot-set","rot-gen","rot-clear","puerta-toggle","guardia-dia","rot-guardia-res","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","reviewt-yahecha","buzon-recibir","buzon-guardar","tf-visto","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
+  else if(MODE==="viewer" && ["ext-cell","brush","cell","pick","pick-clear","gen-open","gen-run","month-reset","month-reset-soft","month-reset-all","add-phys","seed-phys","del-phys","move-phys","toggle-block","toggle-urg","toggle-urgf","toggle-custodia","cust-estado","toggle-rhb","toggle-alru","toggle-int","toggle-ort","toggle-rxint","toggle-res","toggle-urgred","toggle-tsuelta","toggle-topesem","toggle-nourgdow","pct-tramos","tramo-add","tramo-borrar","toggle-required","official-on","official-off","admvo-cerrar","admvo-abrir","deshacer","vac-marcar","vac-quitar","copia-descargar","copia-servidor","rot-cell","rot-set","rot-gen","rot-clear","puerta-toggle","guardia-dia","rot-guardia-res","hist-ver","hist-imprimir","hist-descargar","bandeja-add","bandeja-ver","bandeja-rechazar","bandeja-borrar","reviewt-yahecha","buzon-recibir","buzon-guardar","tf-visto","rot-blockmode","rot-blockday","rot-toggleres","nodisp-on","nodisp-off","admin-pass-set","admin-pass-clear","admin-pass-publish","add-holiday","del-holiday","reset-ask","reset-yes","import-backup","export-backup","publish-json"].indexOf(act)>=0){
     if(act==="cell"){
       ui.reqModal = {tab:true, pid: el.dataset.pid, date: el.dataset.date};
       ui.reqDraft = {}; ui.reqNote = "";
@@ -10142,7 +10341,34 @@ document.addEventListener("click", e=>{
     case "req-sub-crear": ui.reqSub = "crear"; render(); break;
     case "req-sub-peticiones": ui.reqSub = "peticiones"; ui.petMsg = ""; render(); break;
     case "sol-modo": ui.solModo = el.dataset.modo; ui.petMsg = ""; render(); break;
-    case "pet-sub": ui.petSub = el.dataset.sub; ui.petMsg = ""; render(); break;
+    case "pet-sub": ui.petSub = el.dataset.sub; ui.petMsg = ""; ui.custMsg = ""; if(el.dataset.sub==="custodia"){ ui.custMia = null; if(MODE==="editor"){ CUST.listaEstado = ""; CUST.meses = {}; } } render(); break;
+    case "cust-marcar": {
+      // v192: el compañero marca (o quita) su fin de semana de custodia de un mes
+      const yo = miFacultativo(); if(!yo) break;
+      const repC = el.dataset.rep, vk = el.dataset.vk || "";
+      const st = (ui.custMia = ui.custMia || {})[repC]; if(!st || st.cargando || st.error) break;
+      if(!vk && !window.confirm("¿Quitar el fin de semana marcado?")) break;
+      st.msg = "Guardando…"; render();
+      repEnviar(repC, yo.id, vk ? [vk] : [], yo.name).then(d=>{
+        if(d.error){ st.msg = "⚠ "+d.error; render(); return; }
+        st.vk = vk; st.msg = vk ? "✓ Guardado: "+custTxt(vk)+"." : "✓ Quitado."; render();
+      });
+      break;
+    }
+    case "cust-estado": {
+      const repC = el.dataset.rep, e = el.dataset.e;
+      repEstadoServidor(repC, e).then(d=>{ if(d.error){ ui.custMsg = "⚠ "+d.error; render(); return; }
+        if(CUST.meses[repC] && CUST.meses[repC].estado==="ok") CUST.meses[repC].abierto = (d.estado!=="cerrado"); ui.custMsg = ""; render(); });
+      break;
+    }
+    case "toggle-custodia": {
+      const pidC = el.dataset.pid; if(!CUST.lista) break;
+      const activo = !CUST.lista[pidC];
+      repServidor("/custodia", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({admin:buzonClaveAdmin(), pid:pidC, activo})}).then(d=>{
+        if(d.error){ window.alert("No se ha podido guardar: "+d.error); return; }
+        CUST.lista = {}; (d.pids||[]).forEach(x=>CUST.lista[x]=true); render(); });
+      break;
+    }
     case "pet-orden-mover": {
       const rep = repartos()[el.dataset.rep]; if(!rep) break;
       const i = Number(el.dataset.i), j = i + Number(el.dataset.d);
@@ -10876,7 +11102,10 @@ document.addEventListener("click", e=>{
       ghPublish(true);
       break;
     }
-    case "gen-open": ui.genModal=true; ui.genReport=null; renderModal(); break;
+    case "gen-open": ui.genModal=true; ui.genReport=null;
+      // v192: se leen ya las peticiones de custodia (meses anterior, actual y siguiente)
+      CUST.meses = {}; CUST.listaEstado = ""; custPreparar(state.year, ui.month, ()=>{ if(ui.genModal && !ui.genReport) renderModal(); });
+      renderModal(); break;
     case "month-reset": ui.resetMonthModal=true; renderModal(); break;
     case "month-reset-soft": resetMonth(false); ui.resetMonthModal=false; render(); break;
     case "month-reset-all": resetMonth(true); ui.resetMonthModal=false; render(); break;
@@ -10890,6 +11119,10 @@ document.addEventListener("click", e=>{
           "de pendientes: tendrás que avisarles por tu cuenta.\n\n¿Continuar?")) break;
       }
       const sel = document.querySelector('input[name=genmode]:checked');
+      // v192: con peticiones de custodia sin leer no se genera a ciegas
+      const custE = custEstadoGen(state.year, ui.month);
+      if(custE==="cargando"){ window.alert("Un momento: se están leyendo las peticiones de custodia de hijos. Vuelve a pulsar «Generar» en unos segundos."); break; }
+      if(custE==="error" && !window.confirm("No se han podido leer las peticiones de custodia de hijos del servidor.\n\nSi generas ahora, el generador no las tendrá en cuenta. ¿Generar igualmente?")) break;
       // v182: antes de generar se guarda en el servidor la versión anterior del cuadrante
       let copiaPrevia = "";
       if(publicaPorServidor()){
@@ -10898,6 +11131,8 @@ document.addEventListener("click", e=>{
       }
       ui.genReport = generateMonth(sel?sel.value:"fill");
       if(ui.genReport) ui.genReport.copiaPrevia = copiaPrevia;
+      if(ui.genReport && custE) ui.genReport.custEstado = custE;
+      if(custE==="ok") custCerrarMes(state.year, ui.month);      // a partir de aquí solo lo cambia el coordinador
       render(); break;
     }
     case "export-csv": exportCSV(); break;
@@ -11149,6 +11384,15 @@ document.addEventListener("change", e=>{
   // Campos que deben atenderse aunque el dispositivo esté en modo consulta
   if(campoLibre==="exp-pid"){ ui.expPid = el.value; render(); return; }
   if(campoLibre==="exp-mes"){ ui.expMes = Number(el.value); render(); return; }
+  // v192: el coordinador marca el fin de semana de custodia en nombre de un adjunto
+  if(campoLibre==="cust-por" && MODE==="editor"){
+    const repC = el.dataset.rep, pidC = el.dataset.pid, vk = el.value;
+    repEnviar(repC, pidC, vk ? [vk] : [], "coordinador").then(d=>{
+      if(d.error){ ui.custMsg = "⚠ "+d.error; render(); return; }
+      const c = CUST.meses[repC]; if(c && c.porPid){ if(vk) c.porPid[pidC] = vk; else delete c.porPid[pidC]; }
+      ui.custMsg = "✓ Guardado."; render(); });
+    return;
+  }
   // v183: añadir una opción a la lista de preferencias (compañeros en modo consulta y coordinador)
   if(campoLibre==="pet-anadir"){
     const repA = el.dataset.rep, idA = el.value; if(!idA) return;
