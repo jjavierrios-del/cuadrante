@@ -1551,7 +1551,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v195";
+const APP_VERSION = "v196";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -6507,7 +6507,8 @@ function viewTraficos(){
 // opción que no pidió (queda pendiente); desde la v195 URG no entra en SS y Feria (cubre el sáb. 17 de abril); en estos
 // repartos no se aplican los perfiles «no hace…»; lo repartido y publicado no lo toca el generador.
 const REP_ESTADOS = {config:"Configuración", abierto:"Solicitudes abiertas", cerrado:"Solicitudes cerradas", revision:"Pendiente de revisión", publicado:"Resultado publicado"};
-const REP_ORDEN_2027 = ["SUAREZ","PASTOR","RODRIGUEZ","PONS","GONZALEZ","ROBLES","LOBO","PORRUA","VAZQUEZ","RIOS","GALIANA","EXT"];
+// v196: URG (EXT) ya no figura en el orden de ningún reparto: solo tiene sus coberturas fijas
+const REP_ORDEN_2027 = ["SUAREZ","PASTOR","RODRIGUEZ","PONS","GONZALEZ","ROBLES","LOBO","PORRUA","VAZQUEZ","RIOS","GALIANA"];
 function repOrdenInicial(){
   const ids = [];
   REP_ORDEN_2027.forEach(n=>{
@@ -6522,7 +6523,7 @@ function repDefecto2027(){
   const orden = repOrdenInicial();
   const P = (id, fechas, etiqueta)=>({id, fechas, etiqueta: etiqueta||""});
   return {
-    "puentes-2027": {id:"puentes-2027", nombre:"Puentes 2027", anio:2027, tipo:"paquetes", estado:"config",
+    "puentes-2027": {id:"puentes-2027", nombre:"Puentes 2027", anio:2027, tipo:"paquetes", estado:"config", mig196:true,
       orden: orden.slice(), ordenHist:[{at:ahora, orden:orden.slice(), motivo:"Orden inicial de 2027"}],
       bloques:[
         {id:"andalucia", nombre:"Puente de Andalucía", rango:"26 feb – 1 mar", fijas:["2027-02-26"],
@@ -6577,11 +6578,21 @@ function repMigrar195(){
   ss.mig195 = true;
   return true;
 }
+// v196 (decisión de Javier, 24-11-2026): URG sale también del orden de los puentes. Con 11
+// paquetes y 11 adjuntos delante nunca le tocaba ninguno; solo conserva sus coberturas fijas.
+function repMigrar196(){
+  if(MODE!=="editor") return false;
+  const pu = repartos()["puentes-2027"];
+  if(!pu || pu.mig196) return false;
+  if((pu.orden||[]).indexOf(EXT_ID)>=0){ pu.orden = pu.orden.filter(x=>x!==EXT_ID); repAnotarOrden(pu, "URG solo tiene sus coberturas fijas y sale del orden"); }
+  pu.mig196 = true;
+  return true;
+}
 // El coordinador crea los repartos de 2027 la primera vez que abre Peticiones
 function repAsegurar(){
   const r = repartos();
   if(MODE==="editor" && !Object.keys(r).length){ Object.assign(r, repDefecto2027()); save(); }
-  if(repMigrar195()) save();
+  if(repMigrar195() | repMigrar196()) save();
   return r;
 }
 const repNombre = pid => pid===EXT_ID ? "URG (EXT)" : ((state.physicians.find(x=>x.id===pid)||{}).name || pid);
@@ -11792,7 +11803,7 @@ async function boot(){
   ARRANCANDO = false;
   if(NEWER) setSave("⚠ Hay una versión más reciente publicada");
   // v191: en edición, si hay una versión más nueva se carga o se junta sola
-  if(repMigrar195()){ save(); }     // v195: sáb. 17 de abril para URG (se publica sola)
+  if(repMigrar195() | repMigrar196()){ save(); }     // v195-v196: URG fuera de los órdenes de los repartos (se publica sola)
   if(MODE==="editor") setTimeout(()=>{ pendCargarServidor().then(()=>{ try{ renderNav(); }catch(e){} }); }, 4000);   // v194: para la cuenta de pendientes
   if(MODE==="editor" && NEWER){ NEWER = false; sincronizarCoord().then(sy=>{ if(sy.estado==="fusionado") schedulePublish(); }); }
   // v177: la copia diaria se hace al abrir la aplicación (antes solo al entrar en Solicitudes),
