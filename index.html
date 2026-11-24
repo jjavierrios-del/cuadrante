@@ -1551,7 +1551,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v194";
+const APP_VERSION = "v195";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -6504,7 +6504,7 @@ function viewTraficos(){
 // coberturas fijas de URG (= EXT) y sus ejecuciones (versiones). Las PREFERENCIAS de cada
 // persona no están aquí: se guardan en el servidor, con su historial, y cada uno ve las suyas.
 // Reglas de Javier: cada participante recibe una opción como máximo; nunca se asigna una
-// opción que no pidió (queda pendiente); URG (EXT) recibe un día en SS y Feria; en estos
+// opción que no pidió (queda pendiente); desde la v195 URG no entra en SS y Feria (cubre el sáb. 17 de abril); en estos
 // repartos no se aplican los perfiles «no hace…»; lo repartido y publicado no lo toca el generador.
 const REP_ESTADOS = {config:"Configuración", abierto:"Solicitudes abiertas", cerrado:"Solicitudes cerradas", revision:"Pendiente de revisión", publicado:"Resultado publicado"};
 const REP_ORDEN_2027 = ["SUAREZ","PASTOR","RODRIGUEZ","PONS","GONZALEZ","ROBLES","LOBO","PORRUA","VAZQUEZ","RIOS","GALIANA","EXT"];
@@ -6541,16 +6541,17 @@ function repDefecto2027(){
           nota:"El vie. 3 de diciembre va en el paquete combinado de Andalucía.",
           opciones:[P("dic-1",["2027-12-04","2027-12-06","2027-12-08"]), P("dic-2",["2027-12-05","2027-12-07"])]}
       ], ejecuciones:[], publicado:null},
-    "ssferia-2027": {id:"ssferia-2027", nombre:"SS y Feria 2027", anio:2027, tipo:"fechas", estado:"config",
-      orden: orden.slice(), ordenHist:[{at:ahora, orden:orden.slice(), motivo:"Orden inicial de 2027"}],
+    "ssferia-2027": {id:"ssferia-2027", nombre:"SS y Feria 2027", anio:2027, tipo:"fechas", estado:"config", mig195:true,
+      // v195: URG no entra en este reparto (cubre directamente el sáb. 17 de abril)
+      orden: orden.filter(x=>x!==EXT_ID), ordenHist:[{at:ahora, orden:orden.filter(x=>x!==EXT_ID), motivo:"Orden inicial de 2027"}],
       bloques:[
         {id:"ss", nombre:"Semana Santa", rango:"19 – 28 mar", fijas:["2027-03-19","2027-03-22","2027-03-24"], nota:"",
           opciones:[P("2027-03-20",["2027-03-20"],"festivo"), P("2027-03-21",["2027-03-21"],"festivo"), P("2027-03-23",["2027-03-23"],"jornada normal"),
                     P("2027-03-25",["2027-03-25"],"festivo"), P("2027-03-26",["2027-03-26"],"festivo"), P("2027-03-27",["2027-03-27"],"festivo"), P("2027-03-28",["2027-03-28"],"festivo")]},
-        {id:"feria", nombre:"Feria", rango:"12 – 18 abr", fijas:["2027-04-12","2027-04-14"],
-          nota:"En Bormujos el miércoles 14 es laborable; el festivo local pasa al viernes 16.",
+        {id:"feria", nombre:"Feria", rango:"12 – 18 abr", fijas:["2027-04-12","2027-04-14","2027-04-17"],
+          nota:"En Bormujos el miércoles 14 es laborable; el festivo local pasa al viernes 16. El sábado 17 lo cubre directamente URG.",
           opciones:[P("2027-04-13",["2027-04-13"],"jornada normal"), P("2027-04-15",["2027-04-15"],"jornada normal"),
-                    P("2027-04-16",["2027-04-16"],"festivo"), P("2027-04-17",["2027-04-17"],"festivo"), P("2027-04-18",["2027-04-18"],"festivo")]}
+                    P("2027-04-16",["2027-04-16"],"festivo"), P("2027-04-18",["2027-04-18"],"festivo")]}
       ], ejecuciones:[], publicado:null}
   };
 }
@@ -6558,10 +6559,29 @@ function repartos(){
   if(!state.repartos || typeof state.repartos!=="object") state.repartos = {};
   return state.repartos;
 }
+// v195 (decisión de Javier, 24-11-2026): el sábado 17 de abril de 2027 (Feria) deja de
+// sortearse y lo cubre directamente URG, que por eso sale del reparto de SS y Feria.
+// Se aplica una sola vez al reparto ya creado, si aún no se ha ejecutado ni publicado.
+function repMigrar195(){
+  if(MODE!=="editor") return false;
+  const ss = repartos()["ssferia-2027"];
+  if(!ss || ss.mig195 || (ss.ejecuciones||[]).length || ss.publicado) return false;
+  const fer = (ss.bloques||[]).find(b=>b.id==="feria");
+  if(fer){
+    fer.opciones = (fer.opciones||[]).filter(o=>o.id!=="2027-04-17");
+    fer.fijas = Array.isArray(fer.fijas) ? fer.fijas : [];
+    if(fer.fijas.indexOf("2027-04-17")<0){ fer.fijas.push("2027-04-17"); fer.fijas.sort(); }
+    if(fer.nota && fer.nota.indexOf("sábado 17")<0) fer.nota += " El sábado 17 lo cubre directamente URG.";
+  }
+  if((ss.orden||[]).indexOf(EXT_ID)>=0){ ss.orden = ss.orden.filter(x=>x!==EXT_ID); repAnotarOrden(ss, "URG cubre directamente el sáb. 17 de abril y sale del reparto"); }
+  ss.mig195 = true;
+  return true;
+}
 // El coordinador crea los repartos de 2027 la primera vez que abre Peticiones
 function repAsegurar(){
   const r = repartos();
   if(MODE==="editor" && !Object.keys(r).length){ Object.assign(r, repDefecto2027()); save(); }
+  if(repMigrar195()) save();
   return r;
 }
 const repNombre = pid => pid===EXT_ID ? "URG (EXT)" : ((state.physicians.find(x=>x.id===pid)||{}).name || pid);
@@ -11772,6 +11792,7 @@ async function boot(){
   ARRANCANDO = false;
   if(NEWER) setSave("⚠ Hay una versión más reciente publicada");
   // v191: en edición, si hay una versión más nueva se carga o se junta sola
+  if(repMigrar195()){ save(); }     // v195: sáb. 17 de abril para URG (se publica sola)
   if(MODE==="editor") setTimeout(()=>{ pendCargarServidor().then(()=>{ try{ renderNav(); }catch(e){} }); }, 4000);   // v194: para la cuenta de pendientes
   if(MODE==="editor" && NEWER){ NEWER = false; sincronizarCoord().then(sy=>{ if(sy.estado==="fusionado") schedulePublish(); }); }
   // v177: la copia diaria se hace al abrir la aplicación (antes solo al entrar en Solicitudes),
