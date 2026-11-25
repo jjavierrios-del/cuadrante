@@ -69,6 +69,8 @@
   .pendn{display:inline-block;min-width:18px;padding:0 5px;margin-left:3px;border-radius:999px;background:#b91c1c;color:#fff;font-size:11px;font-weight:700;line-height:18px;text-align:center}
   .custd .cell{box-shadow:inset 0 -3px 0 #7c3aed}
   @media print{ .custd .cell{box-shadow:none} }
+  /* v197: «Imprimir / PDF» de la justificación del reparto: solo el documento */
+  @media print{ body.print-just main > :not(.just-doc){display:none!important} body.print-just .just-doc{border:none; box-shadow:none} }
   .nodisp{background:repeating-linear-gradient(45deg,#fee2e2,#fee2e2 5px,#fecaca 5px,#fecaca 10px)!important; color:#991b1b!important}
   .k-tfm{background:#f59e0b; color:#3b2005}
   .k-tft{background:#8b5cf6; color:#fff}
@@ -486,6 +488,8 @@ function paraPublicar(){
     });
   }
   if(Array.isArray(body.applog)) body.applog.forEach(x=>{ if(x) delete x.nota; });
+  // v197: el recorrido de cada versión lleva preferencias: solo sale la justificación de la publicada
+  if(body.repartos && typeof body.repartos==="object") Object.values(body.repartos).forEach(r=>{ if(r && Array.isArray(r.ejecuciones)) r.ejecuciones.forEach(x=>{ if(x) delete x.traza; }); });
   // Las claves NUNCA deben viajar al archivo publicado: con la de calendario
   // cualquiera podría descargar los turnos y ausencias de todo el equipo, y con
   // la de envío mandar solicitudes falsas. Se publica solo la dirección del buzón.
@@ -1551,7 +1555,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v196";
+const APP_VERSION = "v197";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -6312,7 +6316,7 @@ function avisosVolcar(alSalir){
 // ---- Abrir la aplicación en la pantalla del aviso (v180) ----
 function abrirDesdeAviso(ir){
   if(!ir || typeof ir!=="object") return;
-  const tabs = ["cuadrante","solicitudes","administrativo"];
+  const tabs = ["cuadrante","solicitudes","administrativo"].concat(MODE==="editor" ? ["pendientes"] : []);
   const tab = tabs.indexOf(ir.tab)>=0 ? ir.tab : "cuadrante";
   if(typeof ir.dia==="string" && /^\d{4}-\d{2}-\d{2}$/.test(ir.dia)){
     const pr = ir.dia.split("-").map(Number);
@@ -6629,20 +6633,26 @@ function repAnotarOrden(rep, motivo){
 function repEjecutar(rep, vigentes){
   const existentes = {}; repOpciones(rep).forEach(o=>{ existentes[o.id] = 1; });
   const tomada = {}, asig = {}, pendientes = [];
-  (rep.orden||[]).forEach(pid=>{
+  // v197: recorrido turno a turno, para la justificación. Solo guarda las preferencias que se
+  // han mirado hasta llegar a la que le toca (las siguientes no influyen y no se publican).
+  const traza = [];
+  (rep.orden||[]).forEach((pid, turno)=>{
     const pide = (vigentes[pid]||[]).filter(id=>existentes[id]);
     if(!pide.length){
       // En los puentes, URG (EXT) solo tiene sus coberturas fijas
       if(pid===EXT_ID && rep.tipo==="paquetes") return;
       pendientes.push({pid:pid, motivo:"No ha enviado preferencias"});
+      traza.push({pid:pid, turno:turno+1, vistas:[], elegida:null, motivo:"sin-preferencias"});
       return;
     }
     const elegida = pide.find(id=>!tomada[id]);
+    const hasta = elegida ? pide.indexOf(elegida)+1 : pide.length;
+    traza.push({pid:pid, turno:turno+1, vistas:pide.slice(0, hasta).map(id=>({id:id, de:tomada[id]||null})), elegida:elegida||null, motivo:elegida?"":"todas-tomadas"});
     if(elegida){ asig[pid] = elegida; tomada[elegida] = pid; }
     else pendientes.push({pid:pid, motivo:"Todas sus opciones están ya asignadas a quien elige antes"});
   });
   const libres = repOpciones(rep).filter(o=>!tomada[o.id]).map(o=>o.id);
-  return {at:new Date().toISOString(), orden:(rep.orden||[]).slice(), asig:asig, pendientes:pendientes, libres:libres, ajustes:[], publicada:false};
+  return {at:new Date().toISOString(), orden:(rep.orden||[]).slice(), asig:asig, pendientes:pendientes, libres:libres, ajustes:[], publicada:false, traza:traza};
 }
 // Conflictos con el cuadrante, para la vista previa (no impiden publicar)
 function repConflictos(rep, ej){
@@ -6734,10 +6744,56 @@ function repPublicar(rep, iEj){
   rep.publicaciones = (rep.publicaciones||[]).concat([{at:new Date().toISOString(), version:iEj+1, accion:"publicada"}]);
   rep.ejecuciones.forEach((x,i)=>{ x.publicada = (i===iEj); });
   rep.publicado = {version:iEj+1, at:new Date().toISOString(), asig:JSON.parse(JSON.stringify(ej.asig))};
+  const just = repJustificar(rep, ej); if(just) rep.publicado.just = just;     // v197: se publica con el resultado
   rep.estado = "publicado";
   save();
   return null;
 }
+// ---- v197: justificación del reparto ----
+// Se construye a partir del recorrido (traza) y del resultado final de la versión (que puede
+// llevar ajustes a mano). El coordinador la ve en la revisión y se publica a la vez que el
+// resultado, congelada en rep.publicado.just. Las versiones sin publicar no la llevan al
+// archivo público (ver paraPublicar).
+function repJustificar(rep, ej){
+  if(!ej || !Array.isArray(ej.traza)) return null;
+  const turnoDe = {}; (ej.orden||[]).forEach((pid,i)=>{ turnoDe[pid] = i+1; });
+  const filas = ej.traza.map(t=>{
+    const fin = ej.asig[t.pid] || null;
+    const f = {pid:t.pid, turno:t.turno, vistas:(t.vistas||[]).map(v=>({id:v.id, de:v.de, deTurno:v.de?turnoDe[v.de]||null:null})), elegida:t.elegida, motivo:t.motivo, final:fin, ajuste:""};
+    if(t.elegida && !fin) f.ajuste = "quitada";
+    else if(fin && fin!==t.elegida) f.ajuste = t.elegida ? "cambiada" : "a-mano";
+    return f;
+  });
+  return {at:new Date().toISOString(), filas:filas, fijas:repFijas(rep).slice(), libres:(ej.libres||[]).slice()};
+}
+const repOrdinal = n => n+".º";
+const repOrdinalF = n => n+".ª";
+// Documento: lo mismo en la revisión del coordinador y en lo publicado para todos
+function viewJustificacion(rep, just, titulo, pie){
+  if(!just) return '<div class="card just-doc"><h2>Justificación</h2><p class="muted" style="font-size:13px">Esta versión se ejecutó antes de que la app guardara el recorrido. Vuelve a ejecutar el reparto para obtenerla.</p></div>';
+  const ot = id=>esc(repOpcionTxt(rep, id));
+  let h = '<div class="card just-doc"><div class="row between no-print" style="align-items:center;gap:8px;flex-wrap:wrap"><h2>'+titulo+'</h2>'+
+    '<button class="btn" data-action="pet-just-imprimir">Imprimir / PDF</button></div>'+
+    '<div class="printhead" style="display:none">'+esc(rep.nombre)+' · Justificación del reparto</div>'+
+    '<p class="muted" style="font-size:13px;margin-top:4px">Se sigue el orden de elección. A cada uno le toca la primera de sus preferencias que no se haya llevado alguien que elige antes. '+
+    'De cada persona solo se muestran sus preferencias hasta la que le tocó; las siguientes no influyen en el resultado y no se publican.</p>';
+  h += '<div style="margin-top:8px">'+just.filas.map(f=>{
+    let l = '<div style="padding:7px 0;border-bottom:1px solid var(--slate-100);font-size:13px;break-inside:avoid"><b>'+repOrdinal(f.turno)+' '+esc(repNombre(f.pid))+'</b>';
+    if(f.motivo==="sin-preferencias") l += '<div style="margin-top:2px">No envió preferencias.</div>';
+    else l += '<div style="margin-top:2px">'+f.vistas.map((v,i)=>repOrdinalF(i+1)+' preferencia: '+ot(v.id)+' → '+
+      (v.de ? '<span class="muted">ya asignada a '+esc(repNombre(v.de))+(v.deTurno?' ('+repOrdinal(v.deTurno)+')':'')+'</span>' : '<b style="color:var(--emerald-700)">asignada</b>')).join('<br>')+
+      (f.motivo==="todas-tomadas" ? '<br><span style="color:var(--rose-700)">Todas sus preferencias estaban ya asignadas a quien elige antes.</span>' : '')+'</div>';
+    if(f.ajuste==="quitada") l += '<div style="margin-top:2px;color:var(--rose-700)">Ajuste del coordinador en la revisión: se le quitó esta asignación.</div>';
+    if(f.ajuste==="a-mano" || f.ajuste==="cambiada") l += '<div style="margin-top:2px;color:#1d4ed8">Ajuste del coordinador en la revisión: se le asignó '+ot(f.final)+'.</div>';
+    l += '<div style="margin-top:2px">Resultado: '+(f.final ? '<b>'+ot(f.final)+'</b>' : '<span class="muted">sin asignar</span>')+'</div></div>';
+    return l;
+  }).join("")+'</div>';
+  if((just.fijas||[]).length) h += '<p style="font-size:13px;margin-top:8px"><b>Cubre URG directamente</b> (fuera del reparto): '+just.fijas.map(repDia).join(" · ")+'</p>';
+  if((just.libres||[]).length) h += '<p style="font-size:13px;margin-top:4px"><b>Sin asignar</b>: '+just.libres.map(ot).join(" · ")+'</p>';
+  if(pie) h += '<p class="muted" style="font-size:12px;margin-top:8px">'+pie+'</p>';
+  return h+'</div>';
+}
+function repFechaLarga(iso){ try{ return new Date(iso).toLocaleDateString("es-ES",{day:"numeric",month:"long",year:"numeric"}); }catch(e){ return ""; } }
 // ---- Comunicación con el servidor ----
 async function repServidor(ruta, opciones){
   const b = state.buzon||{};
@@ -6942,7 +6998,8 @@ function viewPeticiones(){
   if(sub==="orden") return h + lista.map(viewRepOrden).join("");
   const rep = lista.find(r=> sub==="puentes" ? r.tipo==="paquetes" : r.tipo==="fechas");
   if(!rep) return h+'<div class="card"><p class="muted">No hay reparto de este tipo.</p></div>';
-  return h + viewRepartoCab(rep) + (MODE==="editor" ? viewRepartoAdmin(rep) : viewRepartoFacultativo(rep));
+  return h + viewRepartoCab(rep) + (MODE==="editor" ? viewRepartoAdmin(rep) :
+    viewRepartoFacultativo(rep) + (rep.publicado && rep.publicado.just ? viewJustificacion(rep, rep.publicado.just, "Por qué le ha tocado a cada uno", "Resultado publicado el "+esc(repFechaLarga(rep.publicado.at))+" (versión "+rep.publicado.version+").") : ""));
 }
 function viewRepOrden(rep){
   const ed = MODE==="editor";
@@ -7090,7 +7147,8 @@ function viewRepartoAdmin(rep){
       ((rep.publicaciones||[]).length ? '<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px">Historial de publicaciones ('+rep.publicaciones.length+')</summary>'+
         rep.publicaciones.slice().reverse().map(x=>'<div style="font-size:12px;padding:3px 0">Versión '+x.version+' '+(x.accion==="retirada"?"retirada":"publicada")+' · '+
           new Date(x.at).toLocaleString("es-ES",{day:"2-digit",month:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit"})+'</div>').join("")+'</details>' : '')+
-      '<p class="muted" style="font-size:12px;margin-top:6px">Al publicar, las guardias se escriben en el cuadrante (también las fijas de URG) y el generador no las tocará. El resultado lo ve todo el equipo, sin las preferencias.</p></div>';
+      '<p class="muted" style="font-size:12px;margin-top:6px">Al publicar, las guardias se escriben en el cuadrante (también las fijas de URG) y el generador no las tocará. El equipo verá el resultado y la justificación de abajo (cada uno, sus preferencias solo hasta la que le tocó).</p></div>';
+    h += viewJustificacion(rep, repJustificar(rep, ej), "Justificación de la versión "+(i+1), ej.publicada ? "Esta es la versión publicada: el equipo ve esta justificación." : "Se publicará junto con el resultado al pulsar «Publicar esta versión».");
   }
   // Configuración
   const editable = rep.estado==="config";
@@ -7477,10 +7535,28 @@ function pendCargarServidor(){
       const env = {}; Object.keys(d.peticiones||{}).forEach(pid=>{ if(repVigente(d.peticiones[pid]).length) env[pid] = true; });
       PEND.repartos[rep.id] = {faltan:(rep.orden||[]).filter(pid=>pid!==EXT_ID && !env[pid])}; }));
   });
+  // v197: salud nocturna del servidor (token de GitHub y copia)
+  tareas.push(repServidor("/salud?admin="+admin+"&t="+Date.now()).then(d=>{ PEND.salud = d.error ? {error:d.error} : (d.salud||null); }));
   // Custodia: la lista y los meses que se ven en el panel
   tareas.push(custCargarLista());
   pendMesesVista().forEach(({y, mo})=>tareas.push(custCargarMes(y, mo, true)));
   return Promise.all(tareas).catch(()=>{}).then(()=>{ PEND.estado = "ok"; PEND.at = new Date().toISOString(); });
+}
+// v197: lo que comprueba el servidor cada noche (token de GitHub y copia nocturna)
+const PEND_RENOVAR = ["Cómo renovarlo: en GitHub → Settings → Developer settings → Fine-grained tokens, crea uno nuevo (o regenera el actual) con acceso solo al repositorio «cuadrante» y permiso «Contents: Read and write».",
+  "Luego guárdalo en el servidor: panel de Cloudflare → Workers → buzon-cuadrante → Settings → Variables → GITHUB_TOKEN (o con «wrangler secret put GITHUB_TOKEN»). El token no se escribe nunca en la app ni en el chat."];
+function pendSalud(){
+  const s = PEND.salud, out = [];
+  if(!s || s.error) return out;
+  const t = s.token || {}, c = s.copia || {};
+  const fecha = iso=>{ const p = String(iso||"").slice(0,10).split("-"); return p.length===3 ? p[2]+"/"+p[1]+"/"+p[0] : ""; };
+  const dias = t.caduca ? Math.ceil((Date.parse(t.caduca)-Date.now())/864e5) : null;
+  if(!t.ok) out.push({nivel:"alta", titulo:"La app no puede publicar: el token de GitHub del servidor no funciona", lineas:[t.motivo||"GitHub no lo acepta."].concat(PEND_RENOVAR), boton:null});
+  else if(dias!==null && dias<=30) out.push({nivel:dias<=7?"alta":"media", titulo:"El token de GitHub caduca "+(dias<=0?"hoy":dias===1?"mañana":"en "+dias+" días")+" ("+fecha(t.caduca)+")",
+    lineas:["Cuando caduque, la app dejará de publicar el cuadrante y de recibir los cambios de administración."].concat(PEND_RENOVAR), boton:null});
+  if(c.ok===false) out.push({nivel:"media", titulo:"La copia nocturna ha fallado"+(c.fallos>1?" "+c.fallos+" noches seguidas":""), lineas:[(c.motivo||"")+". Mientras tanto, descarga una copia a mano en Ajustes → Copia de seguridad."], boton:null});
+  if(s.at && Date.now()-Date.parse(s.at) > 36*36e5) out.push({nivel:"media", titulo:"El servidor no hace su comprobación nocturna desde el "+fecha(s.at), lineas:["Revisa en Cloudflare que los temporizadores (Triggers → Cron) del Worker siguen activos."], boton:null});
+  return out;
 }
 // Cada pendiente: {nivel:"alta"|"media"|"info", titulo, lineas:[], boton:{txt, attrs}}
 function pendLista(){
@@ -7538,6 +7614,7 @@ function pendLista(){
     if(sin.length) out.push({nivel:"info", titulo:sin.length+" sin responder al recordatorio de tráficos de "+mesTxt, lineas:[sin.map(repNombre).join(", ")], boton:null});
   }
   // 8) Mantenimiento
+  pendSalud().forEach(x=>out.push(x));
   if(NEWER) out.push({nivel:"alta", titulo:"Hay una versión publicada más reciente que la de este dispositivo", lineas:["Mira el aviso de arriba: «Cargar la publicada» o «Seguir con la local»."], boton:null});
   let arch = []; try{ arch = mesesArchivables(); }catch(e){}
   if(arch.length) out.push({nivel:"info", titulo:"Meses pasados pendientes de archivar: "+arch.join(", "), lineas:[], boton:boton("Archivar ahora", 'data-action="archivar-ahora"')});
@@ -10661,6 +10738,13 @@ document.addEventListener("click", e=>{
       if(act==="pet-descartar") ej.descartada = true; else delete ej.descartada;
       ui.petMsg = act==="pet-descartar" ? "Versión descartada: queda en el historial y se puede recuperar." : "Versión recuperada.";
       save(); render(); break;
+    }
+    case "pet-just-imprimir": {
+      document.body.classList.add("print-just");
+      const fuera = ()=>{ document.body.classList.remove("print-just"); window.removeEventListener("afterprint", fuera); };
+      window.addEventListener("afterprint", fuera);
+      imprimirVista(); setTimeout(fuera, 60000);
+      break;
     }
     case "pet-b-anadir": { const rep = repartos()[el.dataset.rep]; if(!rep) break; rep.bloques.push({id:"b"+Date.now().toString(36), nombre:"Nuevo bloque", rango:"", fijas:[], nota:"", opciones:[]}); save(); render(); break; }
     case "pet-b-quitar": { const rep = repartos()[el.dataset.rep]; if(!rep || !window.confirm("¿Quitar este bloque y sus opciones?")) break; rep.bloques.splice(Number(el.dataset.b),1); save(); render(); break; }

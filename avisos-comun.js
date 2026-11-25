@@ -61,7 +61,8 @@ function avisoParticipa(r, pid) {
 function avisoDesdeMotivos(pid, d, visto, motivos) {
   const ult = (motivos || []).reduce((m, x) => (x && x.at > m ? x.at : m), (visto && visto.motAt) || "");
   const lim = new Date(Date.now() - 10 * 60000).toISOString();
-  const nuevos = (motivos || []).filter((m) => m && m.at && (visto && visto.motAt ? m.at > visto.motAt : m.at > lim));
+  const limSalud = new Date(Date.now() - 26 * 3600e3).toISOString();     // v197: el aviso de madrugada sale a las 9:00
+  const nuevos = (motivos || []).filter((m) => m && m.at && (visto && visto.motAt ? m.at > visto.motAt : m.at > (m.t === "salud" ? limSalud : lim)));
   const partes = []; let ir = null;
   const n = (t) => nuevos.filter((m) => m.t === t).length;
   const nombre = (id) => ((d.physicians || []).find((p) => p.id === id) || {}).name || "un compañero";
@@ -72,6 +73,7 @@ function avisoDesdeMotivos(pid, d, visto, motivos) {
     partes.push("Administración ha " + (m.accion === "quitar" ? "quitado" : "puesto") + " un tráfico a " + nombre(m.pid) + " el " + avisoFecha(m.fecha) + ".");
     ir = ir || { tab: "cuadrante", dia: m.fecha };
   });
+  nuevos.filter((m) => m.t === "salud" && m.txt).slice(-1).forEach((m) => { partes.unshift(String(m.txt)); ir = { tab: "pendientes" }; });   // v197: token o copia nocturna
   if (n("espera")) { partes.push(n("espera") === 1 ? "Hay un cambio nuevo pendiente de reajustar." : "Hay " + n("espera") + " cambios nuevos pendientes de reajustar."); ir = ir || { tab: "administrativo" }; }
   return { partes: partes, ir: ir, motAt: ult };
 }

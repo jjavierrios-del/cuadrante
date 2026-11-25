@@ -343,6 +343,71 @@ async function copiaNocturna(env) {
   return { hecho: true, bytes: texto.length };
 }
 
+// ================= SALUD NOCTURNA (v197) =================
+// Tras la copia nocturna se comprueba el permiso (token) de GitHub con el que el servidor publica:
+// si funciona y cuándo caduca (GitHub lo dice en la cabecera github-authentication-token-expiration).
+// Se avisa al coordinador 30, 14, 7 y 1 día antes de caducar (una vez por tramo), cada noche si el
+// permiso ya no funciona, y si la copia nocturna falla. Los avisos de madrugada salen a las 9:00.
+// El estado queda en «salud» para el panel de Pendientes (GET /salud?admin=).
+const SALUD_TRAMOS = [1, 7, 14, 30];
+function fechaCaducidad(txt) {
+  const m = String(txt || "").match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2})?)\s*(UTC|Z|[+-]\d{2}:?\d{2})?/);
+  if (!m) return null;
+  let zona = m[3] || "Z";
+  if (zona === "UTC") zona = "Z";
+  else if (/^[+-]\d{4}$/.test(zona)) zona = zona.slice(0, 3) + ":" + zona.slice(3);
+  const d = new Date(m[1] + "T" + m[2] + zona);
+  return isNaN(d) ? null : d.toISOString();
+}
+const fechaCorta = (iso) => { const p = String(iso).slice(0, 10).split("-"); return p[2] + "/" + p[1] + "/" + p[0]; };
+async function revisarSalud(env, copia) {
+  const ahora = new Date();
+  const anterior = (await env.BUZON.get("salud", "json")) || {};
+  const salud = { at: ahora.toISOString(), copia: { ok: true, motivo: "" }, token: { ok: false } };
+  // Copia: «sin cambios» no es un fallo
+  if (copia && !copia.hecho && copia.motivo !== "sin cambios desde la última") salud.copia = { ok: false, motivo: String(copia.motivo || "error") };
+  // Permiso de GitHub
+  if (!env.GITHUB_TOKEN || !env.GH_OWNER || !env.GH_REPO) salud.token = { ok: false, estado: 0, motivo: "El servidor no tiene configurado el token de GitHub." };
+  else {
+    try {
+      const r = await fetch("https://api.github.com/repos/" + env.GH_OWNER + "/" + env.GH_REPO, {
+        headers: { "Authorization": "Bearer " + env.GITHUB_TOKEN, "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "buzon-cuadrante" } });
+      const caduca = fechaCaducidad(r.headers.get("github-authentication-token-expiration"));
+      let escribir = true;
+      if (r.ok) { try { const j = await r.json(); if (j && j.permissions && j.permissions.push === false) escribir = false; } catch (e) { /* sin detalle de permisos */ } }
+      salud.token = { ok: r.ok && escribir, estado: r.status, caduca: caduca };
+      if (r.status === 401) salud.token.motivo = "GitHub rechaza el token: ha caducado o se ha revocado.";
+      else if (r.ok && !escribir) salud.token.motivo = "El token ya no tiene permiso de escritura en el repositorio.";
+      else if (!r.ok) salud.token.motivo = "GitHub no ha respondido bien (" + r.status + ").";
+    } catch (e) { salud.token = { ok: false, estado: 0, motivo: "No se ha podido contactar con GitHub." }; }
+  }
+  if (salud.token.caduca) salud.token.dias = Math.ceil((Date.parse(salud.token.caduca) - ahora.getTime()) / 864e5);
+  // Fallos seguidos (un fallo suelto de red de GitHub no merece aviso; un 401 sí, a la primera)
+  salud.token.fallos = salud.token.ok ? 0 : ((anterior.token && anterior.token.fallos) || 0) + 1;
+  salud.copia.fallos = salud.copia.ok ? 0 : ((anterior.copia && anterior.copia.fallos) || 0) + 1;
+  // Qué avisar
+  const avisos = [];
+  const t = salud.token;
+  salud.avisoToken = anterior.avisoToken || "";
+  const grave = t.estado === 401 || t.estado === 200 || !env.GITHUB_TOKEN;   // 200 sin permiso de escritura
+  if (!t.ok && (grave || t.fallos >= 2)) {
+    avisos.push("La app no puede publicar: " + (t.motivo || "el token de GitHub no funciona") + " Hay que renovarlo.");
+  } else if (t.ok && typeof t.dias === "number") {
+    const tramo = SALUD_TRAMOS.find((n) => t.dias <= n);
+    const marca = t.caduca + "|" + tramo;
+    if (tramo && anterior.avisoToken !== marca) {
+      avisos.push(t.dias <= 1 ? "El token de GitHub caduca mañana (" + fechaCorta(t.caduca) + "): renuévalo hoy o la app dejará de publicar."
+        : "El token de GitHub caduca en " + t.dias + " días (" + fechaCorta(t.caduca) + "). Renuévalo antes para que la app siga publicando.");
+      salud.avisoToken = marca;
+    }
+  }
+  if (!salud.copia.ok) avisos.push("La copia nocturna del cuadrante ha fallado: " + salud.copia.motivo + ".");
+  salud.avisos = avisos;
+  await env.BUZON.put("salud", JSON.stringify(salud));
+  if (avisos.length) await avisar(env, [PID_COORD], { t: "salud", txt: avisos.join(" ") });
+  return salud;
+}
+
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
     status,
@@ -353,7 +418,12 @@ export default {
   // Temporizadores: copia nocturna y entrega de los avisos retenidos por la noche
   async scheduled(event, env, ctx) {
     const tarea = (async () => {
-      if (event.cron === "0 2 * * *") return copiaNocturna(env);
+      if (event.cron === "0 2 * * *") {
+        let copia;
+        try { copia = await copiaNocturna(env); } catch (e) { copia = { hecho: false, motivo: "error inesperado (" + String(e && e.message || e).slice(0, 80) + ")" }; }
+        try { await revisarSalud(env, copia); } catch (e) { /* la comprobación nunca debe romper la copia */ }
+        return copia;
+      }
       if (horaMadrid(env) === HORA_INICIO) return vaciarCola(env);   // de las dos horas programadas, solo una es las 9:00 de Madrid
       return null;
     })();
@@ -926,6 +996,12 @@ async function atender(request, env, ctx) {
         const pid = url.searchParams.get("pid") || "";
         if (pid !== PID_COORD && pid !== PID_ADMVO) return json({ error: "Destinatario no válido." }, 400);
         return json({ ok: true, motivos: (await env.BUZON.get("mot:" + pid, "json")) || [] });
+      }
+
+      // ---------- Salud nocturna: copia y token de GitHub (v197, solo el coordinador) ----------
+      if (request.method === "GET" && ruta === "/salud") {
+        if (!env.CLAVE_ADMIN || (url.searchParams.get("admin") || "") !== env.CLAVE_ADMIN) return json({ error: "Clave de administración incorrecta." }, 403);
+        return json({ ok: true, salud: (await env.BUZON.get("salud", "json")) || null });
       }
 
       // ---------- Aviso de prueba al coordinador (ignora el horario de silencio) ----------
