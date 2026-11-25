@@ -68,6 +68,11 @@
   .k-adm{background:#64748b; color:#fff}
   .pendn{display:inline-block;min-width:18px;padding:0 5px;margin-left:3px;border-radius:999px;background:#b91c1c;color:#fff;font-size:11px;font-weight:700;line-height:18px;text-align:center}
   .custd .cell{box-shadow:inset 0 -3px 0 #7c3aed}
+  /* v198: horas extra por cobertura de baja (HE): magenta intenso, distinto de URG L/V (rojo) y de baja/permiso (pastel) */
+  .herow{display:flex; align-items:center; justify-content:center; width:100%; background:#e6007e; color:#fff; font-weight:800; font-size:9px; line-height:1; flex:0 0 38%}
+  .herow.solo{flex:1 1 100%; font-size:10px}
+  .k-he{background:#e6007e; color:#fff; font-weight:800}
+  .cell.conhe .half, .cell.conhe .full{height:auto; flex:1 1 0; min-height:0}
   @media print{ .custd .cell{box-shadow:none} }
   /* v197: «Imprimir / PDF» de la justificación del reparto: solo el documento */
   @media print{ body.print-just main > :not(.just-doc){display:none!important} body.print-just .just-doc{border:none; box-shadow:none} }
@@ -370,7 +375,7 @@ function canon(x){
   return JSON.stringify(x);
 }
 const SYNC_META = ["publishedAt","publishedBy","tienePass","updatedAt","buzon","year","adminPass","adminPass2"];
-const SYNC_MAPAS = ["assignments","traficoHoras","diasLibres","official","cerradoAdm","archivado","historial","baseline","rotantes","puerta","guardiaRot","permisosCupo","rotBloqueados","repartos","rotantesLeyenda"];
+const SYNC_MAPAS = ["assignments","traficoHoras","horasExtra","diasLibres","official","cerradoAdm","archivado","historial","baseline","rotantes","puerta","guardiaRot","permisosCupo","rotBloqueados","repartos","rotantesLeyenda"];
 // En la bandeja, lo publicado no lleva los motivos: no cuenta como diferencia
 const sinPrivado = it => { if(!it || typeof it!=="object") return it; const c = JSON.parse(JSON.stringify(it)); if(c.req) delete c.req.note; delete c.texto; delete c.motivo; return c; };
 function fusionar(base, local, remoto){
@@ -674,6 +679,8 @@ let state = {
   rotBloqueados: {},
   // Hora de comienzo de las consultas de Tráfico: clave "pid|fecha|slot" → "09:30"
   traficoHoras: {},
+  // v198: horas extra por cobertura de bajas: {"pid|AAAA-MM-DD": [6, 7, 12…]} (horas de cada turno cubierto)
+  horasExtra: {},
   // Días que un facultativo ha pedido no trabajar. Clave "pid|fecha" → true.
   // El generador no le asigna nada ese día y NO cuentan como jornada exigible.
   diasLibres: {},
@@ -775,6 +782,7 @@ function guardarHistorial(mo){
     rotantes: filtrarPorFecha(state.rotantes, true),
     rotantesLeyenda: JSON.parse(JSON.stringify(state.rotantesLeyenda||{})),
     traficoHoras: filtrarPorFecha(state.traficoHoras, true),
+    horasExtra: filtrarPorFecha(state.horasExtra||{}, false),
     diasLibres: filtrarPorFecha(state.diasLibres, false),
     ext: extResumenMes(state.year, mo)          // v182: si EXT estaba activa, cadencia, excepciones, coberturas y URGF
   };
@@ -1236,7 +1244,7 @@ function loadState(){
       if(d.adminPass) state.adminPass = d.adminPass;
       if(d.adminPass2) state.adminPass2 = d.adminPass2;
       state.rotBloqueados = d.rotBloqueados||{};
-      state.traficoHoras = d.traficoHoras||{};
+      state.traficoHoras = d.traficoHoras||{}; state.horasExtra = heLimpiar(d.horasExtra);
       state.diasLibres = d.diasLibres||{};
       state.permisosCupo = d.permisosCupo||{};
       state.bandeja = Array.isArray(d.bandeja) ? d.bandeja : [];
@@ -1336,6 +1344,7 @@ function marcarDeshacer(descripcion){
         diasLibres: state.diasLibres,
         rotantes: state.rotantes,
         traficoHoras: state.traficoHoras,
+        horasExtra: state.horasExtra,
         official: state.official,
         baseline: state.baseline,
         cambiosAdm: state.cambiosAdm,
@@ -1357,6 +1366,7 @@ function deshacer(){
     state.diasLibres  = d.diasLibres || {};
     state.rotantes    = d.rotantes || {};
     state.traficoHoras= d.traficoHoras || {};
+    state.horasExtra  = heLimpiar(d.horasExtra);
     state.official    = d.official || {};
     state.baseline    = d.baseline || {};
     state.cambiosAdm  = d.cambiosAdm || {};
@@ -1555,7 +1565,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v197";
+const APP_VERSION = "v198";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -6057,6 +6067,36 @@ const HE_NOMBRES_DEF = [
   ["VAZQUEZ","VAZQUEZ SOUSA, MARIA DEL CARMEN"],
   ["GALIANA","GALIANA CALERO, FCO DE PAULA"]
 ];
+// ---- v198: horas extra por cobertura de bajas (HE6, HE7, HE12) ----
+// Las marca solo el coordinador, a mano, en la celda. Son un dato aparte: no son turnos,
+// no las toca el generador ni las solicitudes, y no cuentan en estadísticas de turnos.
+// Las ve todo el equipo (marca «HE» + horas del día) y van al Excel como horas extras.
+const HE_TURNOS = [6, 7, 12];
+function heLimpiar(o){
+  const out = {};
+  if(o && typeof o==="object") Object.keys(o).forEach(k=>{
+    if(!/^[^|]+\|\d{4}-\d{2}-\d{2}$/.test(k) || !Array.isArray(o[k])) return;
+    const l = o[k].map(Number).filter(h=>HE_TURNOS.indexOf(h)>=0);
+    if(l.length) out[k] = l;
+  });
+  return out;
+}
+function heTurnos(pid, k){ return ((state.horasExtra||{})[pid+"|"+k]) || []; }
+function heHorasDia(pid, k){ return heTurnos(pid, k).reduce((a,b)=>a+b, 0); }
+// Devuelve un texto de error o null
+function heAnadir(pid, k, h){
+  if(HE_TURNOS.indexOf(h)<0) return "Duración no válida.";
+  const a = state.assignments[pid+"|"+k];
+  if(a && a.f && absInfo(a.f)) return "Ese día tiene "+absInfo(a.f).label.toLowerCase()+": no puede hacer horas extra.";
+  if(heTurnos(pid, k).length>=3) return "Como máximo tres turnos de horas extra en un día.";
+  state.horasExtra = state.horasExtra || {};
+  state.horasExtra[pid+"|"+k] = heTurnos(pid, k).concat([h]);
+  return null;
+}
+function heQuitar(pid, k, i){
+  const l = heTurnos(pid, k).slice(); l.splice(i, 1);
+  if(l.length) state.horasExtra[pid+"|"+k] = l; else if(state.horasExtra) delete state.horasExtra[pid+"|"+k];
+}
 function heNombreDef(corto){
   const i = HE_NOMBRES_DEF.findIndex(x=>x[0]===String(corto||"").trim().toUpperCase());
   return {orden: i<0 ? 999 : i, nombre: i<0 ? "" : HE_NOMBRES_DEF[i][1]};
@@ -6068,6 +6108,7 @@ function heCfg(){
     eurGuardia: num(c.eurGuardia, 39.31),
     eurTrafico: num(c.eurTrafico, 315),
     eurFE:      num(c.eurFE, 22.15),
+    eurHE:      num(c.eurHE, 60),           // v198: hora extra por cobertura de bajas
     festivos:   Array.isArray(c.festivos) ? c.festivos.slice() : HE_FESTIVOS_DEF.slice()
   };
 }
@@ -6094,9 +6135,11 @@ function horasExtrasMes(mo){
     const n = nom[p.id] || {};
     const def = heNombreDef(p.name);
     const f = {pid:p.id, corto:p.name, id:String(n.id||""), nombre:String(n.nombre||"") || def.nombre || p.name, orden:def.orden,
-               diasG:[], diasT:[], diasFE:[]};
+               diasG:[], diasT:[], diasFE:[], diasHE:[], hHE:0};
     for(let d=1; d<=dim; d++){
       const k = keyOf(state.year, mo, d);
+      const hx = heHorasDia(p.id, k);
+      if(hx){ f.diasHE.push(d); f.hHE += hx; }       // v198: el día una sola vez, con las horas sumadas
       const a = state.assignments[p.id+"|"+k];
       if(!a) continue;
       if(a.f==="URGF") f.diasG.push(d);
@@ -6106,10 +6149,11 @@ function horasExtrasMes(mo){
     f.hG = f.diasG.length*HE_HORAS_GUARDIA;  f.eG = f.hG*cfg.eurGuardia;
     f.nT = f.diasT.length;                   f.eT = f.nT*cfg.eurTrafico;
     f.hFE = f.diasFE.length*HE_HORAS_GUARDIA; f.eFE = f.hFE*cfg.eurFE;
+    f.eHE = f.hHE*cfg.eurHE;
     return f;
   });
   filas.sort((a,b)=>(a.orden-b.orden) || a.nombre.localeCompare(b.nombre,"es"));
-  const tot = {hG:0,eG:0,nT:0,eT:0,hFE:0,eFE:0};
+  const tot = {hG:0,eG:0,nT:0,eT:0,hFE:0,eFE:0,hHE:0,eHE:0};
   filas.forEach(f=>{ Object.keys(tot).forEach(c=>{ tot[c]+=f[c]; }); });
   return {mo:mo, year:state.year, cfg:cfg, filas:filas, tot:tot};
 }
@@ -6120,7 +6164,7 @@ function horasExtrasXLS(mo){
   const r = horasExtrasMes(mo);
   const nG = Math.max(4, ...r.filas.map(f=>f.diasG.length));
   const nT = Math.max(5, ...r.filas.map(f=>f.diasT.length));
-  const nH = 5;
+  const nH = Math.max(5, ...r.filas.map(f=>f.diasHE.length));
   const r2 = v=>Math.round(v*100)/100;
   const num = (v, dec)=>'<td x:num="'+r2(v)+'" style="text-align:right">'+(dec?heEur(v):String(v))+'</td>';
   const txt = (t, st)=>'<td'+(st?' style="'+st+'"':'')+'>'+esc(t)+'</td>';
@@ -6136,7 +6180,7 @@ function horasExtrasXLS(mo){
   h += '<tr><td></td><td></td>'+
     '<td style="'+AM+'">2086</td>'+num(r.cfg.eurGuardia,true)+rep('<td></td>',nG)+
     '<td style="'+AM+'">2071</td>'+num(r.cfg.eurTrafico,true)+rep('<td></td>',nT)+
-    '<td style="'+AM+'">2054</td><td></td>'+rep('<td></td>',nH)+
+    '<td style="'+AM+'">2054</td>'+num(r.cfg.eurHE,true)+rep('<td></td>',nH)+
     '<td style="'+AM+'">2037</td>'+num(r.cfg.eurFE,true)+'</tr>';
   h += '<tr><td></td><td></td>'+
     '<td colspan="'+(2+nG)+'" style="'+VE+'">GUARDIAS</td>'+
@@ -6152,14 +6196,14 @@ function horasExtrasXLS(mo){
     h += '<tr>'+txt(f.id,"text-align:right")+txt(f.nombre)+
       (f.hG ? num(f.hG,false) : txt("-","text-align:center"))+num(f.eG,true)+dias(f.diasG,nG)+
       (f.nT ? num(f.nT,false) : txt("-","text-align:center"))+num(f.eT,true)+dias(f.diasT,nT)+
-      txt("-","text-align:center")+txt("-","text-align:center")+dias([],nH)+
+      (f.hHE ? num(f.hHE,false) : txt("-","text-align:center"))+(f.hHE ? num(f.eHE,true) : txt("-","text-align:center"))+dias(f.diasHE,nH)+
       (f.hFE ? num(f.hFE,true) : '<td></td>')+num(f.eFE,true)+'</tr>';
   });
   const tt = (v,dec)=>'<td x:num="'+r2(v)+'" style="'+AM+'">'+(dec?heEur(v):String(v))+'</td>';
   h += '<tr><td></td><td style="font-weight:bold;text-align:right">TOTAL</td>'+
     tt(r.tot.hG,true)+tt(r.tot.eG,true)+rep('<td></td>',nG)+
     tt(r.tot.nT,true)+tt(r.tot.eT,true)+rep('<td></td>',nT)+
-    tt(0,true)+tt(0,true)+rep('<td></td>',nH)+
+    tt(r.tot.hHE,true)+tt(r.tot.eHE,true)+rep('<td></td>',nH)+
     tt(r.tot.hFE,true)+tt(r.tot.eFE,true)+'</tr>';
   h += '</table></body></html>';
   return h;
@@ -6172,26 +6216,28 @@ function viewHorasExtras(){
   const nom = nominaLeer();
   const inp = 'padding:6px;border:1px solid var(--slate-300);border-radius:6px;font-size:13px';
   const celda = 'padding:4px 6px;border-bottom:1px solid var(--slate-200)';
-  const conDatos = r.filas.filter(f=>f.hG||f.nT||f.hFE);
+  const conDatos = r.filas.filter(f=>f.hG||f.nT||f.hFE||f.hHE);
   let h = '<div class="card" style="margin-top:10px"><h2>Horas extras del mes</h2>'+
-    '<p class="muted" style="margin-top:2px;font-size:14px">Guardias de sábado, domingo y festivo, consultas de Tráfico y festivos especiales, tal como están hoy en el cuadrante. Solo lo ve el coordinador.</p>'+
+    '<p class="muted" style="margin-top:2px;font-size:14px">Guardias de sábado, domingo y festivo, consultas de Tráfico, festivos especiales y horas extra por cobertura de bajas (HE), tal como están hoy en el cuadrante. Solo lo ve el coordinador.</p>'+
     '<p class="tiny" style="margin-top:12px">Mes</p>'+
     '<select data-field="he-mes" style="width:100%;padding:9px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+
       MONTHS.map((m,i)=>'<option value="'+i+'"'+(i===mo?" selected":"")+'>'+m+' '+state.year+'</option>').join("")+
     '</select>';
   if(!conDatos.length){
-    h += '<p class="muted" style="margin-top:12px;font-size:14px">No hay guardias de festivo ni tráficos en '+MONTHS[mo]+'.</p>';
+    h += '<p class="muted" style="margin-top:12px;font-size:14px">No hay guardias de festivo, tráficos ni horas extra en '+MONTHS[mo]+'.</p>';
   }else{
     h += '<div style="overflow-x:auto;margin-top:12px"><table id="he-tabla" style="border-collapse:collapse;font-size:13px;width:100%">'+
-      '<tr style="text-align:left"><th style="'+celda+'">Facultativo</th><th style="'+celda+'">Guardias</th><th style="'+celda+'">Tráficos</th><th style="'+celda+'">Festivo especial</th></tr>'+
+      '<tr style="text-align:left"><th style="'+celda+'">Facultativo</th><th style="'+celda+'">Guardias</th><th style="'+celda+'">Tráficos</th><th style="'+celda+'">Festivo especial</th><th style="'+celda+'">Horas extra (HE)</th></tr>'+
       conDatos.map(f=>'<tr><td style="'+celda+'"><b>'+esc(f.corto)+'</b></td>'+
         '<td style="'+celda+'">'+(f.hG ? f.hG+' h <span class="muted">(días '+f.diasG.join(", ")+')</span>' : '—')+'</td>'+
         '<td style="'+celda+'">'+(f.nT ? f.nT+' <span class="muted">(días '+f.diasT.join(", ")+')</span>' : '—')+'</td>'+
-        '<td style="'+celda+'">'+(f.hFE ? f.hFE+' h <span class="muted">(día '+f.diasFE.join(", ")+')</span>' : '—')+'</td></tr>').join("")+
+        '<td style="'+celda+'">'+(f.hFE ? f.hFE+' h <span class="muted">(día '+f.diasFE.join(", ")+')</span>' : '—')+'</td>'+
+        '<td style="'+celda+'">'+(f.hHE ? f.hHE+' h <span class="muted">(días '+f.diasHE.join(", ")+')</span>' : '—')+'</td></tr>').join("")+
       '<tr style="font-weight:bold"><td style="'+celda+'">Total</td>'+
         '<td style="'+celda+'">'+r.tot.hG+' h · '+heEur(r.tot.eG)+' €</td>'+
         '<td style="'+celda+'">'+r.tot.nT+' · '+heEur(r.tot.eT)+' €</td>'+
-        '<td style="'+celda+'">'+r.tot.hFE+' h · '+heEur(r.tot.eFE)+' €</td></tr>'+
+        '<td style="'+celda+'">'+r.tot.hFE+' h · '+heEur(r.tot.eFE)+' €</td>'+
+        '<td style="'+celda+'">'+r.tot.hHE+' h · '+heEur(r.tot.eHE)+' €</td></tr>'+
       '</table></div>';
   }
   const mkHe = state.year+"-"+pad(mo+1);
@@ -6440,6 +6486,7 @@ function viewAjustesHorasExtras(){
     fila('Hora de guardia de festivo (€):', 'he-eur-g', c.eurGuardia)+
     fila('Consulta de Tráfico (€):', 'he-eur-t', c.eurTrafico)+
     fila('Hora de festivo especial (€):', 'he-eur-fe', c.eurFE)+
+    fila('Hora extra por cobertura de baja, HE (€):', 'he-eur-he', c.eurHE)+
     '<p class="tiny" style="margin-top:12px">Festivos especiales (una fecha por línea, día/mes/año)</p>'+
     '<textarea data-field="he-festivos" rows="8" style="width:100%;margin-top:4px;padding:8px;border:1px solid var(--slate-300);border-radius:8px;font-family:monospace;font-size:13px">'+esc(fechas)+'</textarea>'+
     '<p class="muted" style="font-size:12px;margin-top:4px">Quien tenga la guardia en una de estas fechas suma '+HE_HORAS_GUARDIA+' horas de festivo especial.</p>'+
@@ -7687,6 +7734,10 @@ function incoherenciasMes(mo){
     const dow = new Date(year, mo, d).getDay();
     const noLab = dow===0 || dow===6 || !!hmap[k];
     const urg = [], porTurno = {m:{}, t:{}};
+    state.physicians.forEach(p=>{     // v198: horas extra en un día en que no está
+      const hx = heHorasDia(p.id, k), a = state.assignments[p.id+"|"+k];
+      if(hx && a && a.f && absInfo(a.f)) out.push({dia:k, txt:"Horas extra (HE"+hx+") en un día de "+absInfo(a.f).label.toLowerCase()+": "+p.name});
+    });
     state.physicians.forEach(p=>{
       const a = state.assignments[p.id+"|"+k]; if(!a) return;
       if(URGS.indexOf(a.f)>=0) urg.push({p:p, f:a.f});
@@ -7984,7 +8035,10 @@ function viewCuadrante(){
         inner = half(a.m, blocM)+half(a.t, blocT);
       }
       const enCustV = !!(custV[p.id] && custV[p.id][d.key]);
-      html += '<td class="'+(conflict?"conflict":"")+(enCustV?" custd":"")+'"><button class="cell" data-action="cell" data-pid="'+p.id+'" data-date="'+d.key+'" data-blocked="'+(blocked?1:0)+'"'+(enCustV?' title="Fin de semana de custodia de hijos"':'')+'>'+inner+'</button></td>';
+      // v198: horas extra por cobertura de baja: si la celda está vacía ocupa todo; si no, una franja abajo
+      const hx = heHorasDia(p.id, d.key);
+      if(hx) inner = (a ? inner : '')+'<span class="herow'+(a?'':' solo')+'" title="Horas extra por cobertura de baja: '+hx+' h">HE'+hx+'</span>';
+      html += '<td class="'+(conflict?"conflict":"")+(enCustV?" custd":"")+'"><button class="cell'+(hx&&a?' conhe':'')+'" data-action="cell" data-pid="'+p.id+'" data-date="'+d.key+'" data-blocked="'+(blocked?1:0)+'"'+(enCustV?' title="Fin de semana de custodia de hijos"':'')+'>'+inner+'</button></td>';
     });
     html += '</tr>';
   });
@@ -8874,6 +8928,16 @@ function renderModal(){
       opt("URGF","URG festivo","k-urgf",a.f==="URGF")+
       Object.entries(ABSENCES).map(([c,s])=>opt(c,s.label,s.cls,a.f===c)).join("")+'</div>'+
       '<button class="btn" style="width:100%;margin-top:14px" data-action="pick-clear">Vaciar celda</button>'+
+      // v198: horas extra por cobertura de baja
+      (function(){ const l = heTurnos(pid, date); const tot = l.reduce((x,y)=>x+y,0);
+        return '<div style="margin-top:14px;padding:8px 10px;border:2px solid #e6007e;border-radius:10px" id="he-editor">'+
+          '<div class="tiny" style="color:#a3005a">Horas extra · cobertura de baja</div>'+
+          (l.length ? '<div style="margin-top:6px;font-size:13px">'+l.map((h,i)=>'<span class="row between" style="align-items:center;padding:3px 0"><span>Turno '+(i+1)+': <b>'+h+' h</b></span>'+
+              '<button class="btn" data-action="he-quitar" data-i="'+i+'" style="padding:2px 8px">Quitar</button></span>').join("")+
+              '<div style="margin-top:4px">En el cuadrante: <span class="k-he" style="padding:1px 6px;border-radius:5px">HE'+tot+'</span></div></div>'
+            : '<p class="muted" style="font-size:12px;margin-top:4px">Ninguna. Añade un turno por cada consulta cubierta.</p>')+
+          '<div class="optgrid" style="grid-template-columns:repeat(3,1fr);margin-top:6px">'+HE_TURNOS.map(h=>'<button class="chip k-he" data-action="he-anadir" data-h="'+h+'">+ HE'+h+'</button>').join("")+'</div>'+
+          (ui.heMsg ? '<div class="warnbox" style="margin-top:6px">'+esc(ui.heMsg)+'</div>' : '')+'</div>'; })()+
       '</div></div>';
   }else if(ui.dayDetail){
     const date = ui.dayDetail;
@@ -9097,7 +9161,7 @@ function aplicarCopia(d){
       if(d.adminPass) state.adminPass = d.adminPass;
       if(d.adminPass2) state.adminPass2 = d.adminPass2;
       state.rotBloqueados = d.rotBloqueados||{};
-      state.traficoHoras = d.traficoHoras||{};
+      state.traficoHoras = d.traficoHoras||{}; state.horasExtra = heLimpiar(d.horasExtra);
       state.diasLibres = d.diasLibres||{};
       state.permisosCupo = d.permisosCupo||{};
       state.bandeja = Array.isArray(d.bandeja) ? d.bandeja : [];
@@ -11400,7 +11464,7 @@ document.addEventListener("click", e=>{
         applyCode(pid, date, ui.brush==="ERASE"?"CLEAR":ui.brush);
         render();
       }else{
-        ui.editCell = {pid,date}; renderModal();
+        ui.editCell = {pid,date}; ui.heMsg = ""; renderModal();
       }
       break;
     }
@@ -11414,6 +11478,14 @@ document.addEventListener("click", e=>{
       break;
     }
     case "pick": if(ui.editCell){ applyCode(ui.editCell.pid, ui.editCell.date, el.dataset.code); render(); } break;
+    case "he-anadir": case "he-quitar": {
+      if(!ui.editCell || MODE!=="editor") break;
+      const ec = ui.editCell;
+      marcarDeshacer(act==="he-anadir" ? "añadir horas extra" : "quitar horas extra");
+      if(act==="he-anadir"){ const err = heAnadir(ec.pid, ec.date, Number(el.dataset.h)); ui.heMsg = err || ""; if(err){ PILA_DESHACER.pop(); renderModal(); break; } }
+      else { heQuitar(ec.pid, ec.date, Number(el.dataset.i)); ui.heMsg = ""; }
+      save(); render(); break;
+    }
     case "pick-clear": if(ui.editCell){ applyCode(ui.editCell.pid, ui.editCell.date, "CLEAR"); ui.editCell=null; render(); } break;
     case "add-phys": {
       const n = document.getElementById("new-name").value.trim();
@@ -11736,9 +11808,9 @@ document.addEventListener("change", e=>{
   else if(field==="ext-pat"){ const c = extCfg(); c.patron[Number(el.dataset.s)][Number(el.dataset.d)] = el.value==="EXT" ? "EXT" : "APL"; extGuardar(c); render(); }
   else if(field==="ext-exc-fecha"){ (ui.extNueva = ui.extNueva || {}).fecha = el.value; }
   else if(field==="ext-exc-quien"){ (ui.extNueva = ui.extNueva || {}).quien = el.value; }
-  else if(field==="he-eur-g" || field==="he-eur-t" || field==="he-eur-fe"){
+  else if(field==="he-eur-g" || field==="he-eur-t" || field==="he-eur-fe" || field==="he-eur-he"){
     const v = Number(String(el.value).replace(",","."));
-    if(isFinite(v) && v>=0) heSetCfg({"he-eur-g":"eurGuardia","he-eur-t":"eurTrafico","he-eur-fe":"eurFE"}[field], Math.round(v*100)/100);
+    if(isFinite(v) && v>=0) heSetCfg({"he-eur-g":"eurGuardia","he-eur-t":"eurTrafico","he-eur-fe":"eurFE","he-eur-he":"eurHE"}[field], Math.round(v*100)/100);
   }
   else if(field==="he-festivos"){
     const lista = [];
@@ -11779,7 +11851,7 @@ function applyPublished(d){
   state.rotantesLeyenda = Object.assign({R1:"",R2:"",R3:"",R4:"",R5:""}, d.rotantesLeyenda||{});
   if(d.adminPass) state.adminPass = d.adminPass;   // la contraseña llega con la publicación
   state.rotBloqueados = d.rotBloqueados||{};
-  state.traficoHoras = d.traficoHoras||{};
+  state.traficoHoras = d.traficoHoras||{}; state.horasExtra = heLimpiar(d.horasExtra);
   state.diasLibres = d.diasLibres||{};
   state.permisosCupo = d.permisosCupo||{};
   state.bandeja = Array.isArray(d.bandeja) ? d.bandeja : [];
