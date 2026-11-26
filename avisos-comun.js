@@ -131,6 +131,9 @@ function avisoComponer(pid, d, visto, hoy, motivos) {
   // v186: recordatorios que manda el coordinador (repartos, revisar tráficos…)
   const recs = (Array.isArray(d.recordatorios) ? d.recordatorios : []).filter((r) => r && r.id && (r.para === "todos" || (Array.isArray(r.para) && r.para.indexOf(pid) >= 0)));
   const nuevo = { of: of, asg: asg, sol: sol, rep: rep, rec: recs.map((r) => r.id) };
+  // v199: recordatorio de custodia (solo llega a quien la tiene activada; viene del servidor, no del cuadrante)
+  const motC = (motivos || []).filter((m) => m && m.t === "custodia" && m.at && (visto && visto.motAt ? m.at > visto.motAt : m.at > new Date(Date.now() - 26 * 3600e3).toISOString()));
+  nuevo.motAt = (motivos || []).reduce((x, m) => (m && m.at > x ? m.at : x), (visto && visto.motAt) || "");
   let ir = { tab: "cuadrante" };
   const items = [];          // v185: detalle para la tarjeta de novedades de la app
   if (visto) {
@@ -185,6 +188,11 @@ function avisoComponer(pid, d, visto, hoy, motivos) {
     if (traficos.length || cambiados.length) ir = { tab: "cuadrante", dia: (traficos.concat(cambiados)).sort()[0] };
     else if (apr || rech) ir = { tab: "solicitudes" };
     else if (mesesNuevos.length) ir = { tab: "cuadrante", dia: mesesNuevos[0] + "-01" };
+  }
+  if (motC.length) {
+    const p = String(motC[motC.length - 1].mes || "").split("-").map(Number);
+    partes.unshift("Recordatorio: marca tu fin de semana de custodia de " + (p[1] ? AVISO_MESES[p[1] - 1] : "este mes") + " en Solicitudes → Peticiones → Custodia.");
+    ir = { tab: "solicitudes", pet: "custodia" };
   }
   if (!partes.length) partes.push(items.length ? items[0].texto : "Hay novedades en el cuadrante.");
   return { cuerpo: partes.join(" "), tag: "cuadrante-novedad", visto: nuevo, ir: ir, items: items };

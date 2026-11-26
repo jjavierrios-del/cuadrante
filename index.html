@@ -1565,7 +1565,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v198";
+const APP_VERSION = "v199";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -6359,6 +6359,13 @@ function avisosVolcar(alSalir){
     fetch(url, {method:"POST", headers:{"Content-Type":"application/json"}, body: cuerpo, keepalive: true}).catch(()=>{ avisosAcumular(l); });
   }catch(e){ avisosAcumular(l); }
 }
+// Lo que necesita el service worker para componer el aviso. v199: a un compañero se le guarda también
+// la clave de envío (ya está en este dispositivo), para leer su recordatorio de custodia del servidor.
+function quienAvisos(pid){
+  const q = {pid: pid, buzon: (state.buzon||{}).url||""};
+  if(pid && pid!==PID_AVISOS_COORD && pid!==PID_AVISOS_ADMVO){ const c = claveEnvio(); if(c) q.clave = c; }
+  return q;
+}
 // ---- Abrir la aplicación en la pantalla del aviso (v180) ----
 function abrirDesdeAviso(ir){
   if(!ir || typeof ir!=="object") return;
@@ -6370,6 +6377,7 @@ function abrirDesdeAviso(ir){
   }
   ui.tab = tab;
   if(tab==="solicitudes" && MODE==="editor"){ ui.reqSub = "revisar"; ui.reviewTab = {}; }
+  if(tab==="solicitudes" && ir.pet==="custodia" && MODE!=="editor"){ ui.solModo = "peticiones"; ui.petSub = "custodia"; }   // v199
   if(tab==="administrativo") ui.admvoSub = "cambios";
   render();
 }
@@ -6421,7 +6429,7 @@ async function avisosActivar(pid, clave){
   }catch(e){ return "Sin conexión con el servidor."; }
   try{ localStorage.setItem(KEY_AVISOS, JSON.stringify({pid: pid, endpoint: datos.endpoint, desde: new Date().toISOString()})); }catch(e){}
   // El service worker necesita saber quién usa el dispositivo para componer el texto
-  try{ const c = await caches.open("cuadrante-avisos"); await c.put("./__quien.json", new Response(JSON.stringify({pid: pid, buzon: (state.buzon||{}).url||""}), {headers:{"Content-Type":"application/json"}})); }catch(e){}
+  try{ const c = await caches.open("cuadrante-avisos"); await c.put("./__quien.json", new Response(JSON.stringify(quienAvisos(pid)), {headers:{"Content-Type":"application/json"}})); }catch(e){}
   // Foto de partida: los avisos contarán lo que cambie desde ahora
   try{ const reg2 = await navigator.serviceWorker.ready; if(reg2.active && reg2.active.postMessage) reg2.active.postMessage({tipo:"avisos-inicia"}); }catch(e){}
   return null;
@@ -6906,6 +6914,7 @@ function custCargarLista(){
   return CUST.listaProm = repServidor("/custodia?admin="+encodeURIComponent(buzonClaveAdmin())+"&t="+Date.now()).then(d=>{
     if(d.error){ CUST.listaEstado = "error"; return; }
     CUST.lista = {}; (d.pids||[]).forEach(pid=>CUST.lista[pid]=true); CUST.listaEstado = "ok";
+    CUST.recs = d.recordatorios || {};
   });
 }
 function custCargarMes(y, mo, forzar){
@@ -6963,10 +6972,19 @@ function custMiActivo(){
   if(!ui.miCust || ui.miCust.pid!==yo.id){
     ui.miCust = {pid:yo.id, cargando:true};
     repServidor("/custodia?pid="+encodeURIComponent(yo.id)+"&clave="+encodeURIComponent(claveEnvio())+"&t="+Date.now()).then(d=>{
-      ui.miCust = {pid:yo.id, activo:!d.error && !!d.activo}; if(ui.miCust.activo) render(); });
+      ui.miCust = {pid:yo.id, activo:!d.error && !!d.activo, recordatorio:(!d.error && d.recordatorio) || null}; if(ui.miCust.activo) render(); });
     return false;
   }
   return !!ui.miCust.activo;
+}
+// v199: el coordinador le ha recordado que marque su fin de semana de custodia (y aún no lo ha hecho)
+function viewRecCustodia(){
+  if(!custMiActivo() || !ui.miCust || !ui.miCust.recordatorio) return '';
+  const pr = String(ui.miCust.recordatorio.mes||"").split("-").map(Number); if(!pr[1]) return '';
+  return '<div class="card no-print" id="card-reccust" style="margin-bottom:10px;border-color:#7c3aed;background:#f5f3ff">'+
+    '<b style="font-size:15px;color:#6d28d9">Marca tu fin de semana de custodia de '+MONTHS[pr[1]-1]+'</b>'+
+    '<p class="muted" style="font-size:13px;margin-top:2px">El coordinador te lo recuerda: hay que marcarlo antes de que se genere el mes.</p>'+
+    '<div class="row" style="margin-top:8px"><button class="btn primary" data-action="reccust-ir">Ir a Custodia</button></div></div>';
 }
 function viewCustodiaFacultativo(){
   const yo = miFacultativo();
@@ -7020,6 +7038,11 @@ function viewCustodiaAdmin(){
     if(c.estado==="error"){ h += '</div><div class="warnbox" style="margin-top:8px">'+esc(c.error||"Error")+'</div></div>'; return; }
     h += '<span class="row" style="gap:6px;align-items:center"><span class="tiny muted">'+(c.abierto?'Abierto':'Cerrado (generado)')+'</span>'+
       '<button class="btn" data-action="cust-estado" data-rep="'+rep+'" data-e="'+(c.abierto?'cerrado':'abierto')+'" style="padding:3px 8px;font-size:12px">'+(c.abierto?'Cerrar':'Reabrir')+'</button></span></div>';
+    // v199: recordatorio solo a quien tiene la custodia activada y no ha marcado este mes
+    const faltanC = quien.filter(p=>!c.porPid[p.id]);
+    const recsC = ((CUST.recs||{})[y+"-"+pad(mo+1)]||[]).slice().reverse();
+    if(c.abierto && faltanC.length) h += '<div class="row" style="margin-top:6px;gap:6px;flex-wrap:wrap;align-items:center"><button class="btn" data-action="cust-recordar" data-y="'+y+'" data-mo="'+mo+'" style="padding:4px 10px;font-size:13px">Recordar a quien no lo ha marcado ('+faltanC.length+')</button></div>';
+    if(recsC.length) h += '<p class="muted" style="font-size:12px;margin-top:4px">Recordatorio enviado: '+recsC.slice(0,3).map(r=>recFecha(r.at)+' ('+r.n+(r.n===1?' persona':' personas')+')').join(" · ")+'</p>';
     quien.forEach(p=>{
       h += '<div class="row between" style="gap:6px;margin-top:6px;align-items:center;flex-wrap:wrap"><span style="font-size:14px">'+esc(p.name)+'</span>'+
         '<select data-field="cust-por" data-rep="'+rep+'" data-pid="'+p.id+'" style="'+est+'"><option value="">— Sin marcar —</option>'+
@@ -7957,7 +7980,7 @@ function viewCuadrante(){
         '</div>';
     }
   }
-  if(MODE==="viewer"){ html += viewRevisionTraficos(); html += viewNovedades(); }
+  if(MODE==="viewer"){ html += viewRevisionTraficos(); html += viewRecCustodia(); html += viewNovedades(); }
   if(false){
     const yoV = miFacultativo();
     const nov = yoV ? novedadesDe(yoV.id) : [];
@@ -10650,7 +10673,9 @@ document.addEventListener("click", e=>{
       st.msg = "Guardando…"; render();
       repEnviar(repC, yo.id, vk ? [vk] : [], yo.name).then(d=>{
         if(d.error){ st.msg = "⚠ "+d.error; render(); return; }
-        st.vk = vk; st.msg = vk ? "✓ Guardado: "+custTxt(vk)+"." : "✓ Quitado."; render();
+        st.vk = vk; st.msg = vk ? "✓ Guardado: "+custTxt(vk)+"." : "✓ Quitado.";
+        if(vk && ui.miCust && ui.miCust.recordatorio && repC==="custodia-"+ui.miCust.recordatorio.mes) ui.miCust.recordatorio = null;   // v199: ya está hecho
+        render();
       });
       break;
     }
@@ -11478,6 +11503,21 @@ document.addEventListener("click", e=>{
       break;
     }
     case "pick": if(ui.editCell){ applyCode(ui.editCell.pid, ui.editCell.date, el.dataset.code); render(); } break;
+    case "cust-recordar": {
+      const y = Number(el.dataset.y), mo = Number(el.dataset.mo); const c = CUST.meses[custRep(y, mo)];
+      const faltan = state.physicians.filter(p=>CUST.lista && CUST.lista[p.id] && c && !c.porPid[p.id]);
+      if(!faltan.length) break;
+      if(!window.confirm("¿Enviar el recordatorio de custodia de "+MONTHS[mo]+" a quien aún no ha marcado su fin de semana?\n\n· "+faltan.map(p=>p.name).join("\n· ")+
+        "\n\nSolo le llega a quien tiene la custodia activada. Quien no tenga los avisos del móvil activados lo verá al abrir la app.")) break;
+      ui.custMsg = "Enviando el recordatorio…"; render();
+      repServidor("/custodia-recordar", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({admin:buzonClaveAdmin(), mes:y+"-"+pad(mo+1)})}).then(d=>{
+        if(d.error){ ui.custMsg = "⚠ "+d.error; render(); return; }
+        ui.custMsg = d.enviados ? "✓ Recordatorio enviado a "+d.enviados+(d.enviados===1?" persona: ":" personas: ")+(d.pids||[]).map(repNombre).join(", ")+"." : "Ya lo han marcado todos.";
+        CUST.listaEstado = ""; custCargarLista().then(()=>custCargarMes(y, mo, true)).then(render);
+      });
+      break;
+    }
+    case "reccust-ir": { ui.tab = "solicitudes"; ui.solModo = "peticiones"; ui.petSub = "custodia"; render(); break; }
     case "he-anadir": case "he-quitar": {
       if(!ui.editCell || MODE!=="editor") break;
       const ec = ui.editCell;
@@ -11967,7 +12007,7 @@ async function boot(){
   abrirDesdeDireccion();                 // si se ha abierto tocando un aviso, va a su pantalla
   // v190: los dispositivos con avisos guardan también la dirección del servidor (para leer el motivo)
   try{ const gA = avisosGuardados(); if(gA && gA.pid && (state.buzon||{}).url && "caches" in window){
-    caches.open("cuadrante-avisos").then(c=>c.put("./__quien.json", new Response(JSON.stringify({pid:gA.pid, buzon:state.buzon.url}), {headers:{"Content-Type":"application/json"}}))).catch(()=>{}); } }catch(e){}
+    caches.open("cuadrante-avisos").then(c=>c.put("./__quien.json", new Response(JSON.stringify(quienAvisos(gA.pid)), {headers:{"Content-Type":"application/json"}}))).catch(()=>{}); } }catch(e){}
   setTimeout(()=>{ try{ copiaDiariaAuto(); }catch(e){} }, 3000);
   setTimeout(()=>{ try{ archivarPendientes(false); }catch(e){} }, 8000);
 }

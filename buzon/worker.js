@@ -295,7 +295,8 @@ async function enviarToques(env, pids) {
 async function anotarMotivo(env, pids, motivo) {
   if (!motivo) return;
   for (const pid of pids) {
-    if (pid !== PID_COORD && pid !== PID_ADMVO) continue;
+    // v199: a los compañeros solo se les anota el recordatorio de custodia (lo leen con la clave de envío)
+    if (pid !== PID_COORD && pid !== PID_ADMVO && !(motivo.t === "custodia" && /^[a-z0-9]{4,16}$/.test(String(pid)))) continue;
     const k = "mot:" + pid;
     const lista = ((await env.BUZON.get(k, "json")) || []).concat([Object.assign({ at: new Date().toISOString() }, motivo)]).slice(-12);
     await env.BUZON.put(k, JSON.stringify(lista), { expirationTtl: 60 * 60 * 24 * 3 });
@@ -911,12 +912,25 @@ async function atender(request, env, ctx) {
           const admin = url.searchParams.get("admin") || "";
           if (admin) {
             if (!env.CLAVE_ADMIN || admin !== env.CLAVE_ADMIN) return json({ error: "Clave de administración incorrecta." }, 403);
-            return json({ ok: true, pids: lista });
+            const recs = {};
+            for (const k of (await env.BUZON.list({ prefix: "cust-rec:" })).keys) recs[k.name.slice(9)] = (await env.BUZON.get(k.name, "json")) || [];
+            return json({ ok: true, pids: lista, recordatorios: recs });
           }
           const clave = url.searchParams.get("clave") || "", pid = url.searchParams.get("pid") || "";
           if (!(env.CLAVE_ENVIO && clave === env.CLAVE_ENVIO)) return json({ error: "Clave incorrecta." }, 403);
           if (!PIDC.test(pid)) return json({ error: "Persona no válida." }, 400);
-          return json({ ok: true, activo: lista.indexOf(pid) >= 0 });
+          const activo = lista.indexOf(pid) >= 0;
+          // v199: último recordatorio que le ha mandado el coordinador, si aún no ha marcado ese mes y sigue abierto
+          let recordatorio = null;
+          const ra = activo ? await env.BUZON.get("cust-aviso:" + pid, "json") : null;
+          if (ra && ra.mes) {
+            const rp = "custodia-" + ra.mes;
+            const abierto = ((await env.BUZON.get("pet-estado:" + rp)) || "abierto") === "abierto";
+            const vers = (await env.BUZON.get("pet:" + rp + ":" + pid, "json")) || [];
+            const vig = vers.filter((v) => v && v.vigente); const marcado = vig.length && (vig[vig.length - 1].opciones || []).length;
+            if (abierto && !marcado) recordatorio = ra;
+          }
+          return json({ ok: true, activo: activo, recordatorio: recordatorio });
         }
         if (request.method === "POST") {
           const cuerpo = await request.json().catch(() => null);
@@ -930,6 +944,35 @@ async function atender(request, env, ctx) {
           return json({ ok: true, pids: nueva });
         }
         return json({ error: "Ruta no encontrada." }, 404);
+      }
+
+      // ---------- Recordatorio de custodia (v199, solo el coordinador) ----------
+      //   POST /custodia-recordar {admin, mes:"AAAA-MM"} → avisa SOLO a quien tiene la custodia activada
+      //   y aún no ha marcado su fin de semana de ese mes. La lista de destinatarios no sale del servidor.
+      if (request.method === "POST" && ruta === "/custodia-recordar") {
+        const cuerpo = await request.json().catch(() => null);
+        if (!cuerpo) return json({ error: "Petición mal formada." }, 400);
+        if (!env.CLAVE_ADMIN || cuerpo.admin !== env.CLAVE_ADMIN) return json({ error: "Clave de administración incorrecta." }, 403);
+        const mes = String(cuerpo.mes || "");
+        if (!CUST_REP.test("custodia-" + mes)) return json({ error: "Mes no válido." }, 400);
+        const rp = "custodia-" + mes;
+        if (((await env.BUZON.get("pet-estado:" + rp)) || "abierto") !== "abierto") return json({ error: "Ese mes ya está cerrado (generado): no se puede recordar." }, 409);
+        const lista = (await env.BUZON.get("custodia-lista", "json")) || [];
+        const faltan = [];
+        for (const pid of lista) {
+          const vers = (await env.BUZON.get("pet:" + rp + ":" + pid, "json")) || [];
+          const vig = vers.filter((v) => v && v.vigente);
+          if (!(vig.length && (vig[vig.length - 1].opciones || []).length)) faltan.push(pid);
+        }
+        const ahora = new Date().toISOString();
+        if (faltan.length) {
+          for (const pid of faltan) await env.BUZON.put("cust-aviso:" + pid, JSON.stringify({ mes: mes, at: ahora }), { expirationTtl: 60 * 60 * 24 * 45 });
+          const t = avisar(env, faltan, { t: "custodia", mes: mes });
+          if (ctx && ctx.waitUntil) ctx.waitUntil(t); else await t;
+          const hist = ((await env.BUZON.get("cust-rec:" + mes, "json")) || []).concat([{ at: ahora, n: faltan.length }]).slice(-10);
+          await env.BUZON.put("cust-rec:" + mes, JSON.stringify(hist), { expirationTtl: 60 * 60 * 24 * 150 });
+        }
+        return json({ ok: true, enviados: faltan.length, pids: faltan });
       }
 
       // ---------- Respuestas a un recordatorio (v187): «están bien» / «falta o sobra alguno» ----------
@@ -994,7 +1037,11 @@ async function atender(request, env, ctx) {
       // ---------- Motivos de los últimos avisos (v190): solo el tipo, sin datos personales ----------
       if (request.method === "GET" && ruta === "/motivos") {
         const pid = url.searchParams.get("pid") || "";
-        if (pid !== PID_COORD && pid !== PID_ADMVO) return json({ error: "Destinatario no válido." }, 400);
+        if (pid !== PID_COORD && pid !== PID_ADMVO) {
+          // v199: un compañero solo con la clave de envío (sus motivos dicen si tiene custodia)
+          if (!/^[a-z0-9]{4,16}$/.test(pid)) return json({ error: "Destinatario no válido." }, 400);
+          if (!env.CLAVE_ENVIO || (url.searchParams.get("clave") || "") !== env.CLAVE_ENVIO) return json({ error: "Clave incorrecta." }, 403);
+        }
         return json({ ok: true, motivos: (await env.BUZON.get("mot:" + pid, "json")) || [] });
       }
 

@@ -1,4 +1,4 @@
-const CACHE = "cuadrante-pwa-v198";
+const CACHE = "cuadrante-pwa-v199";
 const ASSETS = ["./", "./index.html", "./avisos-comun.js", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./icon-180.png"];
 
 self.addEventListener("install", (e) => {
@@ -84,9 +84,11 @@ async function avisoPreparar(soloFoto) {
   if (!pid) return res;
   // v190: al coordinador y a administración, el servidor les dice el motivo de cada aviso
   let motivos = null;
-  if ((pid === "__coord__" || pid === "__admvo__") && quien.buzon) {
+  // v199: a un compañero, solo con la clave de envío (el motivo puede ser su recordatorio de custodia)
+  const esCompa = pid !== "__coord__" && pid !== "__admvo__";
+  if (quien.buzon && (!esCompa || quien.clave)) {
     try {
-      const rm = await fetch(String(quien.buzon).replace(/\/+$/, "") + "/motivos?pid=" + encodeURIComponent(pid) + "&t=" + Date.now(), { cache: "no-store" });
+      const rm = await fetch(String(quien.buzon).replace(/\/+$/, "") + "/motivos?pid=" + encodeURIComponent(pid) + (esCompa ? "&clave=" + encodeURIComponent(quien.clave) : "") + "&t=" + Date.now(), { cache: "no-store" });
       if (rm.ok) { const dm = await rm.json(); if (dm && Array.isArray(dm.motivos)) motivos = dm.motivos; }
     } catch (e) { /* sin motivos: se deduce del cuadrante */ }
   }
