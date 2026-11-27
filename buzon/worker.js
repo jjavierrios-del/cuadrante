@@ -207,6 +207,17 @@ async function editarCuadrante(env, mensaje, modificar) {
   return { error: "El cuadrante está recibiendo muchos cambios a la vez. Inténtalo de nuevo.", status: 409 };
 }
 
+// v201: registro de cambios. Mismo formato que la app: celda «m/t/f» y una anotación por acción.
+function regCeldaTxt(a) { return a && (a.m || a.t || a.f) ? [a.m || "", a.t || "", a.f || ""].join("/") : ""; }
+function regAnotarServidor(datos, accion, celdas) {
+  // Solo los meses oficiales o cerrados para administrativos (decisión de Javier)
+  celdas = (celdas || []).filter((c) => { if (!c || c.a === c.d) return false; const mk = String(c.k).split("|")[1].slice(0, 7); return !!((datos.official || {})[mk] || (datos.cerradoAdm || {})[mk]); });
+  if (!celdas.length) return;
+  datos.registro = (datos.registro && typeof datos.registro === "object") ? datos.registro : {};
+  const id = "w" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+  datos.registro[id] = { at: new Date().toISOString(), mes: celdas[0].k.split("|")[1].slice(0, 7), por: "Administración", accion: accion, det: "", n: celdas.length, celdas: celdas };
+}
+
 function bytesABinario(bytes) {
   let out = "";
   const BLOQUE = 0x8000;
@@ -688,6 +699,7 @@ async function atender(request, env, ctx) {
             datos.assignments = datos.assignments || {};
             const k = pid + "|" + fecha;
             const celda = datos.assignments[k] || { m: null, t: null, f: null };
+            const antesTxt = regCeldaTxt(datos.assignments[k]);          // v201: para el registro de cambios
             if (quitar) {
               if (!esTrafico(celda[slot] || "")) return { error: "Ahí no hay una consulta de Tráfico.", status: 400 };
               const quitado = celda[slot];
@@ -735,6 +747,7 @@ async function atender(request, env, ctx) {
             if (datos.avisosTrafico && datos.avisosTrafico.length > 100) {
               datos.avisosTrafico = datos.avisosTrafico.slice(-100);
             }
+            regAnotarServidor(datos, quitar ? "tráfico quitado" : "tráfico puesto" + (hora ? " a las " + hora : ""), [{ k: k, a: antesTxt, d: regCeldaTxt(datos.assignments[k]) }]);
             return {};
           });
         if (res.error) return json({ error: res.error }, res.status || 502);
@@ -792,6 +805,13 @@ async function atender(request, env, ctx) {
               }
               c.ejecutado = true; c.ejecutadoAt = new Date().toISOString();
             }
+            // v201: registro de cambios (lo que había antes y lo que queda, celda a celda)
+            const pre = {}, pos = {};
+            (c.previas || []).forEach((x) => { if (x && x.k) pre[x.k] = regCeldaTxt(x.valor); });
+            (c.celdas || []).forEach((x) => { if (x && x.k) pos[x.k] = regCeldaTxt(x.valor); });
+            const ks = Object.keys(Object.assign({}, pre, pos)).sort();
+            regAnotarServidor(datos, cuerpo.valor === false ? "reajuste deshecho por administración (el cambio vuelve a quedar en espera)" : "cambio reajustado por administración",
+              ks.map((k) => cuerpo.valor === false ? { k: k, a: pos[k] || "", d: pre[k] || "" } : { k: k, a: pre[k] || "", d: pos[k] || "" }));
             return {};
           });
         if (res.error) return json({ error: res.error }, res.status || 502);

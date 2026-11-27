@@ -375,7 +375,7 @@ function canon(x){
   return JSON.stringify(x);
 }
 const SYNC_META = ["publishedAt","publishedBy","tienePass","updatedAt","buzon","year","adminPass","adminPass2"];
-const SYNC_MAPAS = ["assignments","traficoHoras","horasExtra","diasLibres","official","cerradoAdm","archivado","historial","baseline","rotantes","puerta","guardiaRot","permisosCupo","rotBloqueados","repartos","rotantesLeyenda"];
+const SYNC_MAPAS = ["assignments","traficoHoras","horasExtra","registro","diasLibres","official","cerradoAdm","archivado","historial","baseline","rotantes","puerta","guardiaRot","permisosCupo","rotBloqueados","repartos","rotantesLeyenda"];
 // En la bandeja, lo publicado no lleva los motivos: no cuenta como diferencia
 const sinPrivado = it => { if(!it || typeof it!=="object") return it; const c = JSON.parse(JSON.stringify(it)); if(c.req) delete c.req.note; delete c.texto; delete c.motivo; return c; };
 function fusionar(base, local, remoto){
@@ -464,6 +464,7 @@ async function sincronizarCoord(){
       });
     }
     Object.keys(f.datos).forEach(k=>{ state[k] = f.datos[k]; });
+    regRebase();
     BASE_PUB = PUBLISHED_AT = remoto.publishedAt; baseGuardar(remoto); try{ AVISOS_BASE = avisosFoto(remoto); }catch(e){}
     NEWER = false; FORZAR_PUB = false;
     try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){}
@@ -681,6 +682,8 @@ let state = {
   traficoHoras: {},
   // v198: horas extra por cobertura de bajas: {"pid|AAAA-MM-DD": [6, 7, 12…]} (horas de cada turno cubierto)
   horasExtra: {},
+  // v201: registro de cambios: {id: {at, mes, por, accion, det, celdas:[{k, a, d}], espera, masivo, porPid}}
+  registro: {},
   // Días que un facultativo ha pedido no trabajar. Clave "pid|fecha" → true.
   // El generador no le asigna nada ese día y NO cuentan como jornada exigible.
   diasLibres: {},
@@ -1051,7 +1054,8 @@ function archivoPaquete(mk){
   return {
     cambiosAdm: ((state.cambiosAdm||{})[mk]||[]).filter(c=>c && c.ejecutado===true && !c.pendiente),
     solicitudes: bandeja().filter(it=>it && it.estado!=="pendiente" && mesRelevanteSolicitud(it.req)===mk).map(limpia),
-    historial: null          // la copia del cuadrante oficial se queda en el Historial (decisión de Javier)
+    historial: null,         // la copia del cuadrante oficial se queda en el Historial (decisión de Javier)
+    registro: Object.keys(state.registro||{}).filter(id=>(state.registro[id]||{}).mes===mk).map(id=>Object.assign({id}, state.registro[id]))      // v201
   };
 }
 function mesesArchivables(){
@@ -1061,9 +1065,10 @@ function mesesArchivables(){
   const cand = {};
   Object.keys(state.cambiosAdm||{}).forEach(mk=>{ cand[mk]=1; });
   bandeja().forEach(it=>{ const mk = it ? mesRelevanteSolicitud(it.req) : ""; if(mk) cand[mk]=1; });
+  Object.values(state.registro||{}).forEach(e=>{ if(e && e.mes) cand[e.mes]=1; });
   return Object.keys(cand).filter(mk=>/^\d{4}-\d{2}$/.test(mk) && mk < limMk).sort().filter(mk=>{
     const q = archivoPaquete(mk);
-    return q.cambiosAdm.length || q.solicitudes.length || q.historial;
+    return q.cambiosAdm.length || q.solicitudes.length || q.historial || q.registro.length;
   });
 }
 function archivoUrls(mk){
@@ -1081,7 +1086,7 @@ async function archivoLeer(mk){
       const r = await fetch(u, {cache:"no-store"});
       if(r.ok){
         const d = await r.json().catch(()=>null);
-        if(d && typeof d==="object" && (d.cambiosAdm || d.solicitudes || d.historial)) return {ok:true, datos:d};
+        if(d && typeof d==="object" && (d.cambiosAdm || d.solicitudes || d.historial || d.registro)) return {ok:true, datos:d};
       }else if(r.status===404){ alguno404 = true; }
     }catch(e){}
   }
@@ -1089,7 +1094,7 @@ async function archivoLeer(mk){
 }
 async function archivarMes(mk){
   const q = archivoPaquete(mk);
-  if(!q.cambiosAdm.length && !q.solicitudes.length && !q.historial) return null;
+  if(!q.cambiosAdm.length && !q.solicitudes.length && !q.historial && !q.registro.length) return null;
   const b = state.buzon||{};
   // Si ese mes ya tenía archivo (se reabrió y se volvió a cerrar, por ejemplo), se suma a lo que había
   const previo = await archivoLeer(mk);
@@ -1101,7 +1106,8 @@ async function archivarMes(mk){
     mes: mk, archivadoAt: new Date().toISOString(),
     cambiosAdm: unir(ant.cambiosAdm, q.cambiosAdm),
     solicitudes: unir(ant.solicitudes, q.solicitudes),
-    historial: q.historial || ant.historial || null
+    historial: q.historial || ant.historial || null,
+    registro: unir(ant.registro, q.registro)
   };
   let r, d;
   try{
@@ -1118,6 +1124,7 @@ async function archivarMes(mk){
     state.cambiosAdm[mk] = state.cambiosAdm[mk].filter(c=>!(c && idsC[c.id]));
     if(!state.cambiosAdm[mk].length && !cerradoAdmvoPorClave(mk)) delete state.cambiosAdm[mk];
   }
+  q.registro.forEach(x=>{ if(state.registro) delete state.registro[x.id]; });      // v201
   const idsS = {}; q.solicitudes.forEach(x=>{ idsS[x.id]=1; });
   state.bandeja = bandeja().filter(it=>!(it && idsS[it.id]));
   const hst = datos.historial;
@@ -1244,7 +1251,7 @@ function loadState(){
       if(d.adminPass) state.adminPass = d.adminPass;
       if(d.adminPass2) state.adminPass2 = d.adminPass2;
       state.rotBloqueados = d.rotBloqueados||{};
-      state.traficoHoras = d.traficoHoras||{}; state.horasExtra = heLimpiar(d.horasExtra);
+      state.traficoHoras = d.traficoHoras||{}; state.horasExtra = heLimpiar(d.horasExtra); state.registro = (d.registro && typeof d.registro==="object") ? d.registro : {};
       state.diasLibres = d.diasLibres||{};
       state.permisosCupo = d.permisosCupo||{};
       state.bandeja = Array.isArray(d.bandeja) ? d.bandeja : [];
@@ -1335,6 +1342,7 @@ function novedadesDe(pid){
 }
 
 function marcarDeshacer(descripcion){
+  regAccion(descripcion==="edición del cuadrante" ? "edición a mano" : descripcion);
   try{
     PILA_DESHACER.push({
       desc: descripcion || "último cambio",
@@ -1360,6 +1368,7 @@ function ultimoDeshacer(){ return PILA_DESHACER.length ? PILA_DESHACER[PILA_DESH
 function deshacer(){
   const paso = PILA_DESHACER.pop();
   if(!paso) return false;
+  REG_CTX = null; regAccion("deshacer: "+(paso.desc||"último cambio"));
   try{
     const d = JSON.parse(paso.datos);
     state.assignments = d.assignments || {};
@@ -1386,9 +1395,60 @@ const KEY_PENDIENTE = "cuadrante-pendiente-v1";
 let PEND_GEN = 0;
 function hayPendiente(){ try{ return localStorage.getItem(KEY_PENDIENTE)==="1"; }catch(e){ return true; } }
 function marcarPendiente(v){ try{ if(v) localStorage.setItem(KEY_PENDIENTE,"1"); else localStorage.removeItem(KEY_PENDIENTE); }catch(e){} }
+// ================= Registro de cambios (v201) =================
+// Cada vez que el coordinador guarda, se compara el cuadrante (con los cambios en espera de
+// administración, y las horas extra) con la última foto y se anota lo que ha cambiado, con
+// la acción que lo provocó. Lo que cambia administración lo anota el servidor (Worker).
+// Lo que llega de lo publicado no se anota otra vez: solo se renueva la foto (regRebase).
+let REG_FOTO = null, REG_CTX = null;
+const REG_MASIVO = 40;                 // a partir de aquí se guarda un resumen por persona
+function regCeldaTxt(a){ return a && (a.m||a.t||a.f) ? [a.m||"", a.t||"", a.f||""].join("/") : ""; }
+function regFoto(){
+  const f = {}; const v = vistaConEspera();
+  Object.keys(v).forEach(k=>{ const t = regCeldaTxt(v[k]); if(t) f[k] = t; });
+  Object.keys(state.horasExtra||{}).forEach(k=>{ const h = heHorasDia(k.split("|")[0], k.split("|")[1]); if(h) f[k+"|he"] = "HE"+h; });
+  return f;
+}
+function regRebase(){ try{ REG_FOTO = regFoto(); }catch(e){ REG_FOTO = null; } REG_CTX = null; }
+// Qué acción viene a continuación (la primera que se declara manda; caduca a los 5 s)
+function regAccion(accion, det, por){ if(!REG_CTX || Date.now()-REG_CTX.t > 5000) REG_CTX = {accion, det:det||"", por:por||"", t:Date.now()}; }
+function regAnotar(){
+  if(MODE!=="editor") return;
+  if(!REG_FOTO){ regRebase(); return; }
+  const nueva = regFoto(), cambios = [];
+  // Decisión de Javier: solo cuentan los meses ya oficiales o cerrados para administrativos;
+  // antes de eso el mes es un borrador y sus cambios no se anotan.
+  const vale = {}, cuenta = mk=>(vale[mk]!==undefined ? vale[mk] : (vale[mk] = !!((state.official||{})[mk] || (state.cerradoAdm||{})[mk])));
+  Object.keys(Object.assign({}, REG_FOTO, nueva)).forEach(k=>{ const a = REG_FOTO[k]||"", d = nueva[k]||""; if(a!==d && cuenta(k.split("|")[1].slice(0,7))) cambios.push({k, a, d}); });
+  const ctx = (REG_CTX && Date.now()-REG_CTX.t <= 5000) ? REG_CTX : null;
+  REG_FOTO = nueva; REG_CTX = null;
+  if(!cambios.length) return;
+  cambios.sort((x,y)=>x.k.split("|")[1].localeCompare(y.k.split("|")[1]) || x.k.localeCompare(y.k));
+  const espera = mapaEnEspera(); const ahora = new Date().toISOString();
+  const accion = ctx ? ctx.accion : "edición a mano", por = ctx && ctx.por ? ctx.por : "Coordinador";
+  state.registro = state.registro || {};
+  // Varias ediciones a mano seguidas (pintar con el pincel) se juntan en una sola anotación
+  const ult = REG_ULT && state.registro[REG_ULT];
+  if(ult && !ult.masivo && ult.accion==="edición a mano" && accion==="edición a mano" && ult.por===por && Date.now()-Date.parse(ult.hasta||ult.at) < 180000 && ult.celdas.length+cambios.length <= REG_MASIVO){
+    cambios.forEach(c=>{ const x = ult.celdas.find(y=>y.k===c.k); if(x) x.d = c.d; else ult.celdas.push(c); });
+    ult.celdas = ult.celdas.filter(c=>c.a!==c.d); ult.hasta = ahora;
+    if(!ult.celdas.length) delete state.registro[REG_ULT];
+    return;
+  }
+  const e = {at:ahora, mes:cambios[0].k.split("|")[1].slice(0,7), por, accion, det:ctx ? ctx.det : "", n:cambios.length};
+  if(cambios.some(c=>!c.k.endsWith("|he") && espera.hasOwnProperty(c.k))) e.espera = true;
+  if(cambios.length > REG_MASIVO){ e.masivo = true; e.porPid = {}; cambios.forEach(c=>{ const pid = c.k.split("|")[0]; e.porPid[pid] = (e.porPid[pid]||0)+1; }); }
+  else e.celdas = cambios;
+  const id = "r"+Date.now().toString(36)+Math.random().toString(36).slice(2,5);
+  state.registro[id] = e; REG_ULT = id;
+  // Tope de seguridad: lo antiguo pasa al archivo mensual; aquí nunca más de 1500 anotaciones
+  const ids = Object.keys(state.registro); if(ids.length > 1500) ids.sort((x,y)=>String(state.registro[x].at).localeCompare(String(state.registro[y].at))).slice(0, ids.length-1500).forEach(x=>delete state.registro[x]);
+}
+let REG_ULT = null;
 function save(){
   if(PAUSA_GUARDADO){ GUARDADO_APLAZADO = true; return; }
   if(MODE==="viewer"){ setSave("Solo consulta"); return; }
+  try{ regAnotar(); }catch(e){ /* el registro nunca debe impedir guardar */ }
   state.updatedAt = new Date().toISOString();
   PEND_GEN++; marcarPendiente(true);
   setSave("Guardando…");
@@ -1565,7 +1625,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v199";
+const APP_VERSION = "v201";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2316,6 +2376,8 @@ function applyRequest(r, soloComprobar){
   const cimaDeshacer = ultimoDeshacer();
   const avisoPrevio = AVISO_VOLUNTARIO;
   const antes = recuentoFisico(vistaConEspera());
+  const ctxPrevio = REG_CTX;
+  if(!soloComprobar){ REG_CTX = null; regAccion("solicitud aprobada", (function(){ try{ return resumenSolicitud(r); }catch(e){ return ""; } })(), r.by ? "Solicitud de "+r.by : ""); }
   PAUSA_GUARDADO = true; GUARDADO_APLAZADO = false;
   let err = null;
   try{
@@ -2331,6 +2393,7 @@ function applyRequest(r, soloComprobar){
     while(PILA_DESHACER.length && ultimoDeshacer() !== cimaDeshacer) PILA_DESHACER.pop();
     AVISO_VOLUNTARIO = avisoPrevio;
     GUARDADO_APLAZADO = false;
+    REG_CTX = soloComprobar ? ctxPrevio : null;      // una simulación no deja etiqueta puesta
     return err;
   }
   if(GUARDADO_APLAZADO){ GUARDADO_APLAZADO = false; save(); }
@@ -2600,6 +2663,7 @@ function render(){
       else if(ui.tab==="traficos") main.innerHTML = viewTraficos();
     else if(ui.tab==="exportar") main.innerHTML = viewExportar();
     else if(ui.tab==="historial") main.innerHTML = viewHistorial();
+    else if(ui.tab==="registro" && MODE==="editor") main.innerHTML = viewRegistro();
     else if(ui.tab==="administrativo") main.innerHTML = viewAdministrativo();
     else if(ui.tab==="vacaciones") main.innerHTML = viewVacaciones();
     else if(ui.tab==="solicitudes") main.innerHTML = viewSolicitudes();
@@ -6977,6 +7041,40 @@ function custMiActivo(){
   }
   return !!ui.miCust.activo;
 }
+// v200: «Tu próxima semana»: los turnos de hoy y los 6 días siguientes de quien usa el dispositivo.
+// Solo lee el cuadrante publicado; si el mes aún no es oficial, lo marca como provisional.
+function viewMiSemana(){
+  const yo = miFacultativo(); if(!yo) return '';
+  const KEY = "cuadrante-misemana-v1";
+  let plegada = false; try{ plegada = localStorage.getItem(KEY)==="0"; }catch(e){}
+  const hm = holidayMap(); const DS = ["dom","lun","mar","mié","jue","vie","sáb"];
+  const chip = (txt, cls, tit)=>'<span class="tiny '+cls+'" style="padding:2px 7px;border-radius:6px;font-weight:700"'+(tit?' title="'+esc(tit)+'"':'')+'>'+esc(txt)+'</span>';
+  let filas = '', provisional = false;
+  for(let i=0;i<7;i++){
+    const d = new Date(); d.setHours(12,0,0,0); d.setDate(d.getDate()+i);
+    const k = keyOf(d.getFullYear(), d.getMonth(), d.getDate()), dow = d.getDay();
+    const a = state.assignments[yo.id+"|"+k] || {};
+    if(!(state.official||{})[k.slice(0,7)]) provisional = true;
+    const partes = [];
+    if(a.f && absInfo(a.f)) partes.push(chip(absInfo(a.f).label, absInfo(a.f).cls));
+    else if(a.f==="URG"||a.f==="URGLV"||a.f==="URGF") partes.push(chip("Guardia", a.f==="URG"?"k-urg":(a.f==="URGLV"?"k-urglv":"k-urgf"), a.f));
+    else {
+      ["m","t"].forEach(sl=>{ const c = a[sl]; if(!c) return; const co = byCode[c];
+        const h = esTrafico(c) ? trafHora(yo.id, k, sl) : "";
+        partes.push(chip((sl==="m"?"Mañana ":"Tarde ")+(co?co.short:c)+(h?" · "+h:""), co?co.cls:"plain")); });
+    }
+    const hx = heHorasDia(yo.id, k); if(hx) partes.push(chip("HE"+hx, "k-he", "Horas extra por cobertura de baja"));
+    if(!partes.length) partes.push('<span class="muted" style="font-size:13px">'+(esDiaLibre(yo.id,k) ? "No disponible" : (dow===0||dow===6||hm[k] ? "Libre" : "Sin turno"))+'</span>');
+    const nombre = i===0 ? "Hoy" : (i===1 ? "Mañana" : DS[dow]+" "+d.getDate());
+    filas += '<div class="row misem-dia" style="gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--slate-100)'+(i===0?';font-weight:700':'')+'">'+
+      '<span style="min-width:64px;font-size:13px">'+nombre+(hm[k]?' <span class="tiny muted" title="'+esc(hm[k])+'">fest.</span>':'')+'</span>'+
+      '<span class="row" style="gap:5px;flex-wrap:wrap">'+partes.join("")+'</span></div>';
+  }
+  return '<div class="card no-print" id="card-misemana" style="margin-bottom:10px">'+
+    '<div class="row between" style="align-items:center"><b style="font-size:15px">Tu próxima semana</b>'+
+    '<button class="btn" data-action="misemana-plegar" style="padding:2px 9px;font-size:12px">'+(plegada?"Mostrar":"Ocultar")+'</button></div>'+
+    (plegada ? '' : '<div style="margin-top:6px">'+filas+'</div>'+(provisional ? '<p class="muted" style="font-size:12px;margin-top:6px">Algún día es de un mes aún no oficial: puede cambiar.</p>' : ''))+'</div>';
+}
 // v199: el coordinador le ha recordado que marque su fin de semana de custodia (y aún no lo ha hecho)
 function viewRecCustodia(){
   if(!custMiActivo() || !ui.miCust || !ui.miCust.recordatorio) return '';
@@ -7256,6 +7354,79 @@ function repLeerFechas(txt, anio){
   return out.sort();
 }
 
+// ---- Registro de cambios: pantallas (v201) ----
+function regNombre(pid){ return pid===EXT_ID ? "URG (EXT)" : ((state.physicians.find(p=>p.id===pid)||{}).name || "?"); }
+function regTxt(k, t){
+  if(k.endsWith("|he")) return t || "sin horas extra";
+  if(!t) return "vacío";
+  const p = t.split("/"); if(p[2]) return p[2];
+  if(p[0] && p[1]) return p[0]+" / "+p[1];
+  return p[0] ? p[0]+" (mañana)" : p[1]+" (tarde)";
+}
+function regDia(k){ const d = k.split("|")[1]; return repDia(d); }
+function regFecha(iso){ try{ return new Date(iso).toLocaleString("es-ES",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}); }catch(e){ return ""; } }
+const regCap = t => String(t||"").charAt(0).toUpperCase()+String(t||"").slice(1);
+// Anotaciones del mes mk: las del día a día y, si el mes ya se archivó, las del archivo
+function regDelMes(mk){
+  const out = [];
+  Object.keys(state.registro||{}).forEach(id=>{ const e = state.registro[id]; if(e && e.mes===mk) out.push(Object.assign({id}, e)); });
+  const arch = ARCHIVO_MEM[mk];
+  if(arch && Array.isArray(arch.registro)) arch.registro.forEach(e=>{ if(e && !out.some(x=>x.id===e.id)) out.push(e); });
+  return out.sort((a,b)=>String(b.at).localeCompare(String(a.at)));
+}
+const regToca = (e, pid)=> e.masivo ? !!(e.porPid||{})[pid] : (e.celdas||[]).some(c=>c.k.split("|")[0]===pid);
+function regEntradaHTML(e, soloPid){
+  const celdas = (e.celdas||[]).filter(c=>!soloPid || c.k.split("|")[0]===soloPid);
+  const linea = c=>'<div style="font-size:13px;padding:1px 0">'+(soloPid?'':'<b>'+esc(regNombre(c.k.split("|")[0]))+'</b> · ')+esc(regDia(c.k))+': '+
+    '<span class="muted">'+esc(regTxt(c.k, c.a))+'</span> → <b>'+esc(regTxt(c.k, c.d))+'</b></div>';
+  let h = '<div class="reg-e" style="padding:8px 0;border-bottom:1px solid var(--slate-100)">'+
+    '<div style="font-size:12px" class="muted">'+esc(regFecha(e.at))+' · '+esc(e.por||"")+'</div>'+
+    '<div style="font-size:14px;margin-top:1px"><b>'+esc(regCap(e.accion))+'</b>'+(e.det?' <span class="muted">· '+esc(e.det)+'</span>':'')+
+      (e.espera?' <span class="tiny" style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:5px">en espera de administración</span>':'')+'</div>';
+  if(e.masivo){
+    const n = soloPid ? (e.porPid||{})[soloPid] : e.n;
+    h += '<div style="font-size:13px;margin-top:2px">'+n+' día'+(n===1?'':'s')+' cambiado'+(n===1?'':'s')+(soloPid?'':': '+Object.keys(e.porPid||{}).map(pid=>esc(regNombre(pid))+' '+e.porPid[pid]).join(", "))+'</div>';
+  }else{
+    h += '<div style="margin-top:3px">'+celdas.slice(0,8).map(linea).join("")+'</div>';
+    if(celdas.length>8) h += '<details><summary style="cursor:pointer;font-size:12px">'+(celdas.length-8)+' más</summary>'+celdas.slice(8).map(linea).join("")+'</details>';
+  }
+  return h+'</div>';
+}
+// Coordinador: todo el registro del mes, con filtro por persona
+function viewRegistro(){
+  const mk = ui.regMes || (state.year+"-"+pad(ui.month+1));
+  if((state.archivado||{})[mk] && !ARCHIVO_MEM[mk] && !(ui.regLeyendo||{})[mk]){
+    (ui.regLeyendo = ui.regLeyendo||{})[mk] = true;
+    archivoLeer(mk).then(r=>{ if(r.ok && r.datos) ARCHIVO_MEM[mk] = r.datos; if(ui.tab==="registro") render(); });
+  }
+  const est = 'padding:8px;border:1px solid var(--slate-300);border-radius:8px;font-size:14px;max-width:100%';
+  let lista = regDelMes(mk);
+  if(ui.regPid) lista = lista.filter(e=>regToca(e, ui.regPid));
+  const pr = mk.split("-").map(Number);
+  const meses = []; for(let i=-3;i<=3;i++){ const d = new Date(pr[0], pr[1]-1+i, 1); meses.push(d.getFullYear()+"-"+pad(d.getMonth()+1)); }
+  let h = '<div class="card"><h2>Registro de cambios</h2>'+
+    '<p class="muted" style="font-size:13px;margin-top:2px">Quién cambió qué y cuándo: ediciones a mano, solicitudes aprobadas, administración, repartos, horas extra y deshacer. Solo se anota desde que el mes es oficial o está cerrado para administrativos. Cada compañero ve solo lo que le afecta (en Solicitudes). Pasa al archivo del mes a los 7 días de acabar.</p>'+
+    '<div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">'+
+      '<select data-field="reg-mes" style="'+est+'">'+meses.map(m=>{ const q = m.split("-").map(Number); return '<option value="'+m+'"'+(m===mk?' selected':'')+'>'+MONTHS[q[1]-1]+' '+q[0]+'</option>'; }).join("")+'</select>'+
+      '<select data-field="reg-pid" style="'+est+'"><option value="">Todo el equipo</option>'+state.physicians.map(p=>'<option value="'+p.id+'"'+(ui.regPid===p.id?' selected':'')+'>'+esc(p.name)+'</option>').join("")+'</select></div></div>';
+  h += '<div class="card" id="reg-lista">'+(lista.length ? lista.map(e=>regEntradaHTML(e, ui.regPid||"")).join("") :
+    '<p class="muted" style="font-size:14px">'+((state.archivado||{})[mk] && !ARCHIVO_MEM[mk] ? 'Leyendo el archivo…' : 'Sin cambios anotados en '+MONTHS[pr[1]-1]+'.')+'</p>')+'</div>';
+  return h;
+}
+// Compañero: los cambios que le afectan (último mes y lo que viene)
+function viewMisCambios(){
+  const yo = miFacultativo(); if(!yo) return '';
+  const desde = (()=>{ const d = new Date(); d.setDate(d.getDate()-31); return keyOf(d.getFullYear(), d.getMonth(), d.getDate()); })();
+  const lista = Object.keys(state.registro||{}).map(id=>Object.assign({id}, state.registro[id]))
+    .filter(e=>e && regToca(e, yo.id) && (e.masivo ? e.mes >= desde.slice(0,7) : (e.celdas||[]).some(c=>c.k.split("|")[0]===yo.id && c.k.split("|")[1] >= desde)))
+    .sort((a,b)=>String(b.at).localeCompare(String(a.at)));
+  const ver = ui.misCambiosTodos ? lista : lista.slice(0,10);
+  return '<div class="card" id="card-miscambios"><h2>Cambios en tu cuadrante</h2>'+
+    '<p class="muted" style="font-size:13px;margin-top:2px">Lo que ha cambiado en tus días del último mes y de los próximos: quién, cuándo y por qué.</p>'+
+    (lista.length ? '<div style="margin-top:4px">'+ver.map(e=>regEntradaHTML(e, yo.id)).join("")+'</div>'+
+      (lista.length>10 && !ui.misCambiosTodos ? '<button class="btn" data-action="miscambios-todos" style="margin-top:8px">Ver los '+lista.length+'</button>' : '')
+      : '<p class="muted" style="font-size:14px;margin-top:6px">No hay cambios anotados en tus días.</p>')+'</div>';
+}
 // ---- Recordatorios del coordinador (v186) ----
 // Se guardan con el cuadrante; a cada destinatario le llega una notificación y una línea
 // en su tarjeta de novedades (también a quien no tiene los avisos activados, al entrar).
@@ -7332,6 +7503,7 @@ function viewSolicitudesFacultativo(){
       '<p class="muted" style="margin-top:2px">Elige facultativo, fecha y tu propuesta; la solicitud le llegará al coordinador para su autorización.</p>'+
       solicitudZonaHTML()+'</div>';
     h += viewMisSolicitudes();
+    h += viewMisCambios();
     h += viewAjustesAvisos();
     if(log.length){
       h += '<div class="card"><div class="row between"><h2>Enviadas desde este dispositivo</h2><button class="btn" data-action="reqlog-clear">Vaciar</button></div><div style="margin-top:8px">'+
@@ -7711,7 +7883,7 @@ function viewPendientes(){
 }
 
 function renderNav(){
-  let tabs = [["cuadrante","Cuadrante"],["pendientes","Pendientes"],["rotantes","Rotantes"],["traficos","Tráficos"],["administrativo","Administrativo"],["solicitudes","Solicitudes"],["exportar","Exportar"],["equipo","Equipo"],["stats","Estadísticas"],["vacaciones","Vacaciones"],["historial","Historial"],["ajustes","Ajustes"]];
+  let tabs = [["cuadrante","Cuadrante"],["pendientes","Pendientes"],["rotantes","Rotantes"],["traficos","Tráficos"],["administrativo","Administrativo"],["solicitudes","Solicitudes"],["exportar","Exportar"],["equipo","Equipo"],["stats","Estadísticas"],["vacaciones","Vacaciones"],["historial","Historial"],["registro","Registro"],["ajustes","Ajustes"]];
   if(MODE==="viewer"){
     const permitidas = esAdministrativo()
       ? ["cuadrante","rotantes","traficos","administrativo","stats"]      // el administrativo no pide cambios
@@ -7980,7 +8152,7 @@ function viewCuadrante(){
         '</div>';
     }
   }
-  if(MODE==="viewer"){ html += viewRevisionTraficos(); html += viewRecCustodia(); html += viewNovedades(); }
+  if(MODE==="viewer"){ html += viewMiSemana(); html += viewRevisionTraficos(); html += viewRecCustodia(); html += viewNovedades(); }
   if(false){
     const yoV = miFacultativo();
     const nov = yoV ? novedadesDe(yoV.id) : [];
@@ -9008,7 +9180,13 @@ function renderModal(){
         else if(lab&&isPool) right = '<span class="muted" style="opacity:.6">Pool de mañana</span>';
         else right = '<span class="muted" style="opacity:.5">No requerida</span>';
         return '<div class="cov"><span class="chip '+c.cls+'">'+c.code+'</span><span style="text-align:right;flex:1">'+right+'</span></div>';
-      }).join("")+'</div></div></div>';
+      }).join("")+'</div>'+
+      // v201: cambios de este día (solo el coordinador)
+      (function(){ if(MODE!=="editor") return '';
+        const l = regDelMes(date.slice(0,7)).filter(e=>!e.masivo && (e.celdas||[]).some(c=>c.k.split("|")[1]===date))
+          .map(e=>Object.assign({}, e, {celdas:e.celdas.filter(c=>c.k.split("|")[1]===date)}));
+        return l.length ? '<details id="dia-cambios" style="margin-top:10px"><summary style="cursor:pointer;font-size:13px"><b>Cambios de este día ('+l.length+')</b></summary>'+l.map(e=>regEntradaHTML(e,"")).join("")+'</details>' : ''; })()+
+      '</div></div>';
   }else if(ui.reqModal && !ui.reqModal.tab){
     const rq = ui.reqModal;
     const phys = state.physicians;
@@ -9184,7 +9362,7 @@ function aplicarCopia(d){
       if(d.adminPass) state.adminPass = d.adminPass;
       if(d.adminPass2) state.adminPass2 = d.adminPass2;
       state.rotBloqueados = d.rotBloqueados||{};
-      state.traficoHoras = d.traficoHoras||{}; state.horasExtra = heLimpiar(d.horasExtra);
+      state.traficoHoras = d.traficoHoras||{}; state.horasExtra = heLimpiar(d.horasExtra); state.registro = (d.registro && typeof d.registro==="object") ? d.registro : {};
       state.diasLibres = d.diasLibres||{};
       state.permisosCupo = d.permisosCupo||{};
       state.bandeja = Array.isArray(d.bandeja) ? d.bandeja : [];
@@ -11517,6 +11695,8 @@ document.addEventListener("click", e=>{
       });
       break;
     }
+    case "miscambios-todos": { ui.misCambiosTodos = true; render(); break; }
+    case "misemana-plegar": { const KEY = "cuadrante-misemana-v1"; try{ localStorage.setItem(KEY, localStorage.getItem(KEY)==="0" ? "1" : "0"); }catch(e){} render(); break; }
     case "reccust-ir": { ui.tab = "solicitudes"; ui.solModo = "peticiones"; ui.petSub = "custodia"; render(); break; }
     case "he-anadir": case "he-quitar": {
       if(!ui.editCell || MODE!=="editor") break;
@@ -11823,6 +12003,8 @@ document.addEventListener("change", e=>{
   else if(field==="req-email"){ state.settings.reqEmail = el.value.trim(); save(); }
   else if(field==="req-phone"){ state.settings.reqPhone = el.value.replace(/[^0-9+ ]/g,"").trim(); save(); }
   else if(field==="he-mes"){ ui.heMes = Number(el.value); render(); }
+  else if(field==="reg-mes"){ ui.regMes = el.value; render(); }
+  else if(field==="reg-pid"){ ui.regPid = el.value; render(); }
   else if(field==="pet-ver"){ (ui.petVer = ui.petVer || {})[el.dataset.rep] = Number(el.value); render(); }
   else if(field==="pet-asignar"){
     const rep = repartos()[el.dataset.rep]; const ej = rep && rep.ejecuciones[Number(el.dataset.v)]; const id = el.value; const pid = el.dataset.pid;
@@ -11891,7 +12073,7 @@ function applyPublished(d){
   state.rotantesLeyenda = Object.assign({R1:"",R2:"",R3:"",R4:"",R5:""}, d.rotantesLeyenda||{});
   if(d.adminPass) state.adminPass = d.adminPass;   // la contraseña llega con la publicación
   state.rotBloqueados = d.rotBloqueados||{};
-  state.traficoHoras = d.traficoHoras||{}; state.horasExtra = heLimpiar(d.horasExtra);
+  state.traficoHoras = d.traficoHoras||{}; state.horasExtra = heLimpiar(d.horasExtra); state.registro = (d.registro && typeof d.registro==="object") ? d.registro : {};
   state.diasLibres = d.diasLibres||{};
   state.permisosCupo = d.permisosCupo||{};
   state.bandeja = Array.isArray(d.bandeja) ? d.bandeja : [];
@@ -11910,6 +12092,7 @@ function applyPublished(d){
   // se está viendo; al arrancar lo fija después el propio arranque.
   if(ARRANCANDO) state.year = d.year||2026;
   PUBLISHED_AT = d.publishedAt||null;
+  regRebase();          // v201: lo que llega de lo publicado ya está anotado donde se hizo
 }
 // ---- Actualización automática de la versión publicada ----
 // El equipo no tiene que pulsar nada: la app comprueba si hay una publicación más reciente
@@ -12004,6 +12187,7 @@ async function boot(){
   if(MODE==="editor" && NEWER){ NEWER = false; sincronizarCoord().then(sy=>{ if(sy.estado==="fusionado") schedulePublish(); }); }
   // v177: la copia diaria se hace al abrir la aplicación (antes solo al entrar en Solicitudes),
   // y antes de archivar, para que la copia del día incluya lo que el archivado va a retirar.
+  if(MODE==="editor") regRebase();       // v201: foto de partida del registro de cambios
   abrirDesdeDireccion();                 // si se ha abierto tocando un aviso, va a su pantalla
   // v190: los dispositivos con avisos guardan también la dirección del servidor (para leer el motivo)
   try{ const gA = avisosGuardados(); if(gA && gA.pid && (state.buzon||{}).url && "caches" in window){
