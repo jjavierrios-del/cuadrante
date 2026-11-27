@@ -13,6 +13,7 @@
  *   GITHUB_TOKEN   → token de GitHub con permiso de escritura en el repositorio
  *   GH_OWNER       → usuario de GitHub (p. ej. jjavierrios-del)
  *   GH_REPO        → nombre del repositorio (p. ej. cuadrante)
+ *   GH_REPO_DATOS  → (v202) repositorio PRIVADO con una copia exacta de los datos (p. ej. cuadrante-datos)
  *   GH_BRANCH      → rama, opcional (por defecto main)
  *
  * Para el calendario suscrito (opcional):
@@ -196,6 +197,7 @@ async function editarCuadrante(env, mensaje, modificar) {
     });
     if (guardar.ok) {
       try { await env.BUZON.put("pub-ultima", datos.publishedAt); } catch (e) { /* solo es una ayuda para detectar choques */ }
+      await espejoPrivado(env, "data.json", textoB64(texto), mensaje, datos.publishedAt);      // v202
       return { ok: true, extra: r && r.extra };
     }
     if (guardar.status !== 409) {
@@ -206,6 +208,47 @@ async function editarCuadrante(env, mensaje, modificar) {
   }
   return { error: "El cuadrante está recibiendo muchos cambios a la vez. Inténtalo de nuevo.", status: 409 };
 }
+
+// ================= ESPEJO PRIVADO DE LOS DATOS (v202, fase 1 de la opción A) =================
+// Cada escritura de data.json o de archivo/AAAA-MM.json en el repositorio público se repite en el
+// repositorio privado GH_REPO_DATOS. De momento manda el público; el privado se va quedando al día
+// para que, cuando la app lea de aquí (fase 2), se pueda dejar de publicar los datos (fase 3).
+// Un fallo del espejo nunca hace fallar la escritura principal: se apunta en KV `espejo`.
+async function espejoPrivado(env, ruta, contenidoB64, mensaje, sello) {
+  if (!env.GH_REPO_DATOS || !env.GITHUB_TOKEN || !env.GH_OWNER) return { omitido: true };
+  const rama = env.GH_BRANCH || "main";
+  const base = "https://api.github.com/repos/" + env.GH_OWNER + "/" + env.GH_REPO_DATOS + "/contents/";
+  const cab = { "Authorization": "Bearer " + env.GITHUB_TOKEN, "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "buzon-cuadrante" };
+  const estado = (await env.BUZON.get("espejo", "json")) || {};
+  try {
+    for (let intento = 0; intento < 3; intento++) {
+      // La versión actual (sha) se mira en el listado de la carpeta: no descarga el archivo
+      const carpeta = ruta.indexOf("/") >= 0 ? ruta.slice(0, ruta.lastIndexOf("/")) : "";
+      const nombre = ruta.slice(ruta.lastIndexOf("/") + 1);
+      let sha = null;
+      const l = await fetch(base + carpeta + "?ref=" + encodeURIComponent(rama) + "&t=" + Date.now(), { headers: cab });
+      if (l.ok) { const lista = await l.json().catch(() => []); const f = Array.isArray(lista) ? lista.find((x) => x && x.name === nombre) : null; if (f) sha = f.sha; }
+      else if (l.status !== 404) throw new Error("no se ha podido leer el repositorio privado (" + l.status + ")");
+      const g = await fetch(base + ruta, { method: "PUT", headers: { ...cab, "Content-Type": "application/json" },
+        body: JSON.stringify({ message: mensaje, content: contenidoB64, branch: rama, ...(sha ? { sha } : {}) }) });
+      if (g.ok) {
+        estado.ok = { at: new Date().toISOString(), ruta: ruta };
+        if (ruta === "data.json" && sello) estado.datos = sello;        // versión del cuadrante que ya está en el privado
+        delete estado.error;
+        await env.BUZON.put("espejo", JSON.stringify(estado));
+        return { ok: true };
+      }
+      if (g.status !== 409 && g.status !== 422) throw new Error("GitHub ha rechazado la copia privada (" + g.status + ")");
+      await new Promise((z) => setTimeout(z, 300 + intento * 300));
+    }
+    throw new Error("choque repetido al guardar la copia privada");
+  } catch (e) {
+    estado.error = { at: new Date().toISOString(), ruta: ruta, motivo: String(e && e.message || e).slice(0, 160) };
+    await env.BUZON.put("espejo", JSON.stringify(estado));
+    return { error: estado.error.motivo };
+  }
+}
+function textoB64(texto) { return btoa(bytesABinario(new TextEncoder().encode(texto))); }
 
 // v201: registro de cambios. Mismo formato que la app: celda «m/t/f» y una anotación por acción.
 function regCeldaTxt(a) { return a && (a.m || a.t || a.f) ? [a.m || "", a.t || "", a.f || ""].join("/") : ""; }
@@ -235,6 +278,7 @@ function bytesABinario(bytes) {
 //   VAPID_PRIVADA → secreto con la clave de firma (JWK). Sin él, no se envía nada.
 const PUSH_HOSTS = [/(^|\.)push\.apple\.com$/, /^fcm\.googleapis\.com$/, /^updates\.push\.services\.mozilla\.com$/, /\.notify\.windows\.com$/];
 const PID_COORD = "__coord__", PID_ADMVO = "__admvo__";
+const LECT_MEM = {};          // v202: última lectura anotada por persona en esta instancia
 const MAX_DISPOSITIVOS = 8;          // por persona
 const b64u = (buf) => {
   const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
@@ -414,6 +458,12 @@ async function revisarSalud(env, copia) {
     }
   }
   if (!salud.copia.ok) avisos.push("La copia nocturna del cuadrante ha fallado: " + salud.copia.motivo + ".");
+  // v202: el espejo privado de los datos
+  if (env.GH_REPO_DATOS) {
+    const esp = (await env.BUZON.get("espejo", "json")) || {}; const ult = await env.BUZON.get("pub-ultima");
+    salud.espejo = { ok: !esp.error && !!esp.datos && esp.datos === ult, ultimo: esp.ok || null, error: esp.error || null };
+    if (esp.error && (!esp.ok || esp.error.at > esp.ok.at)) avisos.push("La copia privada de los datos ha fallado: " + esp.error.motivo + ".");
+  }
   salud.avisos = avisos;
   await env.BUZON.put("salud", JSON.stringify(salud));
   if (avisos.length) await avisar(env, [PID_COORD], { t: "salud", txt: avisos.join(" ") });
@@ -1045,13 +1095,51 @@ async function atender(request, env, ctx) {
       // ---------- El cuadrante publicado, al instante (v191, solo el coordinador) ----------
       // raw.githubusercontent tarda minutos en servir la versión nueva; la API de GitHub no.
       // Lo usa la app del coordinador para juntar sus cambios con los de administración.
+      // v202: también con la clave de envío (compañeros) o la de administración. Se sirve del
+      // repositorio privado si su copia está al día; si no, del público (que de momento manda).
       if (request.method === "GET" && ruta === "/datos") {
-        if (!env.CLAVE_PUBLICAR || (url.searchParams.get("clave") || "") !== env.CLAVE_PUBLICAR) return json({ error: "Contraseña incorrecta." }, 403);
+        const cl = url.searchParams.get("clave") || "";
+        if (!cl || ![env.CLAVE_PUBLICAR, env.CLAVE_ENVIO, env.CLAVE_ADMVO].some((c) => c && c === cl)) return json({ error: "Contraseña incorrecta." }, 403);
         if (!env.GITHUB_TOKEN || !env.GH_OWNER || !env.GH_REPO) return json({ error: "El servidor no tiene configurado el destino en GitHub." }, 500);
-        const r = await fetch("https://api.github.com/repos/" + env.GH_OWNER + "/" + env.GH_REPO + "/contents/data.json?ref=" + encodeURIComponent(env.GH_BRANCH || "main") + "&t=" + Date.now(), {
+        // v202: quién lee ya con su clave (una anotación cada 6 h por persona, para no gastar escrituras)
+        const pidL = url.searchParams.get("pid") || "";
+        if (/^([a-z0-9]{4,16}|__admvo__)$/.test(pidL) && (cl === env.CLAVE_ENVIO || cl === env.CLAVE_ADMVO)) {
+          const ahoraL = Date.now();
+          if (!LECT_MEM[pidL] || ahoraL - LECT_MEM[pidL] > 6 * 3600e3) {
+            LECT_MEM[pidL] = ahoraL;
+            const prev = await env.BUZON.get("lect:" + pidL);
+            if (!prev || ahoraL - Date.parse(prev) > 6 * 3600e3) await env.BUZON.put("lect:" + pidL, new Date(ahoraL).toISOString(), { expirationTtl: 60 * 60 * 24 * 60 });
+          }
+        }
+        let repoLee = env.GH_REPO;
+        if (env.GH_REPO_DATOS) { const esp = (await env.BUZON.get("espejo", "json")) || {}; const ult = await env.BUZON.get("pub-ultima"); if (esp.datos && ult && esp.datos === ult) repoLee = env.GH_REPO_DATOS; }
+        const r = await fetch("https://api.github.com/repos/" + env.GH_OWNER + "/" + repoLee + "/contents/data.json?ref=" + encodeURIComponent(env.GH_BRANCH || "main") + "&t=" + Date.now(), {
           headers: { "Authorization": "Bearer " + env.GITHUB_TOKEN, "Accept": "application/vnd.github.raw", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "buzon-cuadrante" } });
         if (!r.ok) return json({ error: "No se ha podido leer el cuadrante (" + r.status + ")." }, 502);
         return new Response(await r.text(), { headers: { "Content-Type": "application/json; charset=utf-8", ...CORS } });
+      }
+
+      // ---------- Quién lee ya los datos con su clave (v202, solo el coordinador) ----------
+      if (request.method === "GET" && ruta === "/lectores") {
+        if (!env.CLAVE_ADMIN || (url.searchParams.get("admin") || "") !== env.CLAVE_ADMIN) return json({ error: "Clave de administración incorrecta." }, 403);
+        const out = {};
+        for (const k of (await env.BUZON.list({ prefix: "lect:" })).keys) out[k.name.slice(5)] = await env.BUZON.get(k.name);
+        return json({ ok: true, lectores: out });
+      }
+
+      // ---------- Un mes del archivo, con clave (v202) ----------
+      if (request.method === "GET" && ruta === "/archivo") {
+        const cl = url.searchParams.get("clave") || "", mes = url.searchParams.get("mes") || "";
+        if (!cl || ![env.CLAVE_PUBLICAR, env.CLAVE_ENVIO, env.CLAVE_ADMVO].some((c) => c && c === cl)) return json({ error: "Contraseña incorrecta." }, 403);
+        if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(mes)) return json({ error: "Mes no válido." }, 400);
+        if (!env.GITHUB_TOKEN || !env.GH_OWNER) return json({ error: "El servidor no tiene configurado el destino en GitHub." }, 500);
+        const leer = (repo) => fetch("https://api.github.com/repos/" + env.GH_OWNER + "/" + repo + "/contents/archivo/" + mes + ".json?ref=" + encodeURIComponent(env.GH_BRANCH || "main"), {
+          headers: { "Authorization": "Bearer " + env.GITHUB_TOKEN, "Accept": "application/vnd.github.raw", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "buzon-cuadrante" } });
+        let r = env.GH_REPO_DATOS ? await leer(env.GH_REPO_DATOS) : null;
+        if ((!r || !r.ok) && env.GH_REPO) r = await leer(env.GH_REPO);
+        if (r.status === 404) return json({ ok: true, datos: null });
+        if (!r.ok) return json({ error: "No se ha podido leer el archivo (" + r.status + ")." }, 502);
+        return new Response('{"ok":true,"datos":' + (await r.text()) + '}', { headers: { "Content-Type": "application/json; charset=utf-8", ...CORS } });
       }
 
       // ---------- Motivos de los últimos avisos (v190): solo el tipo, sin datos personales ----------
@@ -1129,6 +1217,7 @@ async function atender(request, env, ctx) {
           const err = await guardar.text().catch(() => "");
           return json({ error: "GitHub ha rechazado el archivo (" + guardar.status + "): " + err.slice(0, 200) }, 502);
         }
+        await espejoPrivado(env, "archivo/" + mes + ".json", textoB64(texto), "Archivo del mes " + mes);      // v202
         return json({ ok: true, mes: mes, bytes: texto.length });
       }
 
@@ -1203,6 +1292,9 @@ async function atender(request, env, ctx) {
           if (ctx && ctx.waitUntil) ctx.waitUntil(toquePub);
         }
         try { await env.BUZON.put("pub-ultima", selloPub); } catch (e) { /* ayuda para detectar choques */ }
+        // v202: copia exacta en el repositorio privado, sin hacer esperar a quien publica
+        const esp = espejoPrivado(env, "data.json", contenido, "Cuadrante publicado " + selloPub, selloPub);
+        if (ctx && ctx.waitUntil) ctx.waitUntil(esp); else await esp;
         return json({ ok: true, publicado: selloPub, avisados: destinos.length });
       }
 

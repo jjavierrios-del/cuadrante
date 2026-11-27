@@ -1,4 +1,4 @@
-const CACHE = "cuadrante-pwa-v201";
+const CACHE = "cuadrante-pwa-v202";
 const ASSETS = ["./", "./index.html", "./avisos-comun.js", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./icon-180.png"];
 
 self.addEventListener("install", (e) => {
@@ -93,7 +93,11 @@ async function avisoPreparar(soloFoto) {
     } catch (e) { /* sin motivos: se deduce del cuadrante */ }
   }
   let d = {};
-  try { const r = await fetch(avisoUrlDatos(), { cache: "no-store" }); if (r.ok) d = await r.json(); } catch (e) { /* sin conexión */ }
+  // v202: primero el servidor, con la clave del dispositivo; si no, lo publicado en GitHub
+  if (quien.buzon && quien.claveDatos) {
+    try { const r = await fetch(String(quien.buzon).replace(/\/+$/, "") + "/datos?clave=" + encodeURIComponent(quien.claveDatos) + "&t=" + Date.now(), { cache: "no-store" }); if (r.ok) { const x = await r.json(); if (x && x.assignments) d = x; } } catch (e) { /* se prueba con GitHub */ }
+  }
+  if (!d.assignments) { try { const r = await fetch(avisoUrlDatos(), { cache: "no-store" }); if (r.ok) d = await r.json(); } catch (e) { /* sin conexión */ } }
   try {
     const visto = soloFoto ? null : await avisoLeer("./__visto.json");
     if (!d.assignments && !motivos) return res;

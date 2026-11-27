@@ -332,8 +332,29 @@ function repoRawUrl(){
   if(!owner || !repo) return null;
   return "https://raw.githubusercontent.com/"+owner+"/"+repo+"/"+(SYNC.branch||"main")+"/data.json";
 }
+// v202 (datos privados, fase 2): los datos se piden al servidor con la clave de este dispositivo
+// (coordinador: la de publicar; administración: la suya; compañeros: la de envío). Si no hay clave
+// o el servidor no contesta, se sigue leyendo lo publicado en GitHub, como siempre.
+let DATOS_CLAVE_MALA = false;
+function claveDatos(){
+  if(MODE==="editor") return buzonClavePublicar() || claveEnvio();
+  if(esAdministrativo()) return claveAdmvo() || claveEnvio();
+  return claveEnvio();
+}
+async function fetchDatosServidor(){
+  const url = ((state.buzon||{}).url||"").replace(/\/+$/,""), cl = claveDatos();
+  if(!url || !cl || DATOS_CLAVE_MALA) return null;
+  try{
+    const r = await fetch(url+"/datos?clave="+encodeURIComponent(cl)+"&pid="+encodeURIComponent(miPid()||"")+"&t="+Date.now(), {cache:"no-store"});
+    if(r.status===403){ DATOS_CLAVE_MALA = true; return null; }     // no insistir: cuenta como intento fallido
+    if(!r.ok) return null;
+    const d = await r.json().catch(()=>null);
+    return (d && d.assignments) ? d : null;
+  }catch(e){ return null; }
+}
 async function fetchPublished(){
   const t = Date.now();
+  const srv = await fetchDatosServidor(); if(srv) return srv;
   const raw = repoRawUrl();
   if(raw){
     try{
@@ -1080,6 +1101,15 @@ function archivoUrls(mk){
 }
 // Lee un mes del archivo. Devuelve {ok:true, datos:{…}|null} o {ok:false} si no se ha podido saber.
 async function archivoLeer(mk){
+  // v202: primero el servidor, con la clave de este dispositivo
+  const url = ((state.buzon||{}).url||"").replace(/\/+$/,""), cl = claveDatos();
+  if(url && cl && !DATOS_CLAVE_MALA){
+    try{
+      const r = await fetch(url+"/archivo?mes="+encodeURIComponent(mk)+"&clave="+encodeURIComponent(cl)+"&t="+Date.now(), {cache:"no-store"});
+      if(r.status===403) DATOS_CLAVE_MALA = true;
+      else if(r.ok){ const d = await r.json().catch(()=>null); if(d && d.ok && Object.prototype.hasOwnProperty.call(d, "datos")) return {ok:true, datos:(d.datos && typeof d.datos==="object") ? d.datos : null}; }
+    }catch(e){}
+  }
   let alguno404 = false;
   for(const u of archivoUrls(mk)){
     try{
@@ -1625,7 +1655,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v201";
+const APP_VERSION = "v202";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -6428,6 +6458,7 @@ function avisosVolcar(alSalir){
 function quienAvisos(pid){
   const q = {pid: pid, buzon: (state.buzon||{}).url||""};
   if(pid && pid!==PID_AVISOS_COORD && pid!==PID_AVISOS_ADMVO){ const c = claveEnvio(); if(c) q.clave = c; }
+  const cd = claveDatos(); if(cd) q.claveDatos = cd;          // v202: para leer los datos del servidor
   return q;
 }
 // ---- Abrir la aplicación en la pantalla del aviso (v180) ----
@@ -7796,6 +7827,7 @@ function pendSalud(){
   if(!t.ok) out.push({nivel:"alta", titulo:"La app no puede publicar: el token de GitHub del servidor no funciona", lineas:[t.motivo||"GitHub no lo acepta."].concat(PEND_RENOVAR), boton:null});
   else if(dias!==null && dias<=30) out.push({nivel:dias<=7?"alta":"media", titulo:"El token de GitHub caduca "+(dias<=0?"hoy":dias===1?"mañana":"en "+dias+" días")+" ("+fecha(t.caduca)+")",
     lineas:["Cuando caduque, la app dejará de publicar el cuadrante y de recibir los cambios de administración."].concat(PEND_RENOVAR), boton:null});
+  if(s.espejo && s.espejo.error && !s.espejo.ok) out.push({nivel:"media", titulo:"La copia privada de los datos no está al día", lineas:[(s.espejo.error.motivo||"")+". Mientras tanto, la app sigue usando la copia de siempre."], boton:null});
   if(c.ok===false) out.push({nivel:"media", titulo:"La copia nocturna ha fallado"+(c.fallos>1?" "+c.fallos+" noches seguidas":""), lineas:[(c.motivo||"")+". Mientras tanto, descarga una copia a mano en Ajustes → Copia de seguridad."], boton:null});
   if(s.at && Date.now()-Date.parse(s.at) > 36*36e5) out.push({nivel:"media", titulo:"El servidor no hace su comprobación nocturna desde el "+fecha(s.at), lineas:["Revisa en Cloudflare que los temporizadores (Triggers → Cron) del Worker siguen activos."], boton:null});
   return out;
@@ -8542,6 +8574,18 @@ function viewEquipo(){
       (sin.length ? 'Sin los avisos activados ('+sin.length+'): <b>'+sin.map(p=>esc(p.name)).join(", ")+'</b>. Pueden activarlos en Solicitudes → «Avisos en este dispositivo».'
                   : '✓ Todos tienen los avisos activados.')+
       ' Los recordatorios les llegan igualmente al entrar en la app.</p></div>';
+  }
+  // v202: quién lee ya los datos del servidor con su clave (fase 2 de los datos privados)
+  if(!ui.lectores && buzonClaveAdmin() && (state.buzon||{}).url){
+    ui.lectores = {cargando:true};
+    repServidor("/lectores?admin="+encodeURIComponent(buzonClaveAdmin())+"&t="+Date.now()).then(d=>{ ui.lectores = d.error ? {error:d.error} : {lista:d.lectores||{}}; if(ui.tab==="equipo") render(); });
+  }
+  if(ui.lectores && ui.lectores.lista){
+    const L = ui.lectores.lista, sin = state.physicians.filter(p=>!L[p.id]);
+    html += '<div class="card" id="card-lectores"><h2>Datos protegidos</h2><p style="font-size:13px;margin-top:4px">'+
+      (sin.length ? 'Aún no leen el cuadrante con su clave ('+sin.length+'): <b>'+sin.map(p=>esc(p.name)).join(", ")+'</b>. Basta con que abran la app con la versión nueva (si no la ven, que la cierren y la vuelvan a abrir).'
+                  : '✓ Todo el equipo lee ya el cuadrante con su clave.')+
+      (L[PID_AVISOS_ADMVO] ? ' Administración: ✓.' : ' Administración: aún no.')+'</p></div>';
   }
   html += viewExtConfig();
   html += viewCupoPermisos();
