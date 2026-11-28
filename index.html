@@ -773,6 +773,30 @@ function limpiarFotosHuerfanas(){
 }
 function baselineMonthKey(mo){ return state.year+"-"+pad(mo+1); }
 function isOfficialMonthKey(mk){ return !!(state.official && state.official[mk]); }
+// v204 (decisión de Javier): en la app de los compañeros y de administración, un mes que aún no es
+// oficial no se ve mientras el coordinador lo retoca. Los meses anteriores al actual se ven siempre
+// (antes de septiembre de 2026 no se marcaban oficiales). El coordinador lo ve todo.
+function mesVisibleKey(mk){
+  if(MODE==="editor") return true;
+  mk = String(mk||"").slice(0,7); if(!/^\d{4}-\d{2}$/.test(mk)) return true;
+  const h = new Date(), actual = h.getFullYear()+"-"+pad(h.getMonth()+1);
+  return mk < actual || isOfficialMonthKey(mk);
+}
+const mesVisible = (y, mo)=>mesVisibleKey(y+"-"+pad(mo+1));
+const MSG_PREPARACION = mk=>{ const p = String(mk).split("-").map(Number); return "El cuadrante de "+MONTHS[p[1]-1]+" "+p[0]+" está en preparación. Lo verás cuando el coordinador lo publique como oficial."; };
+// Pestañas con mes (rotantes, tráficos, administrativo) cuando el mes está en preparación
+function viewMesOculto(){
+  return '<div class="card no-print" style="padding:8px 12px;margin-bottom:10px"><div class="row" style="align-items:center">'+
+    '<button class="btn" style="border:none;padding:6px 8px" data-action="prev-month">‹</button>'+
+    '<b style="min-width:132px;text-align:center">'+MONTHS[ui.month]+' '+state.year+'</b>'+
+    '<button class="btn" style="border:none;padding:6px 8px" data-action="next-month">›</button></div></div>'+avisoPreparacion();
+}
+function avisoPreparacion(){
+  const mk = state.year+"-"+pad(ui.month+1);
+  return '<div class="card" id="mes-preparacion" style="text-align:center;padding:28px 16px"><b style="font-size:16px">Cuadrante en preparación</b>'+
+    '<p class="muted" style="margin-top:6px;font-size:14px">'+esc(MSG_PREPARACION(mk))+'</p>'+
+    '<p class="muted" style="margin-top:4px;font-size:13px">Las no disponibilidades y los permisos de ese mes sí se pueden pedir ya, en Solicitudes.</p></div>';
+}
 function isOfficial(mo){ return isOfficialMonthKey(baselineMonthKey(mo)); }
 // Fecha y hora en que se marcó el mes como oficial (los cierres antiguos no la tienen)
 function officialStamp(mo){
@@ -1655,7 +1679,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v203";
+const APP_VERSION = "v204";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -2685,7 +2709,8 @@ function render(){
   renderNav();
   const main = document.getElementById("main");
   try{
-    if(ui.tab==="cuadrante") main.innerHTML = viewCuadrante();
+    if(MODE!=="editor" && ["rotantes","traficos","administrativo"].indexOf(ui.tab)>=0 && !mesVisible(state.year, ui.month)) main.innerHTML = viewMesOculto();     // v204
+    else if(ui.tab==="cuadrante") main.innerHTML = viewCuadrante();
     else if(ui.tab==="pendientes") main.innerHTML = viewPendientes();
     else if(ui.tab==="equipo") main.innerHTML = viewEquipo();
     else if(ui.tab==="stats") main.innerHTML = viewStats();
@@ -3371,6 +3396,11 @@ function buscarFormHTML(){
   if(!b.dia){ const n = new Date(); b.dia = (ui.reqModal||{}).date || keyOf(n.getFullYear(), n.getMonth(), n.getDate()); }
   const est = 'width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px';
   const tit = t => '<p class="tiny" style="margin-top:10px">'+t+'</p>';
+  if(MODE==="viewer" && !mesVisibleKey(b.dia)){        // v204
+    ui.reqBloqueo = "El cuadrante de ese mes aún está en preparación.";
+    return '<p class="tiny" style="margin-top:10px">Día que quieres cambiar</p><input type="date" data-field="rq-bq-dia" value="'+esc(b.dia||"")+'" style="'+est+'">'+
+      '<div class="warnbox" id="bq-preparacion" style="margin-top:8px">'+esc(MSG_PREPARACION(b.dia))+'</div>';
+  }
   const partes = cadenaPartes(b.pid, b.dia, {guardia:true});
   if(b.part && !partes.some(o=>o.v===b.part)) b.part = "";
   if(!b.part && partes.length===1) b.part = partes[0].v;
@@ -3467,7 +3497,13 @@ function solicitudFormHTML(){
   if(yo) rq.pid = yo.id;                 // el dispositivo identificado solo pide para sí
   limpiarAvisos();
   let core;
-  if(rq.type==="cadena"){
+  // v204: con el mes en preparación solo se pueden pedir no disponibilidad y permisos
+  const ocultoRq = MODE==="viewer" && ["libre","permiso"].indexOf(rq.type)<0 && !mesVisibleKey(rq.date);
+  if(ocultoRq){
+    core = '<p class="tiny" style="margin-top:10px">Día</p><input type="date" data-field="rq-date" value="'+esc(rq.date||"")+'" style="width:100%;padding:8px;border:1px solid var(--slate-300);border-radius:8px;margin-top:4px">'+
+      '<div class="warnbox" id="rq-preparacion" style="margin-top:8px">'+esc(MSG_PREPARACION(rq.date))+' Mientras tanto solo puedes pedir no disponibilidad o permisos para ese mes.</div>';
+    ui.reqBloqueo = "El cuadrante de ese mes aún está en preparación.";
+  }else if(rq.type==="cadena"){
     core = cadenaFormHTML();
   }else if(rq.type==="consultas"){
     if(!rq.pidB || !phys.find(x=>x.id===rq.pidB)){
@@ -7095,9 +7131,14 @@ function viewMiSemana(){
   for(let i=0;i<7;i++){
     const d = new Date(); d.setHours(12,0,0,0); d.setDate(d.getDate()+i);
     const k = keyOf(d.getFullYear(), d.getMonth(), d.getDate()), dow = d.getDay();
+    const partes = [];
+    if(!mesVisibleKey(k)){        // v204: mes en preparación: no se enseña nada de ese día
+      filas += '<div class="row misem-dia" style="gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--slate-100)'+(i===0?';font-weight:700':'')+'">'+
+        '<span style="min-width:64px;font-size:13px">'+(i===0 ? "Hoy" : (i===1 ? "Mañana" : DS[dow]+" "+d.getDate()))+'</span><span class="muted" style="font-size:13px">En preparación</span></div>';
+      continue;
+    }
     const a = state.assignments[yo.id+"|"+k] || {};
     if(!(state.official||{})[k.slice(0,7)]) provisional = true;
-    const partes = [];
     if(a.f && absInfo(a.f)) partes.push(chip(absInfo(a.f).label, absInfo(a.f).cls));
     else if(a.f==="URG"||a.f==="URGLV"||a.f==="URGF") partes.push(chip("Guardia", a.f==="URG"?"k-urg":(a.f==="URGLV"?"k-urglv":"k-urgf"), a.f));
     else {
@@ -7460,7 +7501,7 @@ function viewMisCambios(){
   const yo = miFacultativo(); if(!yo) return '';
   const desde = (()=>{ const d = new Date(); d.setDate(d.getDate()-31); return keyOf(d.getFullYear(), d.getMonth(), d.getDate()); })();
   const lista = Object.keys(state.registro||{}).map(id=>Object.assign({id}, state.registro[id]))
-    .filter(e=>e && regToca(e, yo.id) && (e.masivo ? e.mes >= desde.slice(0,7) : (e.celdas||[]).some(c=>c.k.split("|")[0]===yo.id && c.k.split("|")[1] >= desde)))
+    .filter(e=>e && regToca(e, yo.id) && mesVisibleKey(e.mes) && (e.masivo ? e.mes >= desde.slice(0,7) : (e.celdas||[]).some(c=>c.k.split("|")[0]===yo.id && c.k.split("|")[1] >= desde)))
     .sort((a,b)=>String(b.at).localeCompare(String(a.at)));
   const ver = ui.misCambiosTodos ? lista : lista.slice(0,10);
   return '<div class="card" id="card-miscambios"><h2>Cambios en tu cuadrante</h2>'+
@@ -8151,6 +8192,7 @@ function viewCuadrante(){
       '<span class="row" style="gap:6px"><button class="btn primary" data-action="pull-published">Cargar la publicada</button>'+
       '<button class="btn" data-action="dismiss-newer">Seguir con la local</button></span></div>';
   }
+  const ocultoMes = !mesVisible(state.year, ui.month);
   html += '<div class="row between controls" style="margin-bottom:10px">'+
     '<div class="row" style="background:#fff;border:1px solid var(--slate-200);border-radius:8px;padding:2px 4px;gap:2px">'+
       '<button class="btn" style="border:none;padding:6px 8px" data-action="prev-month">‹</button>'+
@@ -8196,6 +8238,7 @@ function viewCuadrante(){
     }
   }
   if(MODE==="viewer"){ html += viewMiSemana(); html += viewRevisionTraficos(); html += viewRecCustodia(); html += viewNovedades(); }
+  if(ocultoMes) return html + avisoPreparacion();          // v204: mes aún no oficial (compañeros y administración)
   if(false){
     const yoV = miFacultativo();
     const nov = yoV ? novedadesDe(yoV.id) : [];
@@ -9371,7 +9414,7 @@ function download(name, content, type){
 function exportCSV(){
   const hmap = holidayMap();
   const all=[]; const dt = new Date(state.year,0,1);
-  while(dt.getFullYear()===state.year){ all.push(keyOf(dt.getFullYear(),dt.getMonth(),dt.getDate())); dt.setDate(dt.getDate()+1); }
+  while(dt.getFullYear()===state.year){ const k = keyOf(dt.getFullYear(),dt.getMonth(),dt.getDate()); if(mesVisibleKey(k)) all.push(k); dt.setDate(dt.getDate()+1); }     // v204: sin meses en preparación
   const head = ["Facultativo","% Jornada"].concat(all.map(fmtDate));
   const filaExt = all.some(k=>extCelda(k)) ? [["EXT (Urgencias)",""].concat(all.map(k=>{ const a=extCelda(k); return a&&a.f ? a.f : ""; }))] : [];
   const rows = state.physicians.map(p=>[p.name, p.pct+"%"].concat(all.map(k=>{
