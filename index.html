@@ -1655,7 +1655,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v202";
+const APP_VERSION = "v203";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -6657,7 +6657,7 @@ function viewTraficos(){
 // (un paquete de fechas o una fecha suelta, que se asignan a una sola persona), las
 // coberturas fijas de URG (= EXT) y sus ejecuciones (versiones). Las PREFERENCIAS de cada
 // persona no están aquí: se guardan en el servidor, con su historial, y cada uno ve las suyas.
-// Reglas de Javier: cada participante recibe una opción como máximo; nunca se asigna una
+// Reglas de Javier: cada participante recibe una opción como máximo; a quien eligió nunca se le asigna una
 // opción que no pidió (queda pendiente); desde la v195 URG no entra en SS y Feria (cubre el sáb. 17 de abril); en estos
 // repartos no se aplican los perfiles «no hace…»; lo repartido y publicado no lo toca el generador.
 const REP_ESTADOS = {config:"Configuración", abierto:"Solicitudes abiertas", cerrado:"Solicitudes cerradas", revision:"Pendiente de revisión", publicado:"Resultado publicado"};
@@ -6779,7 +6779,8 @@ function repAnotarOrden(rep, motivo){
   if(rep.ordenHist.length > 60) rep.ordenHist = rep.ordenHist.slice(-60);
 }
 // ---- Asignación: recorre el orden y da a cada uno su mejor opción libre ----
-// «vigentes»: {pid: [ids de opción por preferencia]}. Nunca asigna algo no pedido.
+// «vigentes»: {pid: [ids de opción por preferencia]}. A quien pidió, nunca le asigna algo no pedido;
+// a quien no envió nada, lo que sobre al final (v203).
 function repEjecutar(rep, vigentes){
   const existentes = {}; repOpciones(rep).forEach(o=>{ existentes[o.id] = 1; });
   const tomada = {}, asig = {}, pendientes = [];
@@ -6800,6 +6801,16 @@ function repEjecutar(rep, vigentes){
     traza.push({pid:pid, turno:turno+1, vistas:pide.slice(0, hasta).map(id=>({id:id, de:tomada[id]||null})), elegida:elegida||null, motivo:elegida?"":"todas-tomadas"});
     if(elegida){ asig[pid] = elegida; tomada[elegida] = pid; }
     else pendientes.push({pid:pid, motivo:"Todas sus opciones están ya asignadas a quien elige antes"});
+  });
+  // v203 (decisión de Javier): a quien no envió preferencias se le asigna automáticamente lo que
+  // quede libre al final, por su orden de elección y la primera fecha libre del calendario.
+  // Quien sí eligió y se quedó sin nada sigue pendiente (lo decide el coordinador).
+  const libresCal = repOpciones(rep).filter(o=>!tomada[o.id]).map(o=>o.id);
+  traza.forEach(t=>{
+    if(t.motivo!=="sin-preferencias" || !libresCal.length || t.pid===EXT_ID) return;
+    const id = libresCal.shift();
+    asig[t.pid] = id; tomada[id] = t.pid; t.elegida = id; t.auto = true;
+    const i = pendientes.findIndex(x=>x.pid===t.pid); if(i>=0) pendientes.splice(i,1);
   });
   const libres = repOpciones(rep).filter(o=>!tomada[o.id]).map(o=>o.id);
   return {at:new Date().toISOString(), orden:(rep.orden||[]).slice(), asig:asig, pendientes:pendientes, libres:libres, ajustes:[], publicada:false, traza:traza};
@@ -6909,7 +6920,7 @@ function repJustificar(rep, ej){
   const turnoDe = {}; (ej.orden||[]).forEach((pid,i)=>{ turnoDe[pid] = i+1; });
   const filas = ej.traza.map(t=>{
     const fin = ej.asig[t.pid] || null;
-    const f = {pid:t.pid, turno:t.turno, vistas:(t.vistas||[]).map(v=>({id:v.id, de:v.de, deTurno:v.de?turnoDe[v.de]||null:null})), elegida:t.elegida, motivo:t.motivo, final:fin, ajuste:""};
+    const f = {pid:t.pid, turno:t.turno, vistas:(t.vistas||[]).map(v=>({id:v.id, de:v.de, deTurno:v.de?turnoDe[v.de]||null:null})), elegida:t.elegida, motivo:t.motivo, auto:!!t.auto, final:fin, ajuste:""};
     if(t.elegida && !fin) f.ajuste = "quitada";
     else if(fin && fin!==t.elegida) f.ajuste = t.elegida ? "cambiada" : "a-mano";
     return f;
@@ -6929,7 +6940,7 @@ function viewJustificacion(rep, just, titulo, pie){
     'De cada persona solo se muestran sus preferencias hasta la que le tocó; las siguientes no influyen en el resultado y no se publican.</p>';
   h += '<div style="margin-top:8px">'+just.filas.map(f=>{
     let l = '<div style="padding:7px 0;border-bottom:1px solid var(--slate-100);font-size:13px;break-inside:avoid"><b>'+repOrdinal(f.turno)+' '+esc(repNombre(f.pid))+'</b>';
-    if(f.motivo==="sin-preferencias") l += '<div style="margin-top:2px">No envió preferencias.</div>';
+    if(f.motivo==="sin-preferencias") l += '<div style="margin-top:2px">No envió preferencias.'+(f.auto && f.elegida ? ' Se le asigna automáticamente lo que quedaba libre: <b>'+ot(f.elegida)+'</b>.' : '')+'</div>';
     else l += '<div style="margin-top:2px">'+f.vistas.map((v,i)=>repOrdinalF(i+1)+' preferencia: '+ot(v.id)+' → '+
       (v.de ? '<span class="muted">ya asignada a '+esc(repNombre(v.de))+(v.deTurno?' ('+repOrdinal(v.deTurno)+')':'')+'</span>' : '<b style="color:var(--emerald-700)">asignada</b>')).join('<br>')+
       (f.motivo==="todas-tomadas" ? '<br><span style="color:var(--rose-700)">Todas sus preferencias estaban ya asignadas a quien elige antes.</span>' : '')+'</div>';
