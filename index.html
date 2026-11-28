@@ -1679,7 +1679,7 @@ function applyCode(pid, dateKey, code){
 }
 
 // ------------------ Solicitudes de cambio ------------------
-const APP_VERSION = "v204";
+const APP_VERSION = "v205";
 // Identificador del dispositivo: sirve para no avisarte de TUS PROPIAS publicaciones
 const DEVICE_ID = (function(){
   try{
@@ -8006,8 +8006,9 @@ function incoherenciasMes(mo){
   const URGS = ["URG","URGLV","URGF"];
   const REPETIBLES = ["ALRU","ADM","ADMT"];          // estas consultas pueden coincidir en dos facultativos
   const pref = "|"+year+"-"+pad(mo+1)+"-";
-  // Un mes sin guardias (vacío o solo con vacaciones) aún no está generado: no se le exige urgencia diaria
-  const generado = Object.keys(state.assignments).some(k=> k.indexOf(pref)>0 && URGS.indexOf(state.assignments[k].f)>=0);
+  // Un mes sin guardias (vacío o solo con vacaciones) aún no está generado: no se le exige urgencia diaria.
+  // v205: las guardias de los repartos (puentes, SS y Feria) llegan antes de generar el mes y no cuentan.
+  const generado = Object.keys(state.assignments).some(k=> k.indexOf(pref)>0 && URGS.indexOf(state.assignments[k].f)>=0 && !state.assignments[k].rep);
   for(let d=1; d<=dim; d++){
     const k = keyOf(year, mo, d);
     const dow = new Date(year, mo, d).getDay();
